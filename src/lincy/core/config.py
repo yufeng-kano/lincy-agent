@@ -185,25 +185,26 @@ def load_config(config_path: str = "agent.yaml") -> AppConfig:
 
 
 def _validate_vision_coverage(config: AppConfig) -> None:
-    """Fail fast when an agent reads images itself but a model in its main/
-    fallback chain cannot see them (e.g. a mid-turn failover would silently
-    lose vision).
+    """Fail fast when the primary LLM cannot see images but the agent is
+    configured to read them itself.
+
+    Fallbacks are not checked. With ``use_own_vision_ability=true``, each
+    failover candidate is handled on its own: vision-capable models keep own
+    vision; non-vision models are treated like ``use_own_vision_ability=false``
+    (sub-agent path). Failover already misses content cache, so mixed chains
+    are allowed.
     """
     for agent_name, agent_config in config.agents.items():
         if not agent_config.use_own_vision_ability:
             continue
-        chain = [("llm", agent_config.llm)] + [
-            (f"llm_fallbacks[{index}]", model)
-            for index, model in enumerate(agent_config.llm_fallbacks)
-        ]
-        for field_path, model in chain:
-            if not model.get_vision():
-                raise SystemExit(
-                    f"Config error: agents.{agent_name}.{field_path} "
-                    f"(provider={model.provider}, model={model.model}) does not "
-                    f"support vision, but agents.{agent_name}.use_own_vision_ability "
-                    "is true"
-                )
+        model = agent_config.llm
+        if not model.get_vision():
+            raise SystemExit(
+                f"Config error: agents.{agent_name}.llm "
+                f"(provider={model.provider}, model={model.model}) does not "
+                f"support vision, but agents.{agent_name}.use_own_vision_ability "
+                "is true"
+            )
 
 
 def load_app_timezone(config_path: str = "agent.yaml") -> str:

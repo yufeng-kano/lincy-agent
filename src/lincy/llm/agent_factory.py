@@ -51,6 +51,7 @@ def create_agent_client(
                 key=llm_failover_key(llm_config),
                 label=_candidate_label(llm_config),
                 client=client,
+                supports_vision=llm_config.get_vision(),
             )
         )
 

@@ -17,6 +17,7 @@ from .tool_adapter import (
     SCREENSHOT_DEFINITION,
     create_gui_task,
     create_screenshot,
+    create_screenshot_adaptive,
     create_screenshot_by_subagent,
     format_gui_result,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "WorkerObservation",
     "create_gui_task",
     "create_screenshot",
+    "create_screenshot_adaptive",
     "create_screenshot_by_subagent",
     "format_gui_result",
 ]

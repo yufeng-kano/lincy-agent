@@ -8,6 +8,7 @@ from lincy.agent.core import setup_tools
 from lincy.core.schema import ToolsConfig
 from lincy.gui.manager import GUIManager
 from lincy.gui.worker import GUIWorker
+from lincy.llm.schema import ToolCall
 from lincy.tools.builtin.vision import VisionAgent
 
 
@@ -50,6 +51,80 @@ class TestVisionToolWiring:
         )
         assert registry.has_tool("read_image")
         assert not registry.has_tool("read_image_by_subagent")
+
+    def test_adaptive_own_vision_uses_subagent_when_gate_false(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Mixed chain: non-vision active candidate uses sub-agent text path."""
+        fake_agent = MagicMock(spec=VisionAgent)
+        fake_agent.describe.return_value = "a cat"
+        registry, _, _ = setup_tools(
+            self._base_config(),
+            tmp_path,
+            brain_has_vision=True,
+            use_own_vision_ability=True,
+            own_vision_active=lambda: False,
+            vision_agent=fake_agent,
+        )
+        assert registry.has_tool("read_image")
+
+        image_path = tmp_path / "x.png"
+        # Minimal valid 1x1 PNG
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00"
+            b"\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18"
+            b"\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        monkeypatch.setattr(
+            "lincy.tools.builtin.image.is_path_allowed",
+            lambda *args, **kwargs: True,
+        )
+        result = registry.execute(
+            ToolCall(
+                id="call_1",
+                name="read_image",
+                arguments={"path": str(image_path)},
+            )
+        )
+        assert isinstance(result.content, str)
+        assert "a cat" in result.content
+        fake_agent.describe.assert_called_once()
+
+    def test_adaptive_own_vision_keeps_multimodal_when_gate_true(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Mixed chain: vision-capable active candidate keeps own vision."""
+        fake_agent = MagicMock(spec=VisionAgent)
+        registry, _, _ = setup_tools(
+            self._base_config(),
+            tmp_path,
+            brain_has_vision=True,
+            use_own_vision_ability=True,
+            own_vision_active=lambda: True,
+            vision_agent=fake_agent,
+        )
+        image_path = tmp_path / "x.png"
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00"
+            b"\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18"
+            b"\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        monkeypatch.setattr(
+            "lincy.tools.builtin.image.is_path_allowed",
+            lambda *args, **kwargs: True,
+        )
+        result = registry.execute(
+            ToolCall(
+                id="call_1",
+                name="read_image",
+                arguments={"path": str(image_path)},
+            )
+        )
+        assert isinstance(result.content, list)
+        assert any(getattr(part, "type", None) == "image" for part in result.content)
+        fake_agent.describe.assert_not_called()
 
     def test_delegates_to_subagent_when_not_use_own(self, tmp_path: Path):
         """When use_own_vision_ability=False + vision agent, registers subagent tool."""

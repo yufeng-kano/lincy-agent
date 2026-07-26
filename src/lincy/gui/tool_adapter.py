@@ -293,6 +293,29 @@ def create_screenshot(
     return screenshot
 
 
+def create_screenshot_adaptive(
+    *,
+    max_width: int | None = 1280,
+    quality: int = 80,
+    own_vision_active: Callable[[], bool],
+) -> Callable[..., str | list[ContentPart]]:
+    """Own-vision screenshot when active; otherwise steer to sub-agent tool."""
+
+    own = create_screenshot(max_width=max_width, quality=quality)
+
+    def screenshot(
+        region: list[int] | None = None, **kwargs: Any
+    ) -> str | list[ContentPart]:
+        if own_vision_active():
+            return own(region=region, **kwargs)
+        return (
+            "Error: current model lacks vision; use screenshot_by_subagent "
+            "with a complete context description."
+        )
+
+    return screenshot
+
+
 SCREENSHOT_BY_SUBAGENT_DEFINITION = ToolDefinition(
     name="screenshot_by_subagent",
     description=(

@@ -25,6 +25,7 @@ from ..gui import (
     SCREENSHOT_BY_SUBAGENT_DEFINITION,
     SCREENSHOT_DEFINITION,
     create_screenshot,
+    create_screenshot_adaptive,
     create_screenshot_by_subagent,
 )
 from ..memory import (
@@ -60,6 +61,7 @@ from ..tools import (
     create_notes_tool,
     create_photos_tool,
     create_read_file,
+    create_read_image_adaptive,
     create_read_image_by_subagent,
     create_read_image_vision,
     create_read_image_with_sub_agent,
@@ -108,6 +110,7 @@ def setup_tools(
     bm25_search: BM25MemorySearch | None = None,
     brain_has_vision: bool = False,
     use_own_vision_ability: bool = False,
+    own_vision_active: Callable[[], bool] | None = None,
     vision_agent: VisionAgent | None = None,
     gui_manager: GUIManager | None = None,
     gui_worker: GUIWorker | None = None,
@@ -280,7 +283,28 @@ def setup_tools(
                 api_key_env,
             )
 
-    if brain_has_vision and not use_own_vision_ability and vision_agent is not None:
+    # When use_own_vision_ability is true but some failover candidates lack
+    # vision, own_vision_active selects per-candidate behavior: vision models
+    # keep multimodal tools; non-vision models fall back to sub-agent text.
+    vision_gate = own_vision_active
+    adaptive_own_vision = (
+        brain_has_vision
+        and use_own_vision_ability
+        and vision_gate is not None
+    )
+
+    if adaptive_own_vision and vision_gate is not None:
+        registry.register(
+            "read_image",
+            create_read_image_adaptive(
+                allowed_paths,
+                agent_os_dir,
+                vision_agent,
+                vision_gate,
+            ),
+            READ_IMAGE_DEFINITION,
+        )
+    elif brain_has_vision and not use_own_vision_ability and vision_agent is not None:
         registry.register(
             "read_image_by_subagent",
             create_read_image_by_subagent(allowed_paths, agent_os_dir, vision_agent),
@@ -299,7 +323,29 @@ def setup_tools(
             READ_IMAGE_DEFINITION,
         )
 
-    if brain_has_vision and not use_own_vision_ability and gui_worker is not None:
+    if adaptive_own_vision and vision_gate is not None:
+        registry.register(
+            "screenshot",
+            create_screenshot_adaptive(
+                max_width=screenshot_max_width,
+                quality=screenshot_quality,
+                own_vision_active=vision_gate,
+            ),
+            SCREENSHOT_DEFINITION,
+        )
+        if gui_worker is not None:
+            crop_dir = str(agent_os_dir / "tmp")
+            registry.register(
+                "screenshot_by_subagent",
+                create_screenshot_by_subagent(
+                    gui_worker,
+                    save_dir=crop_dir,
+                    gui_lock=gui_lock,
+                ),
+                SCREENSHOT_BY_SUBAGENT_DEFINITION,
+            )
+            allowed_paths.append(crop_dir)
+    elif brain_has_vision and not use_own_vision_ability and gui_worker is not None:
         crop_dir = str(agent_os_dir / "tmp")
         registry.register(
             "screenshot_by_subagent",

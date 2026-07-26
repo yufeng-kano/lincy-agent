@@ -144,6 +144,33 @@ def create_read_image_vision(
     return read_image
 
 
+def create_read_image_adaptive(
+    allowed_paths: list[str],
+    base_dir: Path,
+    vision_agent: "VisionAgent | None",
+    own_vision_active: Callable[[], bool],
+) -> Callable[..., str | list[ContentPart]]:
+    """Own-vision when the active LLM can see images; otherwise sub-agent text."""
+
+    own = create_read_image_vision(allowed_paths, base_dir)
+    sub = (
+        create_read_image_with_sub_agent(allowed_paths, base_dir, vision_agent)
+        if vision_agent is not None
+        else None
+    )
+
+    def read_image(path: str = "", **kwargs: Any) -> str | list[ContentPart]:
+        if own_vision_active():
+            return own(path=path, **kwargs)
+        if sub is not None:
+            return sub(path=path, **kwargs)
+        return (
+            "Error: current model lacks vision and no vision sub-agent is available."
+        )
+
+    return read_image
+
+
 def create_read_image_with_sub_agent(
     allowed_paths: list[str],
     base_dir: Path,

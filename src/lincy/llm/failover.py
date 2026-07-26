@@ -10,14 +10,16 @@ import logging
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, Sequence, TypeVar
 
 import httpx
 
 from ..timezone_utils import now as tz_now
 from .base import LLMClient
 from .http_error import classify_http_status_error
-from .schema import LLMResponse, Message, ToolDefinition
+from .schema import ContentPart, LLMResponse, Message, ToolDefinition
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class FailoverCandidate:
     key: str
     label: str
     client: LLMClient
+    supports_vision: bool = True
 
 
 class _CooldownRegistry:
@@ -79,6 +82,45 @@ def reset_failover_cooldowns() -> None:
     """Clear shared failover cooldowns (tests / debugging)."""
 
     _COOLDOWNS.clear()
+
+
+def order_values_by_cooldown(items: Sequence[tuple[str, T]]) -> list[T]:
+    """Order values by shared failover cooldowns (ready first, then soonest)."""
+
+    ready: list[T] = []
+    cooling: list[tuple[float, T]] = []
+    for key, value in items:
+        deadline = _COOLDOWNS.deadline(key)
+        if deadline is None:
+            ready.append(value)
+            continue
+        cooling.append((deadline, value))
+    cooling.sort(key=lambda item: item[0])
+    return ready + [value for _deadline, value in cooling]
+
+
+def preferred_candidate_supports_vision(
+    chain: Sequence[tuple[str, bool]],
+) -> bool:
+    """Return whether the currently preferred failover candidate supports vision."""
+
+    ordered = order_values_by_cooldown(chain)
+    return bool(ordered[0]) if ordered else False
+
+
+def messages_contain_images(messages: Sequence[Message]) -> bool:
+    """Return True when any message content includes an image part."""
+
+    for message in messages:
+        content = message.content
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, ContentPart) and part.type == "image":
+                return True
+            if getattr(part, "type", None) == "image":
+                return True
+    return False
 
 
 def llm_failover_key(config: Any) -> str:
@@ -217,7 +259,7 @@ class FailoverLLMClient:
                 temperature=temperature,
             )
 
-        return self._run_with_failover(_invoke)
+        return self._run_with_failover(_invoke, messages)
 
     def chat_with_tools(
         self,
@@ -232,13 +274,24 @@ class FailoverLLMClient:
                 temperature=temperature,
             )
 
-        return self._run_with_failover(_invoke)
+        return self._run_with_failover(_invoke, messages)
 
-    def _run_with_failover(self, invoke):
+    def _run_with_failover(self, invoke, messages: list[Message]):
         candidates = self._ordered_candidates()
         last_error: Exception | None = None
+        has_images = messages_contain_images(messages)
+        attempted = False
 
         for index, candidate in enumerate(candidates):
+            if has_images and not candidate.supports_vision:
+                logger.warning(
+                    "%sSkipping %s: model lacks vision but prompt contains images",
+                    _log_prefix(self._label),
+                    candidate.label,
+                )
+                continue
+
+            attempted = True
             try:
                 return invoke(candidate.client)
             except Exception as exc:
@@ -251,7 +304,11 @@ class FailoverLLMClient:
                     self._cooldown_seconds,
                 )
                 _COOLDOWNS.mark(candidate.key, cooldown)
-                if index >= len(candidates) - 1:
+                remaining = any(
+                    later.supports_vision or not has_images
+                    for later in candidates[index + 1 :]
+                )
+                if not remaining:
                     raise
 
                 logger.warning(
@@ -264,19 +321,16 @@ class FailoverLLMClient:
 
         if last_error is not None:
             raise last_error
+        if has_images and not attempted:
+            raise RuntimeError(
+                "No vision-capable LLM available for a prompt that contains images"
+            )
         raise RuntimeError("Failover client has no candidates")
 
     def _ordered_candidates(self) -> list[FailoverCandidate]:
-        ready: list[FailoverCandidate] = []
-        cooling: list[tuple[float, FailoverCandidate]] = []
-        for candidate in self._candidates:
-            deadline = _COOLDOWNS.deadline(candidate.key)
-            if deadline is None:
-                ready.append(candidate)
-                continue
-            cooling.append((deadline, candidate))
-        cooling.sort(key=lambda item: item[0])
-        return ready + [candidate for _deadline, candidate in cooling]
+        return order_values_by_cooldown(
+            [(candidate.key, candidate) for candidate in self._candidates]
+        )
 
 
 def with_llm_failover(

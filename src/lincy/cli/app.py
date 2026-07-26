@@ -581,10 +581,34 @@ def main(user: str, resume: str | None = None) -> None:
     )
 
     # Vision agent initialization
+    # use_own_vision_ability applies per active failover candidate: vision
+    # models keep multimodal tools; non-vision fallbacks use the sub-agent path.
+    _brain_llm_chain = [brain_agent_config.llm, *brain_agent_config.llm_fallbacks]
     brain_has_vision = brain_agent_config.llm.get_vision()
     _use_own_vision = brain_agent_config.use_own_vision_ability
+    _chain_has_non_vision = any(not model.get_vision() for model in _brain_llm_chain)
+    _own_vision_active = None
+    if _use_own_vision and _chain_has_non_vision:
+        from ..llm.failover import (
+            llm_failover_key,
+            preferred_candidate_supports_vision,
+        )
+
+        _vision_chain = [
+            (llm_failover_key(model), model.get_vision())
+            for model in _brain_llm_chain
+        ]
+
+        def _own_vision_active() -> bool:
+            return preferred_candidate_supports_vision(_vision_chain)
+
     vision_agent_instance: VisionAgent | None = None
-    if (not brain_has_vision or not _use_own_vision) and "vision" in config.agents and config.agents["vision"].enabled:
+    _need_vision_agent = (
+        not brain_has_vision
+        or not _use_own_vision
+        or _chain_has_non_vision
+    )
+    if _need_vision_agent and "vision" in config.agents and config.agents["vision"].enabled:
         vision_config = config.agents["vision"]
         vision_client = create_agent_client(
             vision_config,
@@ -866,6 +890,7 @@ def main(user: str, resume: str | None = None) -> None:
         bm25_search=bm25_search_instance,
         brain_has_vision=brain_has_vision,
         use_own_vision_ability=_use_own_vision,
+        own_vision_active=_own_vision_active,
         vision_agent=vision_agent_instance,
         gui_manager=gui_manager_instance,
         gui_worker=gui_worker_instance,

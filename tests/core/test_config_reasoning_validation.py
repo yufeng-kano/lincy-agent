@@ -638,9 +638,10 @@ def _write_ollama_profile(path: Path, *, model: str, vision: bool) -> None:
     )
 
 
-def test_load_config_rejects_vision_gap_in_fallback_when_use_own_vision_ability(
+def test_load_config_allows_vision_gap_in_fallback_when_use_own_vision_ability(
     monkeypatch, tmp_path: Path
 ):
+    """Non-vision fallbacks are allowed; failover already misses content cache."""
     _write_ollama_profile(tmp_path / "llm" / "vision-ok.yaml", model="a", vision=True)
     _write_ollama_profile(tmp_path / "llm" / "no-vision.yaml", model="b", vision=False)
     _write_yaml(
@@ -657,8 +658,10 @@ def test_load_config_rejects_vision_gap_in_fallback_when_use_own_vision_ability(
     )
     monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
 
-    with pytest.raises(SystemExit, match="agents.brain.llm_fallbacks\\[0\\].*does not support vision"):
-        config_module.load_config("basic.yaml")
+    config = config_module.load_config("basic.yaml")
+    assert config.agents["brain"].use_own_vision_ability is True
+    assert config.agents["brain"].llm.get_vision() is True
+    assert config.agents["brain"].llm_fallbacks[0].get_vision() is False
 
 
 def test_load_config_rejects_vision_gap_in_primary_when_use_own_vision_ability(

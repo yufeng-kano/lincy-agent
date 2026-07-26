@@ -1258,7 +1258,9 @@ class AgentConfig(StrictConfigModel):
     screenshot_quality: int = Field(default=80, ge=10, le=100)
     # AX-first GUI backend (gui_manager only)
     ax: AXServerConfig = Field(default_factory=AXServerConfig)
-    # Vision delegation: when False, delegate image reading to vision sub-agent
+    # Vision delegation: when True, vision-capable LLMs in the failover chain
+    # read images themselves; non-vision candidates fall back to the vision
+    # sub-agent. When False, always delegate image reading to the sub-agent.
     use_own_vision_ability: bool = False
     # Worker subagent specific
     max_turns: int = Field(default=30, ge=1)

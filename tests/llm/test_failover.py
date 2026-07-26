@@ -8,10 +8,11 @@ from lincy.llm.agent_factory import create_agent_client
 from lincy.llm.failover import (
     FailoverCandidate,
     llm_failover_key,
+    preferred_candidate_supports_vision,
     reset_failover_cooldowns,
     with_llm_failover,
 )
-from lincy.llm.schema import LLMResponse, Message
+from lincy.llm.schema import ContentPart, LLMResponse, Message
 
 
 def _make_429(*, headers=None):
@@ -237,6 +238,98 @@ def test_failover_does_not_switch_on_auth_error():
 
     assert primary.chat_calls == 1
     assert fallback.chat_calls == 0
+
+
+def test_failover_skips_non_vision_candidate_when_messages_have_images():
+    primary = _StubClient(tool_effects=[_make_429()])
+    no_vision = _StubClient(
+        tool_effects=[LLMResponse(content="should-not-run", tool_calls=[])],
+    )
+    vision_fallback = _StubClient(
+        tool_effects=[LLMResponse(content="ok", tool_calls=[])],
+    )
+    client = with_llm_failover(
+        [
+            FailoverCandidate(
+                "primary", "primary", primary, supports_vision=True
+            ),
+            FailoverCandidate(
+                "no-vision", "no-vision", no_vision, supports_vision=False
+            ),
+            FailoverCandidate(
+                "vision-fallback",
+                "vision-fallback",
+                vision_fallback,
+                supports_vision=True,
+            ),
+        ],
+        cooldown_seconds=1800,
+        label="brain",
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[
+                ContentPart(type="text", text="see this"),
+                ContentPart(
+                    type="image",
+                    media_type="image/png",
+                    data="abc",
+                ),
+            ],
+        )
+    ]
+
+    result = client.chat_with_tools(messages, [])
+
+    assert result.content == "ok"
+    assert primary.tool_calls_count == 1
+    assert no_vision.tool_calls_count == 0
+    assert vision_fallback.tool_calls_count == 1
+
+
+def test_failover_errors_when_only_non_vision_left_for_image_prompt():
+    primary = _StubClient(chat_effects=[_make_429()])
+    no_vision = _StubClient(chat_effects=["should-not-run"])
+    client = with_llm_failover(
+        [
+            FailoverCandidate(
+                "primary", "primary", primary, supports_vision=True
+            ),
+            FailoverCandidate(
+                "no-vision", "no-vision", no_vision, supports_vision=False
+            ),
+        ],
+        cooldown_seconds=1800,
+        label="brain",
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[
+                ContentPart(
+                    type="image",
+                    media_type="image/png",
+                    data="abc",
+                ),
+            ],
+        )
+    ]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.chat(messages)
+
+    assert primary.chat_calls == 1
+    assert no_vision.chat_calls == 0
+
+
+def test_preferred_candidate_supports_vision_respects_cooldown():
+    from lincy.llm import failover as failover_module
+
+    chain = [("vision-key", True), ("text-key", False)]
+    assert preferred_candidate_supports_vision(chain) is True
+    failover_module._COOLDOWNS.mark("vision-key", 1800)
+    assert preferred_candidate_supports_vision(chain) is False
 
 
 def test_failover_key_shares_quota_bucket_across_models():

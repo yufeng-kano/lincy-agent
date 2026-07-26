@@ -90,6 +90,7 @@ provider kwargs 應由組裝層決定是否傳入，並由對應 provider 的 `c
 - fallback chain 應包在 agent client composition，不能塞進單一 provider client 或 `factory`
 - failover 條件應聚焦在 quota / rate-limit / availability 類錯誤，不要拿來掩蓋 request-format 或 context 問題
 - 模型 entitlement / subscription 不足（例如 provider 回 `403` 且訊息要求 subscription / upgrade 才能使用該模型）視為 availability 類錯誤，可切換到下一個 fallback；一般 auth / payload 錯誤仍不得用 fallback 掩蓋
+- `use_own_vision_ability: true` 時只要求 primary `llm` 具 vision；fallback 可混用。對**當前 prefer 的 candidate**：有 vision 比照 own-vision，無 vision 比照 `use_own_vision_ability: false`（走 vision sub-agent）。prompt 已含 image parts 時，failover 會跳過無 vision 的 candidate
 
 ## 文件同步規則
 
