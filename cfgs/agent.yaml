@@ -270,7 +270,7 @@ agents:
   brain:
     llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
     llm_fallbacks:
-      - cfgs/llm/openrouter/x-ai-grok-4.5/thinking.yaml
+      - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
     llm_request_timeout: 180
     llm_transient_retries: 3
     warn_on_failure: true
@@ -294,7 +294,7 @@ agents:
 
   web_fetch_summarizer:
     enabled: true
-    llm: cfgs/llm/codex/gpt-5.5/low-thinking.yaml
+    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
     llm_request_timeout: 30
     llm_transient_retries: 1
     warn_on_failure: true
