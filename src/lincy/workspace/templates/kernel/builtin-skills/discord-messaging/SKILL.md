@@ -123,8 +123,9 @@ description: "Discord DM/guild 自然回覆、資料整理呈現策略與 guild/
 ### 7. 回覆前看上下文
 
 - 需要理解群組前文時，先用 `get_channel_history(channel="discord", ...)`
+- inbound 會把當前訊息與上下文拆成區塊：`[Message]` 是對方這則正文；`[Reply To]` 是被回覆的那則（不是當前發話者）
+- `[Reply To]` 內有 `message_id` / `author` / `preview`；若要明確回那一則，把 `message_id` 傳給 `reply_to_message`
 - Reply reference、link preview、embed 文字常常是重要上下文
-- 若要明確回某一則，使用 `reply_to_message`
 - 主動傳 guild channel 時，使用 `to="#channel @ guild"`
 
 ### 8. 附件先看，再決定怎麼處理
@@ -134,6 +135,19 @@ description: "Discord DM/guild 自然回覆、資料整理呈現策略與 guild/
 - 若沒有 `local_path` 但有 `url`，代表附件至少有可追的連結；不要直接回「我看不到附件」
 - 圖片附件若需要理解畫面內容，先 `read_image_by_subagent`（或 `read_image`）再回覆
 - 非圖片附件若是文字型檔案，可用 `read_file` 看內容；若是音訊、PDF、壓縮檔或其他無法直接讀的格式，先根據 `local_path` / `url` 做下一步，不要把「系統沒給我」當理由回給對方
+
+inbound 區塊範例：
+
+```text
+[Message]
+這句是回覆
+[Reply To]
+message_id: 9
+author: Lincy
+preview: 上一句內容
+[Attachments]
+- note.txt (text/plain) -> /path/to/note.txt
+```
 
 ## 快速範例
 

@@ -868,8 +868,10 @@ class DiscordAdapter:
         )
 
         channel_alias = _build_channel_alias(channel)
+        reply_to_message_id = str(reply_to) if reply_to is not None else None
         normalized_text = self._build_normalized_text(
             content=content,
+            reply_message_id=reply_to_message_id,
             reply_author_name=reply_author_name,
             reply_preview=reply_preview,
             embeds=embeds,
@@ -892,7 +894,7 @@ class DiscordAdapter:
             "is_dm": is_dm,
             "mentions_self": mentions_self,
             "raw_content": content,
-            "reply_to_message_id": str(reply_to) if reply_to is not None else None,
+            "reply_to_message_id": reply_to_message_id,
             "reply_to_author_id": reply_author_id,
             "reply_to_author_name": reply_author_name,
             "reply_to_preview_text": reply_preview,
@@ -1123,33 +1125,76 @@ class DiscordAdapter:
                 logger.debug("Discord attachment URL download failed", exc_info=True)
         return None
 
+    def _append_structured_message_blocks(
+        self,
+        lines: list[str],
+        *,
+        content: str,
+        reply_message_id: str | None = None,
+        reply_author_name: str | None = None,
+        reply_preview: str | None = None,
+        embeds: list[dict[str, Any]] | None = None,
+        stickers: list[dict[str, Any]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        indent: str = "",
+    ) -> None:
+        """Append inbound blocks that keep message body separate from context."""
+        embeds = embeds or []
+        stickers = stickers or []
+        attachments = attachments or []
+
+        # Always emit [Message] so reply/context blocks are never mistaken for body.
+        lines.append(f"{indent}[Message]")
+        body = _safe_text(content)
+        if body:
+            for body_line in body.splitlines():
+                lines.append(f"{indent}{body_line}")
+
+        if reply_message_id or reply_preview:
+            lines.append(f"{indent}[Reply To]")
+            if reply_message_id:
+                lines.append(f"{indent}message_id: {reply_message_id}")
+            lines.append(f"{indent}author: {reply_author_name or 'unknown'}")
+            if reply_preview:
+                lines.append(f"{indent}preview: {reply_preview}")
+
+        for emb in embeds:
+            title = emb.get("title") or emb.get("url") or emb.get("site_name") or "link"
+            desc = emb.get("description")
+            lines.append(f"{indent}[Link Preview]")
+            lines.append(f"{indent}title: {title}")
+            if desc:
+                lines.append(f"{indent}description: {desc}")
+
+        for stk in stickers:
+            name = stk.get("name") or stk.get("id") or "sticker"
+            lines.append(f"{indent}[Sticker]")
+            lines.append(f"{indent}name: {name}")
+
+        self._append_attachment_lines(lines, attachments, indent=indent)
+
     def _build_normalized_text(
         self,
         *,
         content: str,
-        reply_author_name: str | None,
-        reply_preview: str | None,
-        embeds: list[dict[str, Any]],
-        stickers: list[dict[str, Any]],
-        attachments: list[dict[str, Any]],
+        reply_message_id: str | None = None,
+        reply_author_name: str | None = None,
+        reply_preview: str | None = None,
+        embeds: list[dict[str, Any]] | None = None,
+        stickers: list[dict[str, Any]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str:
         lines: list[str] = []
-        if content:
-            lines.append(content)
-        if reply_preview:
-            prefix = reply_author_name or "unknown"
-            lines.append(f"[Reply to {prefix}] {reply_preview}")
-        for emb in embeds:
-            title = emb.get("title") or emb.get("url") or emb.get("site_name") or "link"
-            desc = emb.get("description")
-            if desc:
-                lines.append(f"[Link Preview] {title} - {desc}")
-            else:
-                lines.append(f"[Link Preview] {title}")
-        for stk in stickers:
-            name = stk.get("name") or stk.get("id") or "sticker"
-            lines.append(f"[Sticker] {name}")
-        self._append_attachment_lines(lines, attachments)
+        self._append_structured_message_blocks(
+            lines,
+            content=content,
+            reply_message_id=reply_message_id,
+            reply_author_name=reply_author_name,
+            reply_preview=reply_preview,
+            embeds=embeds,
+            stickers=stickers,
+            attachments=attachments,
+        )
         return "\n".join(lines).strip()
 
     # -- Debounce / review batching ----------------------------------
@@ -1355,24 +1400,19 @@ class DiscordAdapter:
         for msg in folded:
             author = msg.get("author") or msg.get("author_id") or "unknown"
             author_id = msg.get("author_id") or "unknown"
-            text = _safe_text(msg.get("content", ""))
-            if text:
-                lines.append(f"{author} <@{author_id}>: {text}")
-            reply = msg.get("reply") or {}
-            if isinstance(reply, dict) and reply.get("preview"):
-                rname = reply.get("author_name") or reply.get("author_id") or "unknown"
-                lines.append(f"  [Reply to {rname}] {reply['preview']}")
-            for emb in msg.get("embeds") or []:
-                title = emb.get("title") or emb.get("url") or "link"
-                desc = emb.get("description")
-                if desc:
-                    lines.append(f"  [Link Preview] {title} - {desc}")
-                else:
-                    lines.append(f"  [Link Preview] {title}")
-            for stk in msg.get("stickers") or []:
-                sname = stk.get("name") or stk.get("id") or "sticker"
-                lines.append(f"  [Sticker] {sname}")
-            self._append_attachment_lines(lines, msg.get("attachments") or [], indent="  ")
+            lines.append(f"{author} <@{author_id}>:")
+            reply = msg.get("reply") if isinstance(msg.get("reply"), dict) else {}
+            self._append_structured_message_blocks(
+                lines,
+                content=_safe_text(msg.get("content", "")),
+                reply_message_id=reply.get("message_id"),
+                reply_author_name=reply.get("author_name") or reply.get("author_id"),
+                reply_preview=reply.get("preview"),
+                embeds=msg.get("embeds") or [],
+                stickers=msg.get("stickers") or [],
+                attachments=msg.get("attachments") or [],
+                indent="  ",
+            )
 
         latest = folded[-1]
         max_seq = max(int(e.get("seq", 0)) for e in events)

@@ -187,6 +187,8 @@ class TestDiscordAdapterIngest:
         assert inbound.channel == "discord"
         assert inbound.sender == "#general @ MyGuild"
         assert inbound.metadata["source"] == "guild_mention_review"
+        assert "[Message]" in inbound.content
+        assert "@agent help" in inbound.content
 
     async def test_hard_allowlist_blocks_unlisted_channel(self, tmp_path):
         adapter, _, history = _make_adapter(
@@ -339,6 +341,8 @@ class TestDiscordAdapterIngest:
 
         assert len(adapter._agent.enqueued) == 1
         inbound = adapter._agent.enqueued[0]
+        assert "[Message]" in inbound.content
+        assert "[Attachments]" in inbound.content
         assert "- note.txt (text/plain) -> " in inbound.content
 
         events = history.read_events("1")
@@ -445,7 +449,12 @@ class TestDiscordAdapterIngest:
 
         assert len(adapter._agent.enqueued) == 1
         inbound = adapter._agent.enqueued[0]
-        assert "[Reply to Lincy] 上一句內容" in inbound.content
+        assert "[Message]" in inbound.content
+        assert "這句是回覆" in inbound.content
+        assert "[Reply To]" in inbound.content
+        assert "message_id: 9" in inbound.content
+        assert "author: Lincy" in inbound.content
+        assert "preview: 上一句內容" in inbound.content
         assert inbound.metadata["reply_to_message_id"] == "9"
 
     async def test_dm_flush_sender_uses_one_hop_alias_mapping(self, tmp_path):

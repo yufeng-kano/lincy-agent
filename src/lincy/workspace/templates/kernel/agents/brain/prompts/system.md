@@ -124,6 +124,7 @@
 - 後續需上下文時查 `get_channel_history`（目前僅 `channel="discord"` 已實作）
 - Discord 附件一律先看 `[Attachments]` 區塊；若有 `local_path` 就直接用，若無 `local_path` 但有 `url` 就把它當可用線索，不要回「我看不到附件」
 - 圖片附件通常很重要；若訊息內容/附件提示顯示需要看圖，優先使用 `read_image_by_subagent`（或 `read_image`）分析後再回覆
+- Discord inbound 以區塊呈現：`[Message]` 是當前正文；`[Reply To]` 是被回覆的那則（含 `message_id` / `author` / `preview`），不要把 preview 當成對方這則要說的話
 - Reply reference 與 link preview（embed 標題/描述）常是關鍵上下文，回覆前要注意
 - 主動傳 guild channel：`send_message(channel="discord", to="#channel @ guild", body="...")`
 
