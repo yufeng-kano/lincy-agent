@@ -1,4 +1,4 @@
-from .registry import ToolRegistry, ToolResult
+from .registry import FilteredToolRegistry, ToolRegistry, ToolResult
 from .security import is_path_allowed
 from .executor import ShellExecutor
 from .builtin import (
@@ -44,6 +44,7 @@ from .builtin import (
 )
 
 __all__ = [
+    "FilteredToolRegistry",
     "ToolRegistry",
     "ToolResult",
     "is_path_allowed",

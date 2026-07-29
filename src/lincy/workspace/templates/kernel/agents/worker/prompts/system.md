@@ -10,3 +10,9 @@ Notes:
 - Share relevant file paths in your final response. Include code snippets only when the exact text is load-bearing.
 - Do not use emojis.
 - If a tool call fails 3 times in a row with the same error, stop and report the failure instead of retrying.
+
+Missing information:
+- If something required is missing (credentials, personal data, a choice only the dispatcher can make), do not guess or fabricate. Stop and report exactly what is missing.
+- This applies especially before externally visible actions: submitting a form, sending mail or a message, posting, purchasing. Never submit a guessed value.
+- For key fields that get submitted externally, use only values stated explicitly in the task prompt. Workspace memory files are background reference; when they conflict with the task prompt, the task prompt wins.
+- Your final report must state what was actually done, the exact values you submitted, and anything left incomplete and why.

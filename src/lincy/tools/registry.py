@@ -82,3 +82,37 @@ class ToolRegistry:
     def is_concurrency_safe(self, name: str) -> bool:
         """Return True when *name* can run concurrently with other safe tools."""
         return name in self._concurrency_safe_tools
+
+
+class FilteredToolRegistry:
+    """Live read-only view over a registry that hides excluded tools.
+
+    A view instead of a copy because startup keeps registering tools on the
+    shared registry after the owning agent is built, so a snapshot taken at
+    construction time would silently miss them.
+    """
+
+    def __init__(self, source: ToolRegistry, excluded_tools: frozenset[str]):
+        self._source = source
+        self._excluded_tools = excluded_tools
+
+    def get_definitions(self) -> list[ToolDefinition]:
+        """Get definitions of all non-excluded tools."""
+        return [
+            defn
+            for defn in self._source.get_definitions()
+            if defn.name not in self._excluded_tools
+        ]
+
+    def has_tool(self, name: str) -> bool:
+        """Excluded tools must look unregistered to callers gating on this."""
+        return name not in self._excluded_tools and self._source.has_tool(name)
+
+    def execute(self, tool_call: ToolCall) -> ToolResult:
+        """Execute a tool call, rejecting excluded tools like unknown ones."""
+        if tool_call.name in self._excluded_tools:
+            return ToolResult(f"Error: Unknown tool '{tool_call.name}'", is_error=True)
+        return self._source.execute(tool_call)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._source, name)

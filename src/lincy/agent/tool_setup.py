@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 from ..cli.claude_code_stream_json import (
     extract_text_from_claude_code_stream_json_lines,
 )
-from ..core.schema import ToolsConfig
+from ..core.schema import AgentConfig, ToolsConfig
 from ..gui import (
     GUIManager,
     GUIWorker,
@@ -471,3 +471,24 @@ def setup_tools(
     }))
 
     return registry, allowed_paths, executor
+
+
+def validate_excluded_tools(
+    registry: ToolRegistry,
+    agents: dict[str, AgentConfig],
+) -> None:
+    """Fail fast when excluded_tools names a tool that was never registered.
+
+    A typo would otherwise be a silent no-op and leave the agent holding a
+    tool the operator meant to take away. Call this only after every
+    registration is done, since registry building is spread across startup.
+    """
+    for agent_name, agent_config in agents.items():
+        unknown = [
+            name for name in agent_config.excluded_tools if not registry.has_tool(name)
+        ]
+        if unknown:
+            raise SystemExit(
+                f"Config error: agents.{agent_name}.excluded_tools contains "
+                f"unknown tool(s): {', '.join(unknown)}"
+            )

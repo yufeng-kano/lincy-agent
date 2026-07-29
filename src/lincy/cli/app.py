@@ -9,6 +9,7 @@ from datetime import datetime
 from dotenv import dotenv_values
 
 from ..agent import AgentCore, setup_tools
+from ..agent.tool_setup import validate_excluded_tools
 from ..agent.skill_check import SkillCheckAgent
 from ..agent.adapters.cli import CLIAdapter
 from ..agent.contact_map import ContactMap
@@ -938,6 +939,7 @@ def main(user: str, resume: str | None = None) -> None:
         conversation=conversation,
         builder=builder,
         registry=registry,
+        excluded_tools=frozenset(brain_agent_config.excluded_tools),
         ui_sink=ui_sink,
         workspace=workspace,
         config=config,
@@ -1189,6 +1191,9 @@ def main(user: str, resume: str | None = None) -> None:
             WORKER_TOOL_DEFINITION,
         )
         registry.set_concurrency_safe_tools(frozenset({"worker"}))
+
+    # All registrations are done by now, so unknown exclusions are real typos.
+    validate_excluded_tools(registry, config.agents)
 
     app = ChatTextualApp(controller=controller, event_sink=ui_sink)
 

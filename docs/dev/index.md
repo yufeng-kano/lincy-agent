@@ -33,6 +33,7 @@
 | [macos-app-tools.md](macos-app-tools.md) | macOS 原生個人資料工具：Calendar / Reminders / Notes / Photos 的 tool 設計與使用規則 |
 | [web-dashboard.md](web-dashboard.md) | Web Dashboard：chat_web_api + chat_web_ui 架構、API、前端設計、注意事項 |
 | [gui-computer-use.md](gui-computer-use.md) | GUI Computer Use：AX-first 架構、MCP server vendor 規範、context 管理策略 |
+| [brain-worker-delegation.md](brain-worker-delegation.md) | Brain 無 shell 工具：per-agent `excluded_tools` 機制、任務單規則、worker fail-closed 協定 |
 
 ## 子資料夾
 

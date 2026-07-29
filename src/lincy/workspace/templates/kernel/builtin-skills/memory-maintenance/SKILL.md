@@ -37,10 +37,10 @@ Remove duplicate entries in memory/agent/long-term.md:
 
 ## 大規模維護（file_too_long / 用戶要求）
 
-檔案過長、結構重整、跨檔拆分等複雜任務，使用 `execute_shell` 呼叫 Claude Sonnet：
+檔案過長、結構重整、跨檔拆分等複雜任務，委派 `worker` 呼叫 Claude Sonnet（你自己沒有 shell 工具）：
 
-1. 讀取本 skill 的 `references/rules.md` 取得格式規範
-2. 執行：
+1. `context_files` 帶入本 skill 的 `kernel/builtin-skills/memory-maintenance/references/rules.md`
+2. `prompt` 中寫明目標檔案路徑、要做的整理，以及以下必須照做的執行方式：
 
 ```bash
 cd {agent_os_dir} && claude -p --output-format stream-json --verbose "$(cat kernel/builtin-skills/memory-maintenance/references/rules.md)
@@ -48,11 +48,11 @@ cd {agent_os_dir} && claude -p --output-format stream-json --verbose "$(cat kern
 任務：[具體任務描述，包含目標檔案路徑]" --model sonnet --max-turns 25 --allowedTools "Read,Write,Edit"
 ```
 
-### 注意
+### 注意（任務單中要明確要求 worker 遵守）
 
 - **必須使用 `--model sonnet`**，維護任務不需要 opus 等級
 - **必須使用 `--output-format stream-json --verbose`**
 - **必須使用 `--allowedTools "Read,Write,Edit"`**
 - **嚴禁使用 `--dangerously-skip-permissions`**
 - 工作目錄必須在 `{agent_os_dir}`
-- 執行完畢後檢查結果，確認沒有內容遺失
+- 執行完畢後檢查結果，確認沒有內容遺失；worker 要在回報中說明改了哪些檔案

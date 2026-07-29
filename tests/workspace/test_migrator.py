@@ -1133,3 +1133,35 @@ class TestM0137SkillInstallerRepoAtSkill:
         migration.upgrade(kernel_dir, templates_dir)
 
         assert dst.read_text() == "new::repo-at-skill"
+
+
+class TestM0163BrainShellDelegation:
+    """Tests for brain shell delegation migration."""
+
+    def test_copies_brain_worker_prompts_and_memory_skill(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+
+        files = [
+            "agents/brain/prompts/system.md",
+            "agents/worker/prompts/system.md",
+            "builtin-skills/memory-maintenance/SKILL.md",
+        ]
+
+        for rel in files:
+            src = templates_dir / rel
+            dst = kernel_dir / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"new::{rel}")
+            dst.write_text(f"old::{rel}")
+
+        from lincy.workspace.migrations.m0163_brain_shell_delegation import (
+            M0163BrainShellDelegation,
+        )
+
+        migration = M0163BrainShellDelegation()
+        migration.upgrade(kernel_dir, templates_dir)
+
+        for rel in files:
+            assert (kernel_dir / rel).read_text() == f"new::{rel}"

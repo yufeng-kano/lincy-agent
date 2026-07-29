@@ -275,6 +275,9 @@ agents:
     llm_transient_retries: 3
     warn_on_failure: true
     use_own_vision_ability: true
+    excluded_tools:
+      - execute_shell
+      - shell_task
     cache:
       enabled: true
       ttl: "24h"
@@ -322,7 +325,7 @@ agents:
 
   worker:
     enabled: true
-    llm: cfgs/llm/codex/gpt-5.5/thinking.yaml
+    llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
     llm_request_timeout: 180
     llm_transient_retries: 2
     warn_on_failure: true
@@ -332,6 +335,7 @@ agents:
       - gui_task
       - screenshot
       - screenshot_by_subagent
+      - shell_task
     cache:
       enabled: true
       ttl: "1h"

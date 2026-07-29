@@ -47,7 +47,7 @@ from ..session import SessionManager
 from ..session.schema import SessionEntry
 from ..skills import rebuild_personal_skills_index
 from ..timezone_utils import get_tz, now as tz_now
-from ..tools import ToolRegistry
+from ..tools import FilteredToolRegistry, ToolRegistry
 from ..tui.sink import UiSink
 from ..workspace import WorkspaceManager
 from . import responder as _responder
@@ -363,6 +363,7 @@ class AgentCore:
         conversation: Conversation,
         builder: ContextBuilder,
         registry: ToolRegistry,
+        excluded_tools: frozenset[str] = frozenset(),
         ui_sink: UiSink,
         workspace: WorkspaceManager,
         config: AppConfig,
@@ -397,7 +398,11 @@ class AgentCore:
         self.memory_sync_client = memory_sync_client
         self.conversation = conversation
         self.builder = builder
-        self.registry = registry
+        # Excluded tools stay hidden from both the schema and execution, so a
+        # model that hallucinates the name gets a normal unknown-tool error.
+        self.registry: ToolRegistry | FilteredToolRegistry = (
+            FilteredToolRegistry(registry, excluded_tools) if excluded_tools else registry
+        )
         self.ui_sink = ui_sink
         self.console: AgentUiPort = UiEventConsole(
             ui_sink,
