@@ -13,7 +13,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { name: 'Monitor', path: '/monitor', enabled: true },
   { name: 'Proxy', path: '/proxy', enabled: true },
-  { name: 'Chat', path: '/chat', enabled: true },
+  { name: 'Agent', path: '/chat', enabled: true },
   { name: 'Settings', path: '/settings', enabled: false },
 ]
 </script>

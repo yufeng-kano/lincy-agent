@@ -9,6 +9,7 @@ from pathlib import Path
 
 from watchfiles import awatch
 
+from lincy.agent.ui_event_stream import UiEventStore
 from lincy.agent.web_chat import WebChatStore
 
 from .cache import MetricsCache
@@ -104,5 +105,34 @@ async def watch_web_chat_events(
                 {
                     "type": "chat_event",
                     "event": event.model_dump(mode="json"),
+                }
+            )
+
+
+async def watch_ui_events(
+    events_path: Path,
+    broadcast: Callable[[dict], Awaitable[None]],
+    stop_event: asyncio.Event,
+) -> None:
+    """Watch the agent UI event JSONL log and broadcast newly appended records."""
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    store = UiEventStore(events_path)
+    offset = events_path.stat().st_size if events_path.exists() else 0
+
+    logger.info("Watching agent UI events: %s", events_path)
+    async for changes in awatch(events_path.parent, stop_event=stop_event):
+        changed = any(Path(path_str) == events_path for _change_type, path_str in changes)
+        if not changed:
+            continue
+        try:
+            records, offset = store.read_from_offset(offset)
+        except Exception:
+            logger.warning("Error reading agent UI events", exc_info=True)
+            continue
+        for record in records:
+            await broadcast(
+                {
+                    "type": "agent_event",
+                    "event": record.model_dump(mode="json"),
                 }
             )

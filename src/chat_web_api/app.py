@@ -14,12 +14,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from lincy.agent.ui_event_stream import UiEventStore
 from lincy.agent.web_chat import WebChatMessageRequest, WebChatStore
 
 from .cache import MetricsCache
 from .pricing import fetch_pricing
 from .settings import WebApiSettings
-from .watcher import watch_sessions, watch_web_chat_events
+from .watcher import watch_sessions, watch_ui_events, watch_web_chat_events
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ def create_app(settings: WebApiSettings) -> FastAPI:
     cache_holder: dict[str, MetricsCache] = {}
     watcher_stop = asyncio.Event()
     chat_store = WebChatStore(settings.web_chat_events_path)
+    ui_event_store = UiEventStore(settings.ui_events_path)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
@@ -168,10 +170,17 @@ def create_app(settings: WebApiSettings) -> FastAPI:
                 watcher_stop,
             )
         )
+        ui_event_watcher_task = asyncio.create_task(
+            watch_ui_events(
+                settings.ui_events_path,
+                ws_manager.broadcast,
+                watcher_stop,
+            )
+        )
         yield
         # Shutdown
         watcher_stop.set()
-        for task in (watcher_task, chat_watcher_task):
+        for task in (watcher_task, chat_watcher_task, ui_event_watcher_task):
             task.cancel()
             try:
                 await task
@@ -432,6 +441,16 @@ def create_app(settings: WebApiSettings) -> FastAPI:
             "events": [
                 event.model_dump(mode="json")
                 for event in chat_store.recent_events(limit)
+            ]
+        }
+
+    @app.get("/api/agent/events")
+    async def agent_events(limit: int = Query(500, ge=1, le=2000)) -> dict:
+        # Current run only: the store rotates its file on every chat-cli start.
+        return {
+            "events": [
+                record.model_dump(mode="json")
+                for record in ui_event_store.recent_events(limit)
             ]
         }
 

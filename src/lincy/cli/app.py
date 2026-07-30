@@ -18,6 +18,7 @@ from ..agent.queue import PersistentPriorityQueue
 from ..agent.scope import DEFAULT_SCOPE_RESOLVER
 from ..agent.shared_state import load_or_init as load_shared_state_cache
 from ..agent.shared_state_replay import rebuild_shared_state_from_sessions
+from ..agent.ui_event_stream import FanoutUiSink, UiEventExportSink, UiEventStore
 from ..brain_prompt_policy import BrainPromptPolicy
 from ..context import ContextBuilder, Conversation
 from ..core import load_config
@@ -50,6 +51,7 @@ from ..tui import (
     TextualController,
     TextualUiConsole,
     TurnCancelController,
+    UiSink,
 )
 from ..timezone_utils import now as tz_now
 
@@ -196,13 +198,22 @@ def main(user: str, resume: str | None = None) -> None:
     from ..timezone_utils import configure_runtime_timezone
     configure_runtime_timezone(config.app.timezone)
 
+    # The Textual app owns this exact instance (it needs drain/set_on_emit).
     ui_sink = QueueUiSink()
-    cancel_controller = TurnCancelController(ui_sink=ui_sink)
-    controller = TextualController(ui_sink=ui_sink, cancel=cancel_controller)
+    # Everything else writes through a fan-out so the web dashboard can tap the
+    # same typed event stream without the TUI knowing about it.
+    sink_for_agents: UiSink = ui_sink
+    if config.channels.web.enabled:
+        ui_event_store = UiEventStore(agent_os_dir / "state" / "ui_events" / "events.jsonl")
+        ui_event_store.rotate_on_start()
+        sink_for_agents = FanoutUiSink((ui_sink, UiEventExportSink(ui_event_store)))
+
+    cancel_controller = TurnCancelController(ui_sink=sink_for_agents)
+    controller = TextualController(ui_sink=sink_for_agents, cancel=cancel_controller)
 
     # Check workspace initialization
     workspace = WorkspaceManager(agent_os_dir)
-    console = TextualUiConsole(ui_sink)
+    console = TextualUiConsole(sink_for_agents)
 
     if not workspace.is_initialized():
         _emit_pre_tui_message(
@@ -948,7 +959,7 @@ def main(user: str, resume: str | None = None) -> None:
         builder=builder,
         registry=registry,
         excluded_tools=frozenset(brain_agent_config.excluded_tools),
-        ui_sink=ui_sink,
+        ui_sink=sink_for_agents,
         workspace=workspace,
         config=config,
         agent_os_dir=agent_os_dir,
@@ -984,7 +995,7 @@ def main(user: str, resume: str | None = None) -> None:
 
     # === CLI adapter ===
     cli_adapter = CLIAdapter(
-        ui_sink=ui_sink,
+        ui_sink=sink_for_agents,
         commands=commands,
         session_mgr=session_mgr,
         conversation=conversation,
@@ -1100,7 +1111,7 @@ def main(user: str, resume: str | None = None) -> None:
 
     shell_task_manager = ShellTaskManager(
         max_concurrent=config.tools.shell.task_max_concurrency,
-        ui_sink=ui_sink,
+        ui_sink=sink_for_agents,
     )
     commands.set_shell_task_manager(shell_task_manager)
 
@@ -1108,7 +1119,7 @@ def main(user: str, resume: str | None = None) -> None:
         "shell_task",
         create_shell_task(
             queue=pqueue,
-            ui_sink=ui_sink,
+            ui_sink=sink_for_agents,
             cwd_provider=lambda: shell_executor.cwd,
             agent_os_dir=agent_os_dir,
             blacklist=config.tools.shell.blacklist,

@@ -49,6 +49,37 @@ export async function fetchChatEvents(limit = 200): Promise<{ events: WebChatEve
   return responseJsonOrError(res)
 }
 
+export type AgentUiEventType =
+  | 'inbound_message'
+  | 'processing_started'
+  | 'processing_finished'
+  | 'assistant_text'
+  | 'tool_call'
+  | 'tool_result'
+  | 'tool_stream'
+  | 'warning'
+  | 'error'
+  | 'debug'
+  | 'ctx_status'
+  | 'resume_history'
+  | 'outbound_message'
+  | 'interrupt_state'
+
+export interface AgentUiEvent {
+  id: string
+  seq: number
+  ts: string
+  type: AgentUiEventType
+  /** Subagent label (worker-N / gui_task); null means the main brain lane. */
+  agent: string | null
+  data: Record<string, unknown>
+}
+
+export async function fetchAgentEvents(limit = 500): Promise<{ events: AgentUiEvent[] }> {
+  const res = await fetch(`${BASE}/api/agent/events?limit=${limit}`)
+  return responseJsonOrError(res)
+}
+
 export async function sendChatMessage(content: string): Promise<{ event: WebChatEvent }> {
   const res = await fetch(`${BASE}/api/chat/messages`, {
     method: 'POST',

@@ -21,6 +21,7 @@ class WebApiSettings:
     sessions_dir: Path = Path()
     static_dir: Path | None = None
     web_chat_events_path: Path = Path()
+    ui_events_path: Path = Path()
     control_base_url: str = "http://127.0.0.1:9001"
     claude_proxy_base_url: str = "http://127.0.0.1:4142"
     codex_proxy_base_url: str = "http://127.0.0.1:4143"
@@ -46,6 +47,7 @@ class WebApiSettings:
         sessions_dir = agent_os_dir / "session" / "brain"
         pricing_cache_path = agent_os_dir / "state" / "model_pricing_cache.json"
         web_chat_events_path = agent_os_dir / "state" / "web_chat" / "events.jsonl"
+        ui_events_path = agent_os_dir / "state" / "ui_events" / "events.jsonl"
 
         # Static dir: look for sibling chat_web_ui/dist
         ui_dist = Path(__file__).resolve().parent.parent / "chat_web_ui" / "dist"
@@ -55,6 +57,7 @@ class WebApiSettings:
             sessions_dir=sessions_dir,
             static_dir=static_dir,
             web_chat_events_path=web_chat_events_path,
+            ui_events_path=ui_events_path,
             control_base_url=f"http://{control_host}:{control_port}",
             soft_limit_tokens=soft_limit,
             pricing_cache_path=pricing_cache_path,
