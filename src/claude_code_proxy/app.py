@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import math
 import secrets
 from typing import AsyncIterator
 
@@ -27,6 +28,15 @@ from .settings import ClaudeCodeProxySettings
 async def _close_stream(client, response) -> None:
     await response.aclose()
     await client.aclose()
+
+
+def _token_unavailable_response(exc: ClaudeCodeTokenUnavailableError) -> JSONResponse:
+    """503 for an empty token pool, with Retry-After when the pool self-heals."""
+
+    headers = None
+    if exc.retry_after_seconds is not None:
+        headers = {"Retry-After": str(max(1, math.ceil(exc.retry_after_seconds)))}
+    return JSONResponse({"error": str(exc)}, status_code=503, headers=headers)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 30.0
@@ -200,7 +210,7 @@ def create_app(settings: ClaudeCodeProxySettings) -> FastAPI:
                 media_type=exc.media_type,
             )
         except ClaudeCodeTokenUnavailableError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=503)
+            return _token_unavailable_response(exc)
         return Response(content=body, media_type=media_type)
 
     @app.post("/v1/messages")
@@ -228,7 +238,7 @@ def create_app(settings: ClaudeCodeProxySettings) -> FastAPI:
                 media_type=exc.media_type,
             )
         except ClaudeCodeTokenUnavailableError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=503)
+            return _token_unavailable_response(exc)
         except ClaudeCodeUpstreamTimeoutError as exc:
             return JSONResponse({"error": str(exc)}, status_code=504)
         except ValueError as exc:

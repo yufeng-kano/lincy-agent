@@ -15,6 +15,7 @@ from claude_code_proxy.service import (
     ClaudeCodeProxyService,
     ClaudeCodeTokenUnavailableError,
     ClaudeCodeUpstreamError,
+    ClaudeCodeUpstreamTimeoutError,
 )
 from claude_code_proxy.settings import ClaudeCodeProxySettings
 from lincy.llm.schema import ClaudeCodeRequest, ClaudeCodeMessagePayload
@@ -527,6 +528,175 @@ async def test_benched_token_rejoins_pool_after_cooldown(monkeypatch, tmp_path):
     _patch_async_httpx(monkeypatch, [(200, {"content": [{"type": "text", "text": "c"}]})], calls3)
     await service.forward_json(_request())
     assert calls3[0]["headers"]["Authorization"] == "Bearer tok-primary"
+
+
+@pytest.mark.asyncio
+async def test_forward_json_leaves_read_timeout_unbounded(monkeypatch, tmp_path):
+    # A long non-streaming generation must not be cut off by the proxy's own read
+    # timeout; only connect/write/pool stay bounded.
+    store = _point_store_at(monkeypatch, tmp_path)
+    store.replace_all(
+        [_fresh_token(token_id="only", access_token="tok", created_at=datetime(2026, 1, 1, tzinfo=UTC))]
+    )
+    seen: list[httpx.Timeout] = []
+    calls: list[dict] = []
+    effects: list[tuple[int, dict] | Exception] = [(200, {"content": []})]
+
+    def _factory(timeout):
+        seen.append(timeout)
+        return _AsyncClient(effects, calls)
+
+    monkeypatch.setattr("claude_code_proxy.service.httpx.AsyncClient", _factory)
+
+    settings = ClaudeCodeProxySettings(request_timeout=30.0)
+    await ClaudeCodeProxyService(settings).forward_json(_request())
+
+    assert seen[0].read is None
+    assert seen[0].connect == 30.0
+
+
+@pytest.mark.asyncio
+async def test_timeout_does_not_bench_the_token(monkeypatch, tmp_path):
+    # A slow generation says nothing about the credential. Benching on it would
+    # drain the pool and turn the next requests into bogus "token is required" 503s.
+    store = _point_store_at(monkeypatch, tmp_path)
+    store.replace_all(
+        [
+            _fresh_token(
+                token_id="primary",
+                access_token="tok-primary",
+                created_at=datetime(2026, 6, 1, tzinfo=UTC),
+            ),
+            _fresh_token(
+                token_id="backup",
+                access_token="tok-backup",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    service = ClaudeCodeProxyService(ClaudeCodeProxySettings())
+
+    calls1: list[dict] = []
+    _patch_async_httpx(
+        monkeypatch,
+        [httpx.ReadTimeout("upstream still thinking"), (200, {"content": []})],
+        calls1,
+    )
+    await service.forward_json(_request())
+    assert [call["headers"]["Authorization"] for call in calls1] == [
+        "Bearer tok-primary",
+        "Bearer tok-backup",
+    ]
+
+    # Next request: primary is still first in line, not benched for 5 minutes.
+    calls2: list[dict] = []
+    _patch_async_httpx(monkeypatch, [(200, {"content": []})], calls2)
+    await service.forward_json(_request())
+    assert [call["headers"]["Authorization"] for call in calls2] == ["Bearer tok-primary"]
+
+
+@pytest.mark.asyncio
+async def test_timeout_on_every_token_reports_a_timeout_not_a_missing_token(monkeypatch, tmp_path):
+    store = _point_store_at(monkeypatch, tmp_path)
+    store.replace_all(
+        [
+            _fresh_token(
+                token_id="primary",
+                access_token="tok-primary",
+                created_at=datetime(2026, 6, 1, tzinfo=UTC),
+            ),
+            _fresh_token(
+                token_id="backup",
+                access_token="tok-backup",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    calls: list[dict] = []
+    _patch_async_httpx(
+        monkeypatch,
+        [httpx.ReadTimeout("slow"), httpx.ReadTimeout("slow")],
+        calls,
+    )
+
+    service = ClaudeCodeProxyService(ClaudeCodeProxySettings())
+    with pytest.raises(ClaudeCodeUpstreamTimeoutError):
+        await service.forward_json(_request())
+
+    # Each token is tried exactly once: the exclude set ends the loop without a bench.
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_benched_pool_reports_retry_after_not_missing_credentials(monkeypatch, tmp_path):
+    store = _point_store_at(monkeypatch, tmp_path)
+    store.replace_all(
+        [
+            _fresh_token(
+                token_id="primary",
+                access_token="tok-primary",
+                created_at=datetime(2026, 6, 1, tzinfo=UTC),
+            ),
+            _fresh_token(
+                token_id="backup",
+                access_token="tok-backup",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("claude_code_proxy.service._now", lambda: clock["t"])
+    service = ClaudeCodeProxyService(ClaudeCodeProxySettings())
+
+    # Bench both tokens on 429s; the client still sees the real upstream error.
+    _patch_async_httpx(
+        monkeypatch,
+        [(429, {"error": "rate limited"}), (429, {"error": "rate limited"})],
+        [],
+    )
+    with pytest.raises(ClaudeCodeUpstreamError):
+        await service.forward_json(_request())
+
+    clock["t"] += 60.0
+    _patch_async_httpx(monkeypatch, [], [])
+    with pytest.raises(ClaudeCodeTokenUnavailableError) as excinfo:
+        await service.forward_json(_request())
+
+    message = str(excinfo.value)
+    assert "benched" in message
+    assert "retry in 240s" in message
+    assert "--access-token" not in message
+    assert excinfo.value.retry_after_seconds == pytest.approx(240.0)
+
+
+def test_benched_pool_503_carries_retry_after_header(monkeypatch, tmp_path):
+    from starlette.testclient import TestClient
+
+    from claude_code_proxy.app import create_app
+
+    store = _point_store_at(monkeypatch, tmp_path)
+    store.replace_all(
+        [
+            _fresh_token(
+                token_id="only", access_token="tok", created_at=datetime(2026, 1, 1, tzinfo=UTC)
+            )
+        ]
+    )
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("claude_code_proxy.service._now", lambda: clock["t"])
+    _patch_async_httpx(monkeypatch, [(401, {"error": "unauthorized"})], [])
+
+    body = _request().model_dump(mode="json", exclude_none=True)
+    # Loopback peer: the inbound API-key gate is exempt, so 401 can only be upstream.
+    with TestClient(create_app(ClaudeCodeProxySettings()), client=("127.0.0.1", 55001)) as client:
+        assert client.post("/v1/messages", json=body).status_code == 401
+
+        clock["t"] += 100.0
+        response = client.post("/v1/messages", json=body)
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "200"
+    assert "benched" in response.json()["error"]
 
 
 @pytest.mark.asyncio

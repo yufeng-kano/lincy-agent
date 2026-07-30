@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -45,9 +46,11 @@ USAGE_CACHE_TTL_SECONDS = 60.0
 # 429, while hard auth / entitlement failures commonly surface as 401/403.
 FAILOVER_STATUS_CODES = frozenset({401, 403, 429})
 
-# How long a token stays benched after an upstream auth failure. A cooldown (rather
-# than a permanent bench) lets a token that failed on a transient 401/403 rejoin the
-# failover pool automatically, so a single blip cannot shrink the pool until restart.
+# How long a token stays benched after an upstream auth/quota failure. A cooldown
+# (rather than a permanent bench) lets a token that failed on a transient 401/403
+# rejoin the failover pool automatically, so a single blip cannot shrink the pool
+# until restart. Only FAILOVER_STATUS_CODES bench: a timeout says nothing about the
+# credential, so benching on it would empty the pool over a slow generation.
 FAILURE_COOLDOWN_SECONDS = 300.0
 
 # Sentinel token id used when --access-token / env bypasses the OAuth token store.
@@ -69,11 +72,20 @@ class ClaudeCodeUpstreamError(RuntimeError):
 
 
 class ClaudeCodeUpstreamTimeoutError(RuntimeError):
-    """All usable tokens timed out while waiting for upstream response headers."""
+    """Every candidate token hit a transport timeout reaching upstream."""
 
 
 class ClaudeCodeTokenUnavailableError(RuntimeError):
-    """No usable OAuth token is available to serve the request."""
+    """No usable OAuth token is available to serve the request.
+
+    ``retry_after_seconds`` is set when the pool is only temporarily empty (every
+    token benched), so the caller can wait instead of treating it as a credential
+    problem.
+    """
+
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _now() -> float:
@@ -164,8 +176,12 @@ class ClaudeCodeTokenManager:
         # token id -> epoch seconds until which the token stays benched.
         self._failed_until: dict[str, float] = {}
 
-    async def acquire(self) -> tuple[str, str]:
+    async def acquire(self, *, exclude: Collection[str] = ()) -> tuple[str, str]:
         """Return (access_token, token_id) for the highest-priority usable token.
+
+        ``exclude`` holds tokens the caller already tried within this one request;
+        they are skipped without benching, which keeps a per-request retry loop
+        moving without shrinking the pool for everyone else.
 
         Raises RuntimeError if no token is usable (credentials import is removed, so
         the only sources are --access-token / env and the OAuth token store).
@@ -175,7 +191,7 @@ class ClaudeCodeTokenManager:
             return normalize_bearer_token(self._settings.access_token), ENV_ACCESS_TOKEN_ID
 
         async with self._lock:
-            return await self._select_usable_token()
+            return await self._select_usable_token(exclude)
 
     def mark_failed(self, token_id: str) -> None:
         """Bench a token for FAILURE_COOLDOWN_SECONDS so acquire() skips it meanwhile."""
@@ -254,12 +270,18 @@ class ClaudeCodeTokenManager:
     def _is_benched(self, token_id: str) -> bool:
         return self._failed_until.get(token_id, 0.0) > _now()
 
-    async def _select_usable_token(self) -> tuple[str, str]:
+    async def _select_usable_token(self, exclude: Collection[str] = ()) -> tuple[str, str]:
         errors: list[str] = []
+        bench_deadlines: list[float] = []
+        excluded = 0
         tokens = self._store.load_all() or []
 
         for token in tokens:
+            if token.id in exclude:
+                excluded += 1
+                continue
             if self._is_benched(token.id):
+                bench_deadlines.append(self._failed_until[token.id])
                 continue
             if is_token_fresh(token):
                 return token.access_token, token.id
@@ -272,17 +294,33 @@ class ClaudeCodeTokenManager:
                     errors.append(f"refresh failed for {token.id}: {exc}")
                     # Skip this token and try the next rather than aborting.
                     continue
-            # Stale and no refresh token: bench it so we don't keep re-selecting it.
-            self.mark_failed(token.id)
+            # Stale with no refresh token is a real credential problem, not a bench:
+            # re-evaluating it costs nothing, and reporting it every pass keeps the
+            # bench state meaning "upstream failure" only.
+            errors.append(f"{token.id} is expired and has no refresh token")
 
         if not tokens:
             raise ClaudeCodeTokenUnavailableError(
                 "No Claude Code OAuth tokens stored. Run `uv run proxy claude-code login`."
             )
-        detail = "; ".join(errors) if errors else "all stored tokens are expired/failed"
+        retry_after = max(0.0, min(bench_deadlines) - _now()) if bench_deadlines else None
+        if bench_deadlines and not errors:
+            # Nothing is wrong with the credentials; they are cooling down. Saying
+            # "token is required" here sends operators after the token store instead
+            # of the upstream failures that actually benched the pool.
+            raise ClaudeCodeTokenUnavailableError(
+                f"All {len(bench_deadlines)} stored Claude Code token(s) are benched after "
+                f"upstream auth/quota failures; retry in {retry_after:.0f}s. "
+                "See GET /usage for the per-token error.",
+                retry_after_seconds=retry_after,
+            )
+        detail = "; ".join(errors) if errors else f"{excluded} token(s) already tried this request"
+        if bench_deadlines:
+            detail = f"{detail}; {len(bench_deadlines)} benched for another {retry_after:.0f}s"
         raise ClaudeCodeTokenUnavailableError(
             "Claude Code token is required. Set --access-token / "
-            f"CLAUDE_CODE_PROXY_ACCESS_TOKEN, or run `uv run proxy claude-code login`. ({detail})"
+            f"CLAUDE_CODE_PROXY_ACCESS_TOKEN, or run `uv run proxy claude-code login`. ({detail})",
+            retry_after_seconds=retry_after,
         )
 
     async def _refresh(self, token: StoredClaudeCodeToken) -> StoredClaudeCodeToken:
@@ -568,9 +606,12 @@ class ClaudeCodeProxyService:
         payload = self._build_upstream_request(request)
         last_upstream: ClaudeCodeUpstreamError | None = None
         last_timeout: ClaudeCodeUpstreamTimeoutError | None = None
+        # Tokens that timed out within this request. They are skipped here instead of
+        # benched, because a timeout is a property of the request, not the credential.
+        timed_out: set[str] = set()
         while True:
             try:
-                token, token_id = await self._tokens.acquire()
+                token, token_id = await self._tokens.acquire(exclude=timed_out)
             except ClaudeCodeTokenUnavailableError:
                 # Every token was benched on upstream auth failures: surface the real
                 # upstream error rather than an opaque "no token available" 503.
@@ -580,15 +621,22 @@ class ClaudeCodeProxyService:
                     raise last_timeout from None
                 raise
             try:
-                async with httpx.AsyncClient(timeout=self._settings.request_timeout) as client:
+                async with httpx.AsyncClient(
+                    # A non-streaming generation on a large prompt stays silent for
+                    # minutes; a read timeout here kills a legitimate response and
+                    # the client cannot tell that from a real outage. The caller's own
+                    # request timeout is the intended bound, so leave read unbounded
+                    # and only cap connect/write/pool -- same policy as open_stream().
+                    timeout=httpx.Timeout(self._settings.request_timeout, read=None)
+                ) as client:
                     response = await client.post(
                         f"{self._settings.anthropic_base_url}/v1/messages",
                         headers=self._headers(token, request, client_betas),
                         json=payload,
                     )
-            except httpx.ReadTimeout as exc:
+            except httpx.TimeoutException as exc:
                 if self._should_failover_timeout(token_id):
-                    self._tokens.mark_failed(token_id)
+                    timed_out.add(token_id)
                     last_timeout = ClaudeCodeUpstreamTimeoutError(
                         f"Claude Code upstream timed out for token {token_id}"
                     )
