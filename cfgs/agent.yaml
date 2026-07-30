@@ -271,7 +271,7 @@ agents:
     llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
     llm_fallbacks:
       - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
-    llm_request_timeout: 180
+    llm_request_timeout: 600
     llm_transient_retries: 3
     warn_on_failure: true
     use_own_vision_ability: true
@@ -291,42 +291,42 @@ agents:
 
   init:
     llm: cfgs/llm/codex/gpt-5.5/thinking.yaml
-    llm_request_timeout: 120
+    llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   web_fetch_summarizer:
     enabled: true
     llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
-    llm_request_timeout: 30
+    llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   vision:
     enabled: true
     llm: cfgs/llm/openrouter/google-gemini-3-flash-preview/no-thinking.yaml
-    llm_request_timeout: 60
+    llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   skill_checker:
     enabled: false
     llm: cfgs/llm/codex/gpt-5.4-mini/no-thinking.yaml
-    llm_request_timeout: 30
+    llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   conscience:
     enabled: false
     llm: cfgs/llm/codex/gpt-5.4-mini/no-thinking.yaml
-    llm_request_timeout: 30
+    llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   worker:
     enabled: true
     llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
-    llm_request_timeout: 180
+    llm_request_timeout: 600
     llm_transient_retries: 2
     warn_on_failure: true
     max_turns: 30
@@ -347,7 +347,7 @@ agents:
       - cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
       - cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml
       - cfgs/llm/codex/gpt-5.5/low-thinking.yaml
-    llm_request_timeout: 120
+    llm_request_timeout: 600
     llm_transient_retries: 2 # transport/transient retry (timeout, 5xx, malformed provider payload)
     llm_rate_limit_retries: 5 # 429 retry with Retry-After/backoff
     warn_on_failure: true
@@ -356,7 +356,7 @@ agents:
   gui_manager:
     enabled: true
     llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
-    llm_request_timeout: 180
+    llm_request_timeout: 600
     llm_transient_retries: 20
     warn_on_failure: true
     max_steps: 50 # GUI agentic loop 最大步數
@@ -383,6 +383,6 @@ agents:
   gui_worker:
     enabled: true
     llm: cfgs/llm/openrouter/google-gemini-3-flash-preview/no-thinking.yaml
-    llm_request_timeout: 60
+    llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true

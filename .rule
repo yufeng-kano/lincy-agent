@@ -19,11 +19,6 @@
 - 使用 uv 管理專案
 - 所有 Python 命令使用 `uv run`，例如：`uv run python`, `uv run pytest`
 
-### 正式機與資料同步
-
-- `ssh lincy` 可連上實際運行 Lincy 的正式機。正式機上的程式碼與檔案**一律不准修改**，只能唯讀分析（log、session 紀錄等）
-- 本機 `~/Library/Mobile Documents/com~apple~CloudDocs/Lincy` 與正式機的 agent OS 目錄透過 iCloud 同步：改動本機這個資料夾等同改動正式機資料，同樣只准唯讀分析
-
 ## 核心原則
 
 像 Linus Torvalds 一樣：直接、務實、不過度工程。最好的程式碼是能運作、容易理解、不試圖太聰明的程式碼。
