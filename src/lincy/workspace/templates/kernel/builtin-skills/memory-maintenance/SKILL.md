@@ -52,4 +52,4 @@ Remove duplicate entries in memory/agent/long-term.md:
 
 ### 收尾檢查
 
-worker 回報後自己抽查：`read_file` 目標檔案與新建檔案，確認內容沒有遺失、對應 index.md 連結正確。結果不符時，把缺漏寫明重新委派修正。
+worker 為非同步：派工後照常回覆使用者，結果以 `[worker, from system]` 訊息送達。收到結果訊息後抽查：`read_file` 目標檔案與新建檔案，確認內容沒有遺失、對應 index.md 連結正確。結果不符時，把缺漏寫明重新委派修正。

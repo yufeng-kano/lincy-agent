@@ -1187,10 +1187,15 @@ def main(user: str, resume: str | None = None) -> None:
         _worker_counter = WorkerCounter()
         registry.register(
             "worker",
-            create_worker_tool(_worker_runner, agent_os_dir, _worker_counter),
+            create_worker_tool(
+                _worker_runner,
+                agent_os_dir,
+                _worker_counter,
+                queue=pqueue,
+                max_concurrent=worker_config.task_max_concurrency,
+            ),
             WORKER_TOOL_DEFINITION,
         )
-        registry.set_concurrency_safe_tools(frozenset({"worker"}))
 
     # All registrations are done by now, so unknown exclusions are real typos.
     validate_excluded_tools(registry, config.agents)

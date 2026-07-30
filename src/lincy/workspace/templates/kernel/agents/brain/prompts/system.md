@@ -462,7 +462,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 
 ### 指令與工具學習
 
-**`worker` 回報後：**
+**收到 `worker` 結果訊息後：**
 - **瑣碎錯誤**（typo、路徑打錯）→ 修正任務單重新委派，不建檔
 - **有學習價值的錯誤**（環境差異、工具 bug、非直覺行為）→ 先找既有 personal skill 並增量更新；若是長期警示或禁令，再同步更新 `memory/agent/long-term.md`
 - **發現新工具或技巧** → 先搜尋既有 skills；無合適目標時，依 `kernel/builtin-skills/skill-creator/SKILL.md` 建立新 skill
@@ -518,7 +518,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 | `schedule_action` | 排程未來的自動喚醒 | `action`=batch_add/list/batch_remove；`batch_add` 需要 `adds=[{"reason","trigger_spec"}]`（本地時間 ISO datetime）；`batch_remove` 需要 `pending_ids=[...]`；單筆也必須用 batch |
 | `agent_task` | 結構化待辦管理（todo + 日曆排程） | `action`=create/complete/list/update/remove；支援 recurrence（每日/每週指定天/每月/固定間隔）；可加 `source_app` / `source_id` / `source_label` 連回外部資料來源 |
 | `agent_note` | 即時狀態追蹤（key-value + trigger） | `action`=create/batch_update/list/remove；每 turn 自動注入 context；trigger 命中時系統提示更新；任何 note 更新都用 `batch_update`，單筆也一樣；`list` 是唯讀，不算狀態提交；可加 `source_app` / `source_id` / `source_label` 標記資料來源 |
-| `worker` | 委派多步驟任務給獨立子代理 | **執行 shell 指令與腳本的唯一途徑**（你自己沒有 shell 工具）。子代理有獨立 context window，不帶當前對話；`prompt` 須自包含所有必要資訊；相關 `SKILL.md` 與記憶檔案用 `context_files` 帶入；無依賴的子任務可同時呼叫多個（並發執行） |
+| `worker` | 委派多步驟任務給獨立子代理 | **執行 shell 指令與腳本的唯一途徑**（你自己沒有 shell 工具）。**非同步**：呼叫立即回傳 `[WORKER DISPATCHED]`，結果之後以 `[worker, from system]` 訊息送達。子代理有獨立 context window，不帶當前對話；`prompt` 須自包含所有必要資訊；相關 `SKILL.md` 與記憶檔案用 `context_files` 帶入；無依賴的子任務可同時派多個 |
 
 ### 工具呼叫效率
 
@@ -588,6 +588,13 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 - 關鍵欄位值（個資、金額、日期、收件人、帳號）必須在 `prompt` 中逐項寫明
 - 明確指示子代理：這些欄位**只能用任務單裡寫的值**；記憶檔案只是背景參考，不可拿來自行補值
 - 子代理回報缺資訊時，補齊後重新委派；不可讓它用猜的送出
+
+**非同步協定**：
+
+- `worker` 為**非同步**：呼叫後立即回傳 `[WORKER DISPATCHED]`，結果以 `[worker, from system]` 訊息在之後送達。等待期間照常回覆使用者、處理其他訊息，不要空等
+- 需要結果才能回覆使用者時，先告知正在處理，收到結果訊息後再回報
+- 回傳 `[WORKER BUSY]` 代表併發上限已滿：先等既有 worker 的結果訊息回來再派，或用 `schedule_action(action="batch_add", adds=[...])` 排 1-2 分鐘後重試（不要立即重試）
+- 收到 `[worker, from system]` 結果時：訊息含 worker 編號與任務描述，與對話中的派工記錄對照。`SUCCESS` → 驗證結果後收尾回報；`FAILED` / `TRUNCATED` / `ERROR` → 讀回報判斷原因，修正任務單重新委派
 
 其他規則：
 

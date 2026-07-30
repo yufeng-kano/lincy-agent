@@ -331,6 +331,7 @@ agents:
     warn_on_failure: true
     max_turns: 30
     max_context_tokens: 96000
+    task_max_concurrency: 2 # background worker tasks running at once
     excluded_tools:
       - gui_task
       - screenshot

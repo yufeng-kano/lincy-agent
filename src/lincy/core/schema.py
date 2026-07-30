@@ -1265,6 +1265,7 @@ class AgentConfig(StrictConfigModel):
     # Worker subagent specific
     max_turns: int = Field(default=30, ge=1)
     max_context_tokens: int = Field(default=96000, ge=1024)
+    task_max_concurrency: int = Field(default=2, ge=1)
     # Tools hidden from this agent's tool loop (schema + execution);
     # validated against the registry at startup.
     excluded_tools: list[str] = Field(default_factory=list)

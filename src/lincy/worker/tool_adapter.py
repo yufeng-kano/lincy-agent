@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..llm.schema import ToolDefinition, ToolParameter
 from .runner import WorkerResult, WorkerRunner
+
+if TYPE_CHECKING:
+    from ..agent.queue import PersistentPriorityQueue
+
+logger = logging.getLogger(__name__)
 
 WORKER_TOOL_DEFINITION = ToolDefinition(
     name="worker",
@@ -18,7 +24,13 @@ WORKER_TOOL_DEFINITION = ToolDefinition(
         "all available tools except gui_task and worker itself. "
         "Write the prompt as a self-contained task description -- "
         "the worker has NO access to the current conversation context. "
-        "Include all necessary details, file paths, and success criteria."
+        "Include all necessary details, file paths, and success criteria.\n"
+        "\n"
+        "Asynchronous: returns immediately with [WORKER DISPATCHED]. "
+        "The result is delivered later as a [worker, from system] message; "
+        "continue the conversation while waiting. "
+        "[WORKER BUSY] means the concurrency cap is reached -- wait for a "
+        "running worker's result before dispatching more."
     ),
     parameters={
         "prompt": ToolParameter(
@@ -81,8 +93,72 @@ def create_worker_tool(
     runner: WorkerRunner,
     agent_os_dir: Path,
     counter: WorkerCounter,
+    queue: "PersistentPriorityQueue | None" = None,
+    max_concurrent: int = 2,
 ) -> Callable[..., str]:
-    """Create worker tool callable bound to a WorkerRunner."""
+    """Create worker tool callable bound to a WorkerRunner.
+
+    When *queue* is provided the task runs in a background thread and the
+    result is injected into the queue as an ``InboundMessage``; the tool
+    returns immediately with a dispatch confirmation.  When *queue* is
+    ``None`` the task runs synchronously (test/direct call compatibility).
+
+    Concurrency is capped by *max_concurrent*; excess dispatches return
+    ``[WORKER BUSY]`` instead of queuing.
+    """
+    slots = threading.BoundedSemaphore(max_concurrent)
+
+    def _run(
+        prompt: str,
+        file_list: list[str] | None,
+        turns_override: int | None,
+        worker_label: str,
+    ) -> WorkerResult:
+        return runner.run(
+            prompt,
+            context_files=file_list,
+            max_turns_override=turns_override,
+            agent_os_dir=agent_os_dir,
+            worker_label=worker_label,
+        )
+
+    def _result_message(worker_label: str, description: str, body: str):
+        from ..agent.schema import InboundMessage
+
+        return InboundMessage(
+            channel="worker",
+            content=(
+                f"[Worker Task Result]\n"
+                f"Worker: {worker_label}\n"
+                f"Task: {description}\n\n"
+                f"{body}"
+            ),
+            priority=0,
+            sender="system",
+            metadata={
+                "worker_label": worker_label,
+                "worker_description": description,
+            },
+        )
+
+    def _run_background(
+        prompt: str,
+        description: str,
+        file_list: list[str] | None,
+        turns_override: int | None,
+        worker_label: str,
+    ) -> None:
+        try:
+            result = _run(prompt, file_list, turns_override, worker_label)
+            body = format_worker_result(result, description)
+            queue.put(_result_message(worker_label, description, body))  # type: ignore[union-attr]
+        except Exception as e:
+            logger.error("Background worker task error: %s", e)
+            queue.put(  # type: ignore[union-attr]
+                _result_message(worker_label, description, f"[WORKER ERROR] {e}")
+            )
+        finally:
+            slots.release()
 
     def worker_impl(
         prompt: str = "",
@@ -96,9 +172,6 @@ def create_worker_tool(
         if not description:
             description = "worker task"
 
-        worker_num = counter.next()
-        worker_label = f"worker-{worker_num}"
-
         file_list: list[str] | None = None
         if isinstance(context_files, list):
             file_list = [str(f) for f in context_files]
@@ -107,13 +180,35 @@ def create_worker_tool(
         if isinstance(max_turns, int) and max_turns > 0:
             turns_override = max_turns
 
-        result = runner.run(
-            prompt,
-            context_files=file_list,
-            max_turns_override=turns_override,
-            agent_os_dir=agent_os_dir,
-            worker_label=worker_label,
+        worker_num = counter.next()
+        worker_label = f"worker-{worker_num}"
+
+        # Synchronous fallback (no queue -- tests / direct call)
+        if queue is None:
+            result = _run(prompt, file_list, turns_override, worker_label)
+            return format_worker_result(result, description)
+
+        if not slots.acquire(blocking=False):
+            return (
+                "[WORKER BUSY] Too many worker tasks are already running. "
+                "Wait for a [worker, from system] result message before "
+                "dispatching more, or retry later via schedule_action."
+            )
+
+        thread = threading.Thread(
+            target=_run_background,
+            args=(prompt, description, file_list, turns_override, worker_label),
+            daemon=True,
         )
-        return format_worker_result(result, description)
+        try:
+            thread.start()
+        except Exception:
+            slots.release()
+            raise
+        return (
+            f"[WORKER DISPATCHED] {worker_label} ({description}) is running "
+            "in background. The result will be delivered as a "
+            "[worker, from system] message; continue without waiting."
+        )
 
     return worker_impl

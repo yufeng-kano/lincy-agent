@@ -2,6 +2,16 @@
 
 Brain 不再擁有 shell 工具，所有指令執行都必須委派 `worker` 子代理。
 
+## 非同步派工
+
+`worker` tool 為非同步，實作範本對齊 `gui_task`（`src/lincy/gui/tool_adapter.py`）：
+
+- Dispatch 立即回傳 `[WORKER DISPATCHED] worker-N (...)`，背景 daemon thread 跑 `WorkerRunner.run`
+- 完成後把 `format_worker_result` 的內容包成 `InboundMessage(channel="worker", sender="system")` 塞回 queue；brain 於後續 turn 收到 `[worker, from system]` 訊息再接續處理
+- 併發上限 `agents.worker.task_max_concurrency`（`BoundedSemaphore`；超過回傳 `[WORKER BUSY]`，不排隊）
+- `create_worker_tool(queue=None)` 時退回同步執行（測試 / 直接呼叫相容）
+- Registry 的 concurrency-safe 標記已移除：dispatch 是即時的，不需要 tool-loop 層的 ThreadPool 平行執行
+
 ## 機制：per-agent `excluded_tools`
 
 - `agents.{name}.excluded_tools`（`cfgs/agent.yaml`）是通用欄位，不再只給 worker 用
