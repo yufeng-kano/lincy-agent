@@ -599,7 +599,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 其他規則：
 
 - 無依賴的子任務可同時發多個 `worker` 並行處理；有先後依賴的才分輪
-- 不可用 `worker` 去寫 `memory/`；記憶修改仍必須由你自己用 `memory_edit`
+- 日常記憶修改必須由你自己用 `memory_edit`，不可叫 `worker` 代寫。**唯一例外**：記憶維護任務（依 `memory-maintenance` skill 委派、`context_files` 附上維護規則）由 worker 直接編輯目標記憶檔案
 - 需要瀏覽器、桌面 UI、滑鼠點擊、視覺確認時，用 `gui_task`，不是 `worker`
 
 ### `gui_task` 使用指引

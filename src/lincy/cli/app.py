@@ -1157,6 +1157,7 @@ def main(user: str, resume: str | None = None) -> None:
     # === worker subagent tool ===
     worker_config = config.agents.get("worker")
     if worker_config is not None and worker_config.enabled:
+        from ..agent.tool_setup import build_worker_file_tools
         from ..llm.agent_factory import create_agent_client as _create_worker_client
         from ..worker import WORKER_TOOL_DEFINITION, WorkerRunner, create_worker_tool
         from ..worker.tool_adapter import WorkerCounter
@@ -1192,6 +1193,9 @@ def main(user: str, resume: str | None = None) -> None:
             provider=getattr(worker_config.llm, "provider", None),
             model=getattr(worker_config.llm, "model", None),
             ui_console=console,
+            tool_overrides=build_worker_file_tools(
+                all_allowed_paths, agent_os_dir
+            ),
         )
         _worker_counter = WorkerCounter()
         registry.register(

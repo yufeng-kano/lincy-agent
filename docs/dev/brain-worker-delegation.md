@@ -12,6 +12,14 @@ Brain 不再擁有 shell 工具，所有指令執行都必須委派 `worker` 子
 - `create_worker_tool(queue=None)` 時退回同步執行（測試 / 直接呼叫相容）
 - Registry 的 concurrency-safe 標記已移除：dispatch 是即時的，不需要 tool-loop 層的 ThreadPool 平行執行
 
+## 記憶寫入政策
+
+- 共用 registry 的 `write_file` / `edit_file` 是 guarded 版：`memory/` 路徑一律回 `Use memory_edit` 錯誤（`tool_setup.py` 的 `_is_memory_path` guard）
+- Worker 透過 `WorkerRunner(tool_overrides=build_worker_file_tools(...))` 拿到**未加 memory guard** 的檔案工具：worker 是指定的記憶維護執行者，維護任務由 skill 的 rules.md 治理；若維持 guard，維護任務會被 memory_edit 限制卡死
+- Brain 的日常記憶修改仍必須走 `memory_edit`（planner 契約、warnings、editor session log）；brain prompt 明訂唯一例外是 memory-maintenance 委派
+- Worker prompt 有 fail-closed 規則：任務單沒有明確指派記憶維護（附規則）時，`memory/` 視為唯讀，需要寫入就停下回報
+- Shell 層的 memory 寫入（`>>`、`tee`、`sed -i`、`rm`、`mv`）對 brain 與 worker 都維持封鎖
+
 ## CLI 顯示
 
 - `WorkerRunner(ui_console=...)` 接主 console；worker 每個內部 tool call / result 以 `worker-N tool_name` 為名即時顯示在 TUI（`UiEventConsole.print_subagent_tool_call/result`）

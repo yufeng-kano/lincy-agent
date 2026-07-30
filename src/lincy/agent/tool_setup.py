@@ -102,6 +102,30 @@ def _is_memory_path(path: str, *, agent_os_dir: Path) -> bool:
         return False
 
 
+def build_worker_file_tools(
+    allowed_paths: list[str],
+    agent_os_dir: Path,
+) -> dict[str, tuple[Callable[..., str], object]]:
+    """File tools without the memory-write guard, for the worker subagent.
+
+    The worker is the designated memory-maintenance executor: dispatched
+    maintenance tasks carry their own rules (memory-maintenance skill) and
+    edit memory files directly, so the shared-registry guard that forces
+    memory_edit would deadlock it. The brain's own registry keeps the
+    guarded versions; shell-level memory writes stay blocked for everyone.
+    """
+    return {
+        "write_file": (
+            create_write_file(allowed_paths, agent_os_dir),
+            WRITE_FILE_DEFINITION,
+        ),
+        "edit_file": (
+            create_edit_file(allowed_paths, agent_os_dir),
+            EDIT_FILE_DEFINITION,
+        ),
+    }
+
+
 def setup_tools(
     tools_config: ToolsConfig,
     agent_os_dir: Path,

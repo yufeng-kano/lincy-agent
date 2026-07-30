@@ -53,12 +53,14 @@ class WorkerRunner:
         provider: str | None = None,
         model: str | None = None,
         ui_console: Any = None,
+        tool_overrides: dict[str, tuple[Any, Any]] | None = None,
     ) -> None:
         self._client = client
         self._source_registry = source_registry
         self._excluded_tools = excluded_tools
         self._system_prompt = system_prompt
         self._ui_console = ui_console
+        self._tool_overrides = tool_overrides or {}
         self._max_turns = max_turns
         self._max_context_tokens = max_context_tokens
         self._cache_control = cache_control
@@ -67,10 +69,19 @@ class WorkerRunner:
         self._model = model
 
     def _build_filtered_registry(self) -> ToolRegistry:
-        """Clone tools from source registry, excluding blocked names."""
+        """Clone tools from source registry, excluding blocked names.
+
+        Names present in tool_overrides are registered with the override
+        implementation instead (e.g. file tools without the memory guard).
+        """
         filtered = ToolRegistry()
         for name, (func, defn) in self._source_registry._tools.items():
-            if name not in self._excluded_tools:
+            if name in self._excluded_tools:
+                continue
+            override = self._tool_overrides.get(name)
+            if override is not None:
+                filtered.register(name, override[0], override[1])
+            else:
                 filtered.register(name, func, defn)
         return filtered
 

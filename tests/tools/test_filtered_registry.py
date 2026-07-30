@@ -100,3 +100,79 @@ class TestValidateExcludedTools:
         }
 
         validate_excluded_tools(_source_registry(), agents)
+
+
+class TestWorkerToolOverrides:
+    def test_override_replaces_source_implementation(self):
+        source = _source_registry()
+        override_defn = ToolDefinition(
+            name="read_file", description="unguarded", parameters={},
+        )
+        runner = WorkerRunner(
+            client=None,
+            source_registry=source,
+            excluded_tools=frozenset(),
+            system_prompt="worker",
+            tool_overrides={"read_file": (lambda: "override ran", override_defn)},
+        )
+
+        worker_registry = runner._build_filtered_registry()
+        result = worker_registry.execute(
+            ToolCall(id="c1", name="read_file", arguments={})
+        )
+        assert result.content == "override ran"
+        # Source registry keeps the original implementation.
+        original = source.execute(ToolCall(id="c2", name="read_file", arguments={}))
+        assert original.content == "ran read_file"
+
+    def test_override_ignored_for_excluded_tool(self):
+        source = _source_registry()
+        runner = WorkerRunner(
+            client=None,
+            source_registry=source,
+            excluded_tools=frozenset({"read_file"}),
+            system_prompt="worker",
+            tool_overrides={
+                "read_file": (
+                    lambda: "override ran",
+                    ToolDefinition(name="read_file", description="x", parameters={}),
+                )
+            },
+        )
+
+        worker_registry = runner._build_filtered_registry()
+        assert worker_registry.has_tool("read_file") is False
+
+
+class TestBuildWorkerFileTools:
+    def test_worker_file_tools_can_write_memory(self, tmp_path):
+        from lincy.agent.tool_setup import build_worker_file_tools
+
+        agent_os_dir = tmp_path / "agent"
+        (agent_os_dir / "memory" / "agent").mkdir(parents=True)
+        tools = build_worker_file_tools([str(tmp_path)], agent_os_dir)
+
+        write_file, write_defn = tools["write_file"]
+        edit_file, edit_defn = tools["edit_file"]
+        assert write_defn.name == "write_file"
+        assert edit_defn.name == "edit_file"
+
+        target = agent_os_dir / "memory" / "agent" / "long-term.md"
+        write_result = write_file(str(target), "# Long term\n- entry\n")
+        assert "Error" not in write_result
+        assert target.read_text() == "# Long term\n- entry\n"
+
+        edit_result = edit_file(str(target), "- entry", "- entry v2", False)
+        assert "Error" not in edit_result
+        assert "- entry v2" in target.read_text()
+
+    def test_worker_file_tools_respect_allowed_paths(self, tmp_path):
+        from lincy.agent.tool_setup import build_worker_file_tools
+
+        agent_os_dir = tmp_path / "agent"
+        agent_os_dir.mkdir()
+        tools = build_worker_file_tools([str(agent_os_dir)], agent_os_dir)
+
+        write_file, _ = tools["write_file"]
+        result = write_file("/etc/lincy-test-forbidden.txt", "nope")
+        assert "not allowed" in result

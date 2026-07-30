@@ -1242,3 +1242,34 @@ class TestM0165WorkerAsyncDispatch:
 
         for rel in files:
             assert (kernel_dir / rel).read_text() == f"new::{rel}"
+
+
+class TestM0166WorkerMemoryFileAccess:
+    """Tests for worker memory-file access prompt migration."""
+
+    def test_copies_brain_and_worker_prompts(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+
+        files = [
+            "agents/brain/prompts/system.md",
+            "agents/worker/prompts/system.md",
+        ]
+
+        for rel in files:
+            src = templates_dir / rel
+            dst = kernel_dir / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"new::{rel}")
+            dst.write_text(f"old::{rel}")
+
+        from lincy.workspace.migrations.m0166_worker_memory_file_access import (
+            M0166WorkerMemoryFileAccess,
+        )
+
+        migration = M0166WorkerMemoryFileAccess()
+        migration.upgrade(kernel_dir, templates_dir)
+
+        for rel in files:
+            assert (kernel_dir / rel).read_text() == f"new::{rel}"

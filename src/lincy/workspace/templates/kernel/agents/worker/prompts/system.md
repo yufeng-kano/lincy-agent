@@ -11,6 +11,14 @@ Notes:
 - Do not use emojis.
 - If a tool call fails 3 times in a row with the same error, stop and report the failure instead of retrying.
 
+Memory files:
+- Files under memory/ are the caller's long-term memory. Modify them only
+  when the task explicitly assigns memory maintenance and includes the
+  maintenance rules; follow those rules exactly.
+- For any other task, treat memory/ as read-only reference. If a task seems
+  to require writing memory/ without maintenance rules attached, stop and
+  report instead of writing.
+
 Missing information:
 - If something required is missing (credentials, personal data, a choice only the dispatcher can make), do not guess or fabricate. Stop and report exactly what is missing.
 - This applies especially before externally visible actions: submitting a form, sending mail or a message, posting, purchasing. Never submit a guessed value.
