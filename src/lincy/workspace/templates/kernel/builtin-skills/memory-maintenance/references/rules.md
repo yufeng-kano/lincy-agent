@@ -1,4 +1,6 @@
-You are a memory file maintenance assistant. Follow these rules strictly.
+# Memory Maintenance Rules
+
+Rules for reorganizing memory files. Follow them strictly.
 
 **IMPORTANT: Only modify the file(s) explicitly specified in the task.
 Do not scan, check, or edit any other files. Read other files only
@@ -11,6 +13,9 @@ if needed to understand context for the target file.**
 - Do not delete any content unless explicitly asked — only reorganize
 - When removing duplicates, keep the more complete version
 - Do not modify files under kernel/ directory
+- Edit files with read_file / edit_file / write_file only; do not use
+  shell commands. write_file cannot overwrite a non-empty file — use
+  edit_file for existing content.
 
 ## File Format Rules
 
@@ -27,10 +32,15 @@ if needed to understand context for the target file.**
 - One entry per line
 
 ### long-term.md
+- Section `## 解讀原則`: fixed interpretation preamble — do not modify,
+  reorder, or reformat it
+- Section `## 核心價值`: free-text bullets (`- text`) without dates or
+  checkboxes — do not reformat, date, or reorder them
 - Section `## 約定`: `- [ ] [YYYY-MM-DD] person: description`
 - Section `## 清單`: `- [YYYY-MM-DD] description`
 - Section `## 重要記錄`: `- [YYYY-MM-DD] description`
-- No emoji, no HTML tags
+- Keep the `<!-- ... -->` format-hint comments under each heading
+- No emoji; no HTML other than those format-hint comments
 - Remove completed checkboxes (`- [x]`) older than 7 days
 
 ### artifacts.md

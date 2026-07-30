@@ -1165,3 +1165,49 @@ class TestM0163BrainShellDelegation:
 
         for rel in files:
             assert (kernel_dir / rel).read_text() == f"new::{rel}"
+
+
+class TestM0164MemoryMaintenanceWorkerNative:
+    """Tests for worker-native memory maintenance skill migration."""
+
+    def test_copies_skill_and_rules(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+
+        files = [
+            "builtin-skills/memory-maintenance/SKILL.md",
+            "builtin-skills/memory-maintenance/references/rules.md",
+        ]
+
+        for rel in files:
+            src = templates_dir / rel
+            dst = kernel_dir / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"new::{rel}")
+            dst.write_text(f"old::{rel}")
+
+        from lincy.workspace.migrations.m0164_memory_maintenance_worker_native import (
+            M0164MemoryMaintenanceWorkerNative,
+        )
+
+        migration = M0164MemoryMaintenanceWorkerNative()
+        migration.upgrade(kernel_dir, templates_dir)
+
+        for rel in files:
+            assert (kernel_dir / rel).read_text() == f"new::{rel}"
+
+    def test_missing_template_is_noop(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+        kernel_dir.mkdir()
+        templates_dir.mkdir()
+
+        from lincy.workspace.migrations.m0164_memory_maintenance_worker_native import (
+            M0164MemoryMaintenanceWorkerNative,
+        )
+
+        migration = M0164MemoryMaintenanceWorkerNative()
+        migration.upgrade(kernel_dir, templates_dir)
+
+        assert not (kernel_dir / "builtin-skills").exists()

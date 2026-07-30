@@ -171,6 +171,7 @@ from .m0160_ax_first_gui import M0160AxFirstGui
 from .m0161_backup_scope_kernel_only import M0161BackupScopeKernelOnly
 from .m0162_discord_inbound_structure import M0162DiscordInboundStructure
 from .m0163_brain_shell_delegation import M0163BrainShellDelegation
+from .m0164_memory_maintenance_worker_native import M0164MemoryMaintenanceWorkerNative
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -334,4 +335,5 @@ ALL_MIGRATIONS = [
     M0161BackupScopeKernelOnly(),
     M0162DiscordInboundStructure(),
     M0163BrainShellDelegation(),
+    M0164MemoryMaintenanceWorkerNative(),
 ]
