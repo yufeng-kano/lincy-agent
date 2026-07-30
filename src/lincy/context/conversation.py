@@ -105,6 +105,56 @@ class Conversation:
         """Update the append callback used for future messages."""
         self._on_message = on_message
 
+    def remove_dangling_tool_calls(self) -> int:
+        """Drop tool-call records whose results never arrived, and orphans.
+
+        A hard interruption (process kill, crash) can persist an assistant
+        tool-call entry without its tool results; provider APIs reject such
+        history outright. Remove the result-less tool calls (dropping the
+        entry entirely when nothing else remains) plus any tool result whose
+        call no longer exists. Returns the number of repaired entries.
+        """
+        result_ids = {
+            entry.message.tool_call_id
+            for entry in self._messages
+            if entry.role == "tool" and entry.message.tool_call_id
+        }
+
+        repaired: list[SessionEntry] = []
+        kept_call_ids: set[str] = set()
+        changed = 0
+        for entry in self._messages:
+            msg = entry.message
+            if msg.role != "assistant" or not msg.tool_calls:
+                repaired.append(entry)
+                continue
+            kept_calls = [tc for tc in msg.tool_calls if tc.id in result_ids]
+            if len(kept_calls) == len(msg.tool_calls):
+                kept_call_ids.update(tc.id for tc in msg.tool_calls)
+                repaired.append(entry)
+                continue
+            changed += 1
+            if not kept_calls and not msg.content:
+                continue
+            kept_call_ids.update(tc.id for tc in kept_calls)
+            new_msg = msg.model_copy(update={"tool_calls": kept_calls or None})
+            repaired.append(entry.model_copy(update={"message": new_msg}))
+
+        final: list[SessionEntry] = []
+        for entry in repaired:
+            if (
+                entry.role == "tool"
+                and entry.message.tool_call_id
+                and entry.message.tool_call_id not in kept_call_ids
+            ):
+                changed += 1
+                continue
+            final.append(entry)
+
+        if changed:
+            self._messages = final
+        return changed
+
     def compact(self, preserve_turns: int) -> int:
         """Remove old turns, keeping only the last preserve_turns.
 

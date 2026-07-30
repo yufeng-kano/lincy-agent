@@ -41,6 +41,7 @@
 
 - `requests.jsonl` / `responses.jsonl` 記的是**本專案 normalized LLM 介面**，不是 provider HTTP payload dump
 - 目前 resume 仍以 `messages.jsonl` 為主；`checkpoints/latest.json` 先作為 debug 與之後遷移用
+- 硬中斷（kill / crash）可能讓 `messages.jsonl` 留下沒有 tool result 的 assistant tool call；resume 載入與每個 turn 開始時會呼叫 `Conversation.remove_dangling_tool_calls()` 直接移除這類記錄（含反向的孤兒 tool result），並 `rewrite_messages` 回寫磁碟——否則 provider API 會拒收這種歷史。修復後 render cache 比對不上會自動作廢，屬預期行為
 - retry / failover 若發生在 client wrapper 內部，目前只保留最外層 request/response 或 error，不逐次展開每個底層 transport attempt
 
 ## 目前掛點

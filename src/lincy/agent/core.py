@@ -1449,6 +1449,15 @@ class AgentCore:
             Turn completion status for queue-level ack / requeue decisions.
         """
         self._last_turn_failure_category = None
+        # Guard against dangling tool calls left by a previous hard
+        # interruption; providers reject tool_use without a tool result.
+        dangling = self.conversation.remove_dangling_tool_calls()
+        if dangling:
+            logger.warning(
+                "Removed %d dangling tool-call record(s) before turn", dangling
+            )
+            if self.session_mgr is not None:
+                self.session_mgr.rewrite_messages(self.conversation.get_messages())
         initial_turn_metadata = (
             dict(turn_metadata)
             if turn_metadata is not None

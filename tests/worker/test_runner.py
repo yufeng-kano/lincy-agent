@@ -89,3 +89,71 @@ def test_worker_runner_drops_old_tool_turns_when_context_budget_is_small():
     ]
     assert first_tool_result not in tool_outputs
     assert second_tool_result in tool_outputs
+
+
+class _RecordingConsole:
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+        self.results: list[tuple[str, str]] = []
+
+    def print_subagent_tool_call(self, label, tool_call):
+        self.calls.append((label, tool_call.name))
+
+    def print_subagent_tool_result(self, label, tool_call, content):
+        self.results.append((label, tool_call.name))
+
+
+class _ExplodingConsole:
+    def print_subagent_tool_call(self, label, tool_call):
+        raise RuntimeError("ui down")
+
+    def print_subagent_tool_result(self, label, tool_call, content):
+        raise RuntimeError("ui down")
+
+
+def _tool_call_response() -> LLMResponse:
+    return LLMResponse(
+        content=None,
+        tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+        total_tokens=1,
+    )
+
+
+def test_worker_runner_surfaces_tool_activity_to_console():
+    client = _FakeWorkerClient([
+        _tool_call_response(),
+        LLMResponse(content="done", total_tokens=1),
+    ])
+    console = _RecordingConsole()
+    runner = WorkerRunner(
+        client,
+        _build_registry(),
+        frozenset(),
+        "system prompt",
+        ui_console=console,
+    )
+
+    result = runner.run("Say hi", worker_label="worker-9")
+
+    assert result.success is True
+    assert console.calls == [("worker-9", "echo")]
+    assert console.results == [("worker-9", "echo")]
+
+
+def test_worker_runner_survives_console_failure():
+    client = _FakeWorkerClient([
+        _tool_call_response(),
+        LLMResponse(content="done", total_tokens=1),
+    ])
+    runner = WorkerRunner(
+        client,
+        _build_registry(),
+        frozenset(),
+        "system prompt",
+        ui_console=_ExplodingConsole(),
+    )
+
+    result = runner.run("Say hi", worker_label="worker-9")
+
+    assert result.success is True
+    assert result.text == "done"

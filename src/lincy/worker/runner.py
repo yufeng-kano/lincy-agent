@@ -52,11 +52,13 @@ class WorkerRunner:
         sink: Any = None,
         provider: str | None = None,
         model: str | None = None,
+        ui_console: Any = None,
     ) -> None:
         self._client = client
         self._source_registry = source_registry
         self._excluded_tools = excluded_tools
         self._system_prompt = system_prompt
+        self._ui_console = ui_console
         self._max_turns = max_turns
         self._max_context_tokens = max_context_tokens
         self._cache_control = cache_control
@@ -91,6 +93,25 @@ class WorkerRunner:
                 parts.append(f"[Context: {path_str}]\n(file not found)\n[/Context]")
         parts.append(prompt)
         return "\n\n".join(parts)
+
+    def _print_tool_call(self, worker_label: str, tool_call: Any) -> None:
+        """Surface worker tool activity in the CLI; never break the run."""
+        if self._ui_console is None:
+            return
+        try:
+            self._ui_console.print_subagent_tool_call(worker_label, tool_call)
+        except Exception:
+            logger.debug("Worker %s UI tool-call emit failed", worker_label, exc_info=True)
+
+    def _print_tool_result(
+        self, worker_label: str, tool_call: Any, content: Any,
+    ) -> None:
+        if self._ui_console is None:
+            return
+        try:
+            self._ui_console.print_subagent_tool_result(worker_label, tool_call, content)
+        except Exception:
+            logger.debug("Worker %s UI tool-result emit failed", worker_label, exc_info=True)
 
     def _wrap_client(self, worker_label: str) -> LLMClient:
         """Wrap the base client with per-invocation debug logging."""
@@ -254,7 +275,9 @@ class WorkerRunner:
                 ))
 
                 for tc in response.tool_calls:
+                    self._print_tool_call(worker_label, tc)
                     result = registry.execute(tc)
+                    self._print_tool_result(worker_label, tc, result.content)
                     messages.append(make_tool_result_message(
                         tool_call_id=tc.id,
                         name=tc.name,

@@ -486,6 +486,14 @@ def main(user: str, resume: str | None = None) -> None:
         messages = session_mgr.load(resume_id)
         conversation = Conversation(on_message=session_mgr.append_message)
         conversation.replace_messages(messages)
+        # A killed process can leave tool calls without results on disk;
+        # such history is rejected by provider APIs.
+        repaired = conversation.remove_dangling_tool_calls()
+        if repaired:
+            session_mgr.rewrite_messages(conversation.get_messages())
+            console.print_info(
+                f"Removed {repaired} interrupted tool-call record(s)"
+            )
         console.print_info(
             f"Resumed session {resume_id} ({len(messages)} messages)"
         )
@@ -1183,6 +1191,7 @@ def main(user: str, resume: str | None = None) -> None:
             sink=session_mgr,
             provider=getattr(worker_config.llm, "provider", None),
             model=getattr(worker_config.llm, "model", None),
+            ui_console=console,
         )
         _worker_counter = WorkerCounter()
         registry.register(

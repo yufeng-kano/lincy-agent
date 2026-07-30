@@ -12,6 +12,12 @@ Brain 不再擁有 shell 工具，所有指令執行都必須委派 `worker` 子
 - `create_worker_tool(queue=None)` 時退回同步執行（測試 / 直接呼叫相容）
 - Registry 的 concurrency-safe 標記已移除：dispatch 是即時的，不需要 tool-loop 層的 ThreadPool 平行執行
 
+## CLI 顯示
+
+- `WorkerRunner(ui_console=...)` 接主 console；worker 每個內部 tool call / result 以 `worker-N tool_name` 為名即時顯示在 TUI（`UiEventConsole.print_subagent_tool_call/result`）
+- 顯示遵守 `tui.show_tool_use` 設定；失敗與帶 warning 的 result 一律顯示
+- UI 發送包在 try/except：顯示層故障不得中斷 worker 執行
+
 ## 機制：per-agent `excluded_tools`
 
 - `agents.{name}.excluded_tools`（`cfgs/agent.yaml`）是通用欄位，不再只給 worker 用

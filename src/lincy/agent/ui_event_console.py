@@ -154,6 +154,37 @@ class UiEventConsole:
             )
         )
 
+    def print_subagent_tool_call(self, label: str, tool_call: ToolCall) -> None:
+        """Show a subagent's tool call under its own label (e.g. worker-3)."""
+        if not self.show_tool_use:
+            return
+        text = format_tool_call(tool_call, gui_intent_max_chars=self.gui_intent_max_chars)
+        self._ui.emit(
+            ToolCallEvent(name=f"{label} {tool_call.name}", summary=text)
+        )
+
+    def print_subagent_tool_result(
+        self, label: str, tool_call: ToolCall, result: str | list[ContentPart],
+    ) -> None:
+        """Show a subagent's tool result under its own label."""
+        if isinstance(result, list):
+            display_result = content_to_text(result)
+        else:
+            display_result = result
+        failed = self._is_failed_tool_result(display_result)
+        warn = self._has_tool_warnings(display_result)
+        if not self.show_tool_use and not (failed or warn):
+            return
+        text = format_tool_result(tool_call, display_result)
+        self._ui.emit(
+            ToolResultEvent(
+                name=f"{label} {tool_call.name}",
+                summary=text,
+                failed=failed,
+                warning=warn,
+            )
+        )
+
     def print_shell_stream_line(self, line: str) -> None:
         if not self.show_tool_use:
             return
