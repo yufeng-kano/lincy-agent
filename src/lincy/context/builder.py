@@ -12,6 +12,7 @@ from ..send_message_batch_guidance import (
 )
 from ..turn_timing import build_turn_timing_notice, parse_turn_timing_info
 from ..timezone_utils import localise as tz_localise
+from .cache_breakpoints import build_cache_control
 from .conversation import Conversation
 
 if TYPE_CHECKING:
@@ -529,12 +530,7 @@ class ContextBuilder:
 
     def _cache_control_dict(self) -> dict[str, str] | None:
         """Build cache_control dict from cache_ttl setting."""
-        if not self.cache_ttl:
-            return None
-        ctrl: dict[str, str] = {"type": "ephemeral"}
-        if self.cache_ttl != "ephemeral":
-            ctrl["ttl"] = self.cache_ttl
-        return ctrl
+        return build_cache_control(self.cache_ttl)
 
     @staticmethod
     def _find_last_user_message_index(messages: list[Message]) -> int | None:

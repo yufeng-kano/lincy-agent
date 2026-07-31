@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from ..context.cache_breakpoints import advance_cache_breakpoint
 from ..llm.base import LLMClient
 from ..llm.schema import (
     ContentPart,
@@ -389,6 +390,7 @@ class GUIManager:
         max_tree_nodes: int | None = None,
         max_tree_depth: int | None = None,
         tool_timeout: float = _DEFAULT_TOOL_TIMEOUT,
+        cache_control: dict[str, str] | None = None,
     ):
         self.client = client
         self.system_prompt = system_prompt
@@ -405,6 +407,7 @@ class GUIManager:
         self._max_tree_nodes = max_tree_nodes
         self._max_tree_depth = max_tree_depth
         self._tool_timeout = tool_timeout
+        self._cache_control = cache_control
         self._last_screenshot = None
         self._capture_temp = os.path.join(
             tempfile.gettempdir(), f"lincy_capture_{os.getpid()}.png",
@@ -453,7 +456,11 @@ class GUIManager:
         if app_prompt_text:
             system_content += "\n\n## App-Specific Guide\n\n" + app_prompt_text
 
-        messages = [Message(role="system", content=system_content)]
+        messages = [Message(
+            role="system",
+            content=system_content,
+            cache_control=self._cache_control,
+        )]
 
         if resume_context:
             if resume_last_app:
@@ -496,7 +503,10 @@ class GUIManager:
         registry = self._build_registry()
         try:
             self._raise_if_cancel_requested()
-            response = self.client.chat_with_tools(messages, self._tools)
+            response = self.client.chat_with_tools(
+                advance_cache_breakpoint(messages),
+                self._tools,
+            )
             self._raise_if_cancel_requested()
 
             while response.has_tool_calls() and steps < self.max_steps:
@@ -574,7 +584,10 @@ class GUIManager:
                     )
                 self._collapse_stale_states(messages)
                 self._raise_if_cancel_requested()
-                response = self.client.chat_with_tools(messages, self._tools)
+                response = self.client.chat_with_tools(
+                    advance_cache_breakpoint(messages),
+                    self._tools,
+                )
                 self._raise_if_cancel_requested()
 
             # Loop ended without done/fail
@@ -695,7 +708,10 @@ class GUIManager:
                 role="user",
                 content=_MAX_STEPS_REPORT_PROMPT,
             ))
-            response = self.client.chat_with_tools(messages, [])
+            response = self.client.chat_with_tools(
+                advance_cache_breakpoint(messages),
+                [],
+            )
             self._raise_if_cancel_requested()
             return response.content or ""
         except _GUICommandCancelled:

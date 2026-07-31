@@ -378,6 +378,9 @@ agents:
       max_tree_nodes: null # 單次 get_app_state 的 tree 節點上限（null = server 預設）
       max_tree_depth: null # tree 深度上限（null = server 預設）
       tool_timeout: 90 # 單一 MCP 工具呼叫逾時（秒）
+    cache:
+      enabled: true
+      ttl: "1h"
 
   # gui_worker 僅供 brain 的 screenshot_by_subagent 使用；
   # GUI 任務 loop（gui_manager）已改為 AX-first，不再依賴 worker

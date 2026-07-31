@@ -21,6 +21,10 @@ from ..agent.shared_state_replay import rebuild_shared_state_from_sessions
 from ..agent.ui_event_stream import FanoutUiSink, UiEventExportSink, UiEventStore
 from ..brain_prompt_policy import BrainPromptPolicy
 from ..context import ContextBuilder, Conversation
+from ..context.cache_breakpoints import (
+    build_cache_control,
+    resolve_breakpoint_cache_ttl,
+)
 from ..core import load_config
 from ..core.schema import CodexConfig, CopilotConfig, GrokConfig, OpenAIConfig
 from ..llm import create_agent_client
@@ -531,32 +535,13 @@ def main(user: str, resume: str | None = None) -> None:
     # Prompt cache: two mechanisms depending on provider.
     # Breakpoint providers use cache_control annotations on content blocks.
     # OpenAI uses automatic prefix caching + request-level prompt_cache_retention.
-    _BREAKPOINT_CACHE_PROVIDERS = {"openrouter", "claude_code", "anthropic"}
-    # Max TTL each breakpoint provider actually supports (clamp if configured higher)
-    _BREAKPOINT_MAX_TTL = {"openrouter": "1h", "claude_code": "1h", "anthropic": "1h"}
-    _REQUEST_CACHE_PROVIDERS = {"openai"}
-    # TTL ordering for clamp comparison
-    _TTL_ORDER = {"ephemeral": 0, "1h": 1, "24h": 2}
-
     brain_cache = brain_agent_config.cache
     brain_provider = brain_agent_config.llm.provider
-    cache_ttl: str | None = None
-
-    if brain_cache.enabled:
-        configured_ttl = brain_cache.ttl
-        if brain_provider in _BREAKPOINT_CACHE_PROVIDERS:
-            max_ttl = _BREAKPOINT_MAX_TTL.get(brain_provider, "ephemeral")
-            if _TTL_ORDER.get(configured_ttl, 0) > _TTL_ORDER.get(max_ttl, 0):
-                logging.getLogger(__name__).warning(
-                    "cache.ttl %r exceeds %s provider max %r, clamped",
-                    configured_ttl, brain_provider, max_ttl,
-                )
-                cache_ttl = max_ttl
-            else:
-                cache_ttl = configured_ttl
-        elif brain_provider in _REQUEST_CACHE_PROVIDERS:
-            pass  # OpenAI: automatic prefix caching, no breakpoints needed
-            # prompt_cache_retention already computed above for client creation
+    cache_ttl = resolve_breakpoint_cache_ttl(
+        provider=brain_provider,
+        enabled=brain_cache.enabled,
+        configured_ttl=brain_cache.ttl,
+    )
     builder = ContextBuilder(
         system_prompt=system_prompt,
         agent_os_dir=agent_os_dir,
@@ -786,6 +771,13 @@ def main(user: str, resume: str | None = None) -> None:
                 max_tree_nodes=gm_config.ax.max_tree_nodes,
                 max_tree_depth=gm_config.ax.max_tree_depth,
                 tool_timeout=gm_config.ax.tool_timeout,
+                cache_control=build_cache_control(
+                    resolve_breakpoint_cache_ttl(
+                        provider=getattr(gm_config.llm, "provider", ""),
+                        enabled=gm_config.cache.enabled,
+                        configured_ttl=gm_config.cache.ttl,
+                    )
+                ),
             )
 
         # Vision worker survives only as the describer behind
@@ -1184,11 +1176,13 @@ def main(user: str, resume: str | None = None) -> None:
             ),
         )
         _worker_prompt = workspace.get_system_prompt("worker")
-        _worker_cache_ctrl: dict[str, str] | None = None
-        if worker_config.cache.enabled:
-            _worker_cache_ctrl = {"type": "ephemeral"}
-            if worker_config.cache.ttl != "ephemeral":
-                _worker_cache_ctrl["ttl"] = worker_config.cache.ttl
+        _worker_cache_ctrl = build_cache_control(
+            resolve_breakpoint_cache_ttl(
+                provider=getattr(worker_config.llm, "provider", ""),
+                enabled=worker_config.cache.enabled,
+                configured_ttl=worker_config.cache.ttl,
+            )
+        )
 
         # Always exclude worker itself to prevent recursion.
         _excluded = frozenset(worker_config.excluded_tools) | {"worker"}

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..context.cache_breakpoints import advance_cache_breakpoint
 from ..llm.base import LLMClient
 from ..llm.schema import Message, make_tool_result_message
 from ..session.debug_client import DebugLoggingLLMClient
@@ -270,7 +271,9 @@ class WorkerRunner:
         started_ms = _now_ms()
 
         try:
-            request_messages = self._compact_messages(messages, worker_label)
+            request_messages = advance_cache_breakpoint(
+                self._compact_messages(messages, worker_label)
+            )
             response = client.chat_with_tools(request_messages, tool_defs)
             tokens_used += response.total_tokens or 0
 
@@ -296,7 +299,9 @@ class WorkerRunner:
                     ))
 
                 turns += 1
-                request_messages = self._compact_messages(messages, worker_label)
+                request_messages = advance_cache_breakpoint(
+                    self._compact_messages(messages, worker_label)
+                )
                 response = client.chat_with_tools(request_messages, tool_defs)
                 tokens_used += response.total_tokens or 0
 

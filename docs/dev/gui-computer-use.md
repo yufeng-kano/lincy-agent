@@ -49,7 +49,7 @@ MCP 工具全帶 `app` 參數（英文名或 bundle id；本地化名稱解析�
 
 1. **舊快照折疊**：`_collapse_stale_states()` 只保留最近 `keep_full_states`（預設 2）份完整多模態 tool result；更舊的**去圖、文字截到 `stale_text_max_chars`（預設 2000）**——token 大頭（截圖、巨樹尾部）砍掉，但已觀察到的內容保留給讀取/回報型任務。每輪只有「剛過期的那一份」變動，已折疊前綴保持 byte-stable，對 prompt cache 友善。
 2. **樹上限**：`ax.max_tree_nodes` / `ax.max_tree_depth` 傳入 `get_app_state`（預設 null = server 預設）。
-3. Prompt cache 沿用 gui_manager 的 cache 設定（claude_code provider）。
+3. **Prompt cache（對齊 brain）**：`agents.gui_manager.cache` 啟用後，組裝層用 `resolve_breakpoint_cache_ttl` 夾 TTL（claude_code / anthropic / openrouter 上限 `1h`），system message 掛 `cache_control`；每次 tool-loop request 前呼叫共用的 `advance_cache_breakpoint`，把 conversation-tier breakpoint 推到最新合格 message（與 brain responder / worker 同路徑）。
 
 ## Vendor 與供應鏈
 
@@ -69,6 +69,9 @@ MCP 工具全帶 `app` 參數（英文名或 bundle id；本地化名稱解析�
 ```yaml
 agents:
   gui_manager:
+    cache:
+      enabled: true
+      ttl: "1h"   # breakpoint providers clamp to 1h
     ax:
       # --- 來源覆寫（不設 = 用 gui/ax_runtime.py 的 DEFAULT_REPO / DEFAULT_COMMIT pin 值）---
       repo: null         # 改用 fork 時填 git URL

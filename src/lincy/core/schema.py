@@ -1203,7 +1203,9 @@ class CacheConfig(StrictConfigModel):
     """Prompt caching for cost optimization."""
 
     enabled: bool = False
-    ttl: str = "ephemeral"  # "ephemeral" (5min) or "1h"
+    # Supported project-wide TTL tokens. Provider adapters may clamp further
+    # (e.g. Anthropic-style breakpoints max out at 1h).
+    ttl: Literal["ephemeral", "1h", "24h"] = "ephemeral"
     fingerprint: CacheFingerprintConfig = Field(
         default_factory=CacheFingerprintConfig
     )
