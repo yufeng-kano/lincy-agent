@@ -303,10 +303,12 @@ chat-cli:
 ### 環境檢查
 
 ```bash
-chat-supervisor check    # 檢查 bun/uv 是否在 PATH、sessions 目錄是否存在、dist/ 是否已 build
+chat-supervisor check    # 檢查 bun/uv/node 是否在 PATH、sessions 目錄是否存在、dist/ 是否已 build
 ```
 
-Supervisor 在子 process 環境自動補充 `~/.local/bin`、`~/.bun/bin`、`/opt/homebrew/bin` 等路徑。
+Supervisor 在子 process 環境自動補充 `~/.local/bin`、`~/.bun/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等路徑。
+
+手動 `cd src/chat_web_ui && bun run build` 時，PATH 也必須找得到 `node`：`vue-tsc` 的 shebang 是 `#!/usr/bin/env node`。若 `node` 不在 PATH，bun 會改用自己的 runtime 執行 `vue-tsc`，Volar 解析失效，表面上看起來像「找不到所有 `.vue` 檔」（`TS2307`），其實檔案都在。lincy 上 node 通常在 `/usr/local/bin/node`。
 
 ## 開發模式
 

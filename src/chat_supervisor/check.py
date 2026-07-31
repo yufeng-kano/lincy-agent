@@ -69,6 +69,12 @@ def _infer_required_tools(config: SupervisorConfig) -> dict[str, list[str]]:
         cmd = proc.command[0]
         tool = _KNOWN_TOOLS.get(cmd, cmd)
         result.setdefault(tool, []).append(name)
+        # bun run executes package bins via their shebang. vue-tsc is
+        # `#!/usr/bin/env node`; if node is missing, bun silently falls back
+        # to its own runtime and vue-tsc then fails with bogus "Cannot find
+        # module '*.vue'" errors.
+        if tool == "bun":
+            result.setdefault("node", []).append(name)
     return result
 
 
