@@ -1239,15 +1239,56 @@ def main(user: str, resume: str | None = None) -> None:
                 # If Textual isn't running yet, the queued shutdown sentinel still stops AgentCore.
                 pass
 
+        # Remote web TUI: default channel is cli (same as Textual). ``web`` is not
+        # a send option; the Agent page mirrors agent UI events, not web bubbles.
+        _NON_SEND_CHANNELS = frozenset({"system", "web"})
+
+        def _list_send_channels() -> list[str]:
+            names = [
+                name
+                for name in agent.adapters
+                if name not in _NON_SEND_CHANNELS
+            ]
+            # cli first, then stable alpha for the rest
+            names.sort(key=lambda n: (n != "cli", n))
+            return names
+
+        def _submit_tui_message(content: str, channel: str) -> dict:
+            from ..agent.schema import InboundMessage
+
+            selected = (channel or "cli").strip().lower() or "cli"
+            allowed = _list_send_channels()
+            if selected not in allowed:
+                raise ValueError(
+                    f"unsupported channel: {selected}; "
+                    f"choose one of: {', '.join(allowed)}"
+                )
+            if selected == "cli":
+                cli_adapter.submit_remote(content)
+                return {"status": "accepted", "channel": "cli"}
+
+            text = content.strip()
+            if not text:
+                raise ValueError("content is required")
+            agent.enqueue(
+                InboundMessage(
+                    channel=selected,
+                    content=text,
+                    priority=0,
+                    sender=user_id,
+                    metadata={"source": "web_tui"},
+                )
+            )
+            return {"status": "accepted", "channel": selected}
+
         control_server = ControlServer(
             host=config.app.control.host,
             port=config.app.control.port,
             shutdown_fn=_shutdown_from_control,
             new_session_fn=agent.request_new_session,
             reload_fn=agent.request_reload,
-            web_chat_submit_fn=(
-                web_adapter.submit_message if web_adapter is not None else None
-            ),
+            tui_submit_fn=_submit_tui_message,
+            channels_fn=_list_send_channels,
         )
         control_server.start()
 

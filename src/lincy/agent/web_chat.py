@@ -34,11 +34,16 @@ class WebChatEvent(BaseModel):
 
 
 class WebChatMessageRequest(BaseModel):
-    """Incoming Web Chat message payload."""
+    """Incoming remote-TUI message payload.
+
+    ``channel`` selects which inbound channel the message is attributed to.
+    Default is ``cli`` (same as the Textual TUI). ``web`` is not a send option.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     content: str
+    channel: str = "cli"
 
 
 class WebChatStore:

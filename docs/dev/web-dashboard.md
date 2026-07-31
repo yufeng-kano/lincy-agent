@@ -1,6 +1,6 @@
 # Web Dashboard（chat_web_api + chat_web_ui）
 
-監控 dashboard，即時顯示 token 用量、成本、read cache rate，並提供本機 Web Chat 介面。
+監控 dashboard，即時顯示 token 用量、成本、read cache rate，並提供本機遠端 TUI 介面（`/chat` Agent 頁）。
 
 ## 架構
 
@@ -14,13 +14,16 @@ Browser → uvicorn (:9002) → FastAPI (chat_web_api)
 
 資料流：JSONL append → watchfiles 偵測 → incremental read → cache 更新 → WebSocket push → Vue reactive 更新
 
-Web Chat 資料流：
+送訊資料流（遠端 TUI）：
 
 ```
-Browser → chat_web_api /api/chat/messages → chat-cli control API
-        → WebAdapter → AgentCore queue → send_message(channel="web")
-        → WebAdapter → state/web_chat/events.jsonl → chat_web_api /ws
+Browser（Agent 頁 composer，選定 send channel，預設 cli）
+        → chat_web_api /api/chat/messages {content, channel}
+        → chat-cli control API → AgentCore queue（該 channel 的 inbound）
+        → runtime UI event → agent 活動流 → /ws agent_event → 前端時間軸
 ```
+
+送出回應只是 `{"status": "accepted", "channel": "..."}`（HTTP 202），**不回傳訊息物件**；使用者送出的內容要等 `inbound_message` 事件從活動流回來才會出現在畫面上。
 
 Agent 活動流資料流（見「Agent 活動流」章節）：
 
@@ -73,8 +76,9 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 | POST | `/api/codex-accounts/login/{login_id}/complete` | 完成登入：body `{"value": "<callback URL 或 code#state>"}`，token 寫入 proxy store |
 | POST | `/api/codex-accounts/{token_id}/promote` | 設為最高優先 |
 | DELETE | `/api/codex-accounts/{token_id}` | 移除 token |
-| GET | `/api/chat/events?limit=` | Web Chat 最近事件 |
-| POST | `/api/chat/messages` | 轉送本機 Web Chat 訊息到 chat-cli control API |
+| GET | `/api/chat/events?limit=` | Web Chat 最近事件（舊介面遺留；Agent 頁已不使用） |
+| GET | `/api/chat/channels` | 可選的送出 channel 清單（轉發 control API），回 `{"channels": ["cli", "discord", ...]}`；**永遠不含 `web` / `system`** |
+| POST | `/api/chat/messages` | 轉送訊息到 chat-cli control API，body `{"content": "...", "channel": "cli"}`（`channel` 預設 `cli`）；成功回 202 `{"status": "accepted", "channel": "..."}`，正在處理上一輪時回 409 |
 | GET | `/api/agent/events?limit=` | Agent 活動事件（預設 500，範圍 1..2000；只有當次 chat-cli 執行的資料） |
 | WS | `/ws` | 即時推送：`session_updated`、`live_token_update`、`session_created` |
 
@@ -153,27 +157,35 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 
 這是在還原 `UiEventConsole.print_subagent_tool_call` / `print_subagent_tool_result`（`f"{label} {tool_name}"`）與 `print_gui_step`（固定 `gui_task`）的命名摺疊慣例。**改動那兩處命名時必須同步改 `ui_event_stream.py` 的 `_SUBAGENT_NAME_RE`**，否則子代理分頁會失效。
 
-### Agent 頁（原 ChatPage）
+### Agent 頁（遠端 TUI）
 
-`pages/ChatPage.vue` 重寫為 agent 活動視圖，路由仍是 `/chat`，sidebar 名稱改為「Agent」。
+`pages/ChatPage.vue` 是 chat-cli TUI 的遠端鏡像，路由仍是 `/chat`，sidebar 名稱為「Agent」。**它不是獨立的「Web Chat」頻道**：畫面上沒有聊天泡泡，時間軸就是 agent 活動事件（等同 TUI 的 log），composer 只是把訊息「以某個 channel 的身分」丟進 agent queue。
 
-- Header：標題、chat 狀態點（`chat.latestStatus`）、最新 `ctx_status` chip、Debug 開關（預設關；關閉時 `debug` 事件不進時間軸）
+- Header：標題、狀態點、最新 `ctx_status` chip、Debug 開關（預設關；關閉時 `debug` 事件不進時間軸）
+- 狀態點來源是 agent 事件而非 Web Chat 事件：最新的 `processing_*` 事件是 `processing_started` → Processing（黑點 pulse），否則 Ready（綠點）；只有送出失敗才顯示 Error（紅點），與 TUI 的 `busy` 判定一致
 - Tab bar：`Brain` + 每個子代理一個分頁（worker-N / gui_task），有未完成 tool call 時分頁點會 pulse
-- Brain 分頁時間軸依時間戳合併兩個來源：Web Chat 泡泡（`kind==='message'`）與 brain 軌事件；`channel === 'web'` 的 `inbound_message` / `outbound_message` 不重複渲染
+- Brain 分頁時間軸只有 `buildAgentRows(brain 軌事件)` 一個來源，不再合併任何 Web Chat 泡泡
 - 渲染規則：
   - `tool_call` 一列（mono 工具名 + 單行摘要），可展開看完整摘要與配對到的 result；result 未到前顯示 pulse 點，`failed` 紅、`warning` 琥珀
   - result 配對規則：同一 `(agent, name)` 依 seq FIFO；沒有對應 call 的 result（`tui.show_tool_use` 關閉時只會送 failed/warning result）自成一列
   - `tool_stream` 併入該軌目前開著的 tool_call，否則自成 mono 一列
   - `assistant_text` 為 inner monologue 灰塊，超過 3 行折疊
-  - 非 web 的 `inbound_message` / `outbound_message` 是帶 channel badge 的緊湊列，可展開
+  - `inbound_message` 是帶 channel badge 的緊湊列，可展開；**所有 channel 一視同仁**（含舊資料裡殘留的 `web`）
+  - `outbound_message` 一律隱藏，與 TUI 相同理由：內容和 `send_message` 的 tool log 重複
   - `processing_started` / `processing_finished` 是細分隔線（`interrupted` 會標注）；`resume_history` 同樣是分隔線
   - `warning` / `error` 為琥珀 / 紅色列；`interrupt_state` 只渲染非 idle 階段；`ctx_status` 只出現在 header chip
 - Composer 上方有 live 子代理列（`worker-3 running - execute_shell`），點擊跳到該分頁；沒有 live 時隱藏
 - 捲動：使用者在距底部 80px 內才自動貼底，否則顯示「Jump to latest」；切分頁會重置
 - 空狀態且 WebSocket 斷線時提示 chat-cli 沒有在跑
-- Composer 沿用原本的 chat store 送出流程（Enter 送出、Shift+Enter 換行、送出中禁用、錯誤橫幅）
 
-前端檔案：`stores/agentEvents.ts`（Pinia store：events 依 seq 排序、以 `id` 去重、上限 3000 筆；同檔另外輸出配對與時間軸組裝的純函式，因為 `src/lib/` 被 `.gitignore` 排除）、`components/agent/AgentTimeline.vue`（渲染）。
+Composer（送出 channel 選擇）：
+
+- 左側 mono `<select>` 選送出 channel，清單來自掛載時的 `GET /api/chat/channels`；請求失敗時至少提供 `["cli"]`
+- 選擇存在 `localStorage` 的 `lincy.agent.send-channel`；缺值或不在清單內就退回 `cli`
+- Enter 送出、Shift+Enter 換行、送出中禁用；成功只清空輸入框，訊息本身要等 `inbound_message` 事件回來才出現
+- 送出失敗（含 409「Still processing the previous turn.」）顯示紅色錯誤橫幅，狀態點同時轉為 Error
+
+前端檔案：`stores/agentEvents.ts`（Pinia store：events 依 seq 排序、以 `id` 去重、上限 3000 筆，另輸出 `busy`；同檔另外輸出配對與時間軸組裝的純函式，因為 `src/lib/` 被 `.gitignore` 排除）、`stores/chat.ts`（只負責 composer：channel 清單、選定 channel、送出狀態與錯誤）、`components/agent/AgentTimeline.vue`（渲染）。
 
 ## 前端 (`src/chat_web_ui/`)
 
@@ -187,7 +199,7 @@ Tech stack：Vue 3 + Vite + Bun + shadcn-vue + Tailwind CSS + Chart.js
 | `/monitor/requests` | MonitorRequests | 跨 session request log，按 session 分組 |
 | `/monitor/:id` | MonitorSession | 單一 session：turn timeline + expandable responses |
 | `/proxy` | ProxyPage | Proxy usage 獨立區塊：Claude / Codex 帳號用量 + 帳號管理（add/promote/remove） |
-| `/chat` | ChatPage | Agent 活動視圖：Brain 時間軸 + 子代理分頁 + Web Chat composer |
+| `/chat` | ChatPage | 遠端 TUI：Brain 時間軸 + 子代理分頁 + 帶 channel 選擇的 composer |
 | `/settings` | SettingsPlaceholder | 預留 |
 
 Overview 和 Requests 之間用 tab bar 切換（`MonitorTabs.vue`）。
@@ -264,7 +276,7 @@ Overview 和 Requests 之間用 tab bar 切換（`MonitorTabs.vue`）。
 - `stores/websocket.ts`：singleton WebSocket，3 秒自動重連
 - `stores/live.ts`：active session token 位置，WebSocket `live_token_update` 更新
 - `stores/dashboard.ts`：收到 `session_updated` / `session_created` 時自動 refresh
-- `stores/chat.ts`：載入 `/api/chat/events`，送出 `/api/chat/messages`，收到 `chat_event` 時 dedupe 後追加
+- `stores/chat.ts`：載入 `/api/chat/channels`，送出 `/api/chat/messages`；不再訂閱 `chat_event`
 - `stores/agentEvents.ts`：載入 `/api/agent/events`，收到 `agent_event` 時依 `seq` 插入（以 `id` dedupe）
 
 ## Supervisor 整合
@@ -305,9 +317,10 @@ Production 模式由 `chat-web-api` 直接 serve `dist/` 靜態檔。
 
 ## 注意事項
 
-- Web Chat v1 是本機單使用者介面，信任 loopback service，不做登入、附件與 token streaming。
-- Web Chat 可見回覆仍必須由模型透過 `send_message(channel="web")` 送出；一般 assistant text 只視為內部思考/console 顯示。
-- `channels.web.enabled` 控制 chat-cli 是否註冊 WebAdapter、以及是否輸出 Agent 活動事件；`channels.web.history_limit` 控制前端預設讀取筆數。
+- Agent 頁是本機單使用者介面，信任 loopback service，不做登入、附件與 token streaming。
+- Agent 頁只是 TUI 的鏡像：它自己沒有「回覆」概念，模型的可見回覆會走使用者選定的那個 channel（例如選 `discord` 送出，回覆就送到 Discord）。
+- `web` / `system` 不在可選 channel 清單裡；舊 `web` channel 的歷史事件若還在活動流，就當成一般 channel badge 列渲染。
+- `channels.web.enabled` 仍控制是否註冊 WebAdapter、以及是否輸出 Agent 活動事件（export sink）。Agent 頁送訊不再走 `web` channel；`history_limit` 只影響殘留的 web_chat JSONL 讀取，前端已不依賴它。
 - Agent 活動事件是**當次執行**的快照：chat-cli 重啟就輪替檔案，Web 端讀不到上一輪歷史（`events.prev.jsonl` 只留給人工檢查）。
 - Agent 活動 export 是唯讀旁路，不得反向影響 TUI；新增事件型別時要同步更新 `ui_event_stream.py` 的 `_EVENT_SPECS` 與前端 `AgentUiEventType`。
 - `requests.jsonl` 含完整 message payload，**不要全部載入 cache**，日後做 lazy load

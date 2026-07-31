@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 import chat_web_api.app as app_mod
-from lincy.agent.web_chat import WebChatEvent, WebChatStore
+from lincy.agent.web_chat import WebChatStore
 from chat_web_api.app import create_app
 from chat_web_api.settings import WebApiSettings
 
@@ -37,18 +37,13 @@ async def test_chat_events_returns_recent_events(tmp_path):
 @pytest.mark.asyncio
 async def test_chat_message_forwards_to_control_api(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
-    event = WebChatEvent(
-        kind="message",
-        role="user",
-        content="hello",
-        request_id="r1",
-    )
     seen = {}
 
-    async def fake_post(chat_settings: WebApiSettings, text: str):
+    async def fake_post(chat_settings: WebApiSettings, text: str, channel: str = "cli"):
         seen["control_base_url"] = chat_settings.control_base_url
         seen["text"] = text
-        return 202, {"event": event.model_dump(mode="json")}
+        seen["channel"] = channel
+        return 202, {"status": "accepted", "channel": channel}
 
     monkeypatch.setattr(app_mod, "_post_web_chat_message_to_control", fake_post)
     app = create_app(settings)
@@ -58,18 +53,62 @@ async def test_chat_message_forwards_to_control_api(tmp_path, monkeypatch):
         resp = await client.post("/api/chat/messages", json={"content": " hello "})
 
     assert resp.status_code == 202
-    assert resp.json() == {"event": event.model_dump(mode="json")}
+    assert resp.json() == {"status": "accepted", "channel": "cli"}
     assert seen == {
         "control_base_url": "http://control",
         "text": "hello",
+        "channel": "cli",
     }
+
+
+@pytest.mark.asyncio
+async def test_chat_message_forwards_selected_channel(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    seen = {}
+
+    async def fake_post(_settings: WebApiSettings, text: str, channel: str = "cli"):
+        seen["text"] = text
+        seen["channel"] = channel
+        return 202, {"status": "accepted", "channel": channel}
+
+    monkeypatch.setattr(app_mod, "_post_web_chat_message_to_control", fake_post)
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chat/messages",
+            json={"content": "hello", "channel": "discord"},
+        )
+
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "accepted", "channel": "discord"}
+    assert seen == {"text": "hello", "channel": "discord"}
+
+
+@pytest.mark.asyncio
+async def test_chat_channels_forwards_to_control_api(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+
+    async def fake_fetch(_settings: WebApiSettings):
+        return 200, {"channels": ["cli", "discord"]}
+
+    monkeypatch.setattr(app_mod, "_fetch_channels_from_control", fake_fetch)
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/chat/channels")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"channels": ["cli", "discord"]}
 
 
 @pytest.mark.asyncio
 async def test_chat_message_returns_503_when_control_unavailable(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
 
-    async def fake_post(_settings: WebApiSettings, _text: str):
+    async def fake_post(_settings: WebApiSettings, _text: str, channel: str = "cli"):
         return 503, {"error": "chat-cli control API is unavailable"}
 
     monkeypatch.setattr(app_mod, "_post_web_chat_message_to_control", fake_post)

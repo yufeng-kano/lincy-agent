@@ -4,7 +4,6 @@ import pytest
 import httpx
 
 from lincy import control
-from lincy.agent.web_chat import WebChatEvent
 from lincy.control import create_app
 
 
@@ -103,30 +102,44 @@ async def test_reload_returns_404_when_unavailable():
 async def test_web_chat_message_calls_submit_fn():
     called = []
 
-    def submit(content: str) -> WebChatEvent:
-        called.append(content)
-        return WebChatEvent(
-            kind="message",
-            role="user",
-            content=content,
-            request_id="r1",
-        )
+    def submit(content: str, channel: str) -> dict:
+        called.append((content, channel))
+        return {"status": "accepted", "channel": channel}
 
-    app = create_app(shutdown_fn=lambda: None, web_chat_submit_fn=submit)
+    app = create_app(shutdown_fn=lambda: None, tui_submit_fn=submit)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/web-chat/messages", json={"content": " hello "})
 
     assert resp.status_code == 202
-    payload = resp.json()
-    assert payload["event"]["content"] == "hello"
-    assert payload["event"]["request_id"] == "r1"
-    assert called == ["hello"]
+    assert resp.json() == {"status": "accepted", "channel": "cli"}
+    assert called == [("hello", "cli")]
+
+
+@pytest.mark.asyncio
+async def test_web_chat_message_forwards_selected_channel():
+    called = []
+
+    def submit(content: str, channel: str) -> dict:
+        called.append((content, channel))
+        return {"status": "accepted", "channel": channel}
+
+    app = create_app(shutdown_fn=lambda: None, tui_submit_fn=submit)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/web-chat/messages",
+            json={"content": "hi", "channel": "discord"},
+        )
+
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "accepted", "channel": "discord"}
+    assert called == [("hi", "discord")]
 
 
 @pytest.mark.asyncio
 async def test_web_chat_message_rejects_blank_content():
-    app = create_app(shutdown_fn=lambda: None, web_chat_submit_fn=lambda _c: None)
+    app = create_app(shutdown_fn=lambda: None, tui_submit_fn=lambda _c, _ch: {})
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/web-chat/messages", json={"content": "   "})
@@ -143,7 +156,35 @@ async def test_web_chat_message_returns_503_when_unavailable():
         resp = await client.post("/web-chat/messages", json={"content": "hello"})
 
     assert resp.status_code == 503
-    assert resp.json() == {"error": "web chat is not available"}
+    assert resp.json() == {"error": "remote TUI submit is not available"}
+
+
+@pytest.mark.asyncio
+async def test_web_chat_message_returns_409_when_busy():
+    def submit(_content: str, _channel: str) -> dict:
+        raise RuntimeError("Still processing the previous turn.")
+
+    app = create_app(shutdown_fn=lambda: None, tui_submit_fn=submit)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/web-chat/messages", json={"content": "hello"})
+
+    assert resp.status_code == 409
+    assert resp.json() == {"error": "Still processing the previous turn."}
+
+
+@pytest.mark.asyncio
+async def test_channels_lists_send_options():
+    app = create_app(
+        shutdown_fn=lambda: None,
+        channels_fn=lambda: ["cli", "discord", "gmail"],
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/channels")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"channels": ["cli", "discord", "gmail"]}
 
 
 def test_assert_control_slot_available_detects_existing_chat_cli(monkeypatch):

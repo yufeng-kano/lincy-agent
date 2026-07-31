@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-vue-next'
 import type { AgentUiEvent } from '@/api/client'
-import { eventFlag, eventText, type AgentRow, type TimelineRow } from '@/stores/agentEvents'
+import { eventFlag, eventText, type TimelineRow } from '@/stores/agentEvents'
 
 defineProps<{ rows: TimelineRow[] }>()
 
@@ -33,32 +33,32 @@ function toolName(event: AgentUiEvent): string {
   return eventText(event, 'name') || 'tool'
 }
 
-function toolPending(row: AgentRow): boolean {
+function toolPending(row: TimelineRow): boolean {
   return row.event.type === 'tool_call' && row.result === null
 }
 
-function toolResult(row: AgentRow): AgentUiEvent | null {
+function toolResult(row: TimelineRow): AgentUiEvent | null {
   return row.event.type === 'tool_result' ? row.event : row.result
 }
 
-function toolFailed(row: AgentRow): boolean {
+function toolFailed(row: TimelineRow): boolean {
   const result = toolResult(row)
   return result !== null && eventFlag(result, 'failed')
 }
 
-function toolWarning(row: AgentRow): boolean {
+function toolWarning(row: TimelineRow): boolean {
   const result = toolResult(row)
   return result !== null && eventFlag(result, 'warning')
 }
 
-function toolDotClass(row: AgentRow): string {
+function toolDotClass(row: TimelineRow): string {
   if (toolFailed(row)) return 'bg-[#EF4444]'
   if (toolWarning(row)) return 'bg-[#F59E0B]'
   if (toolPending(row)) return 'animate-pulse bg-[#111827]'
   return 'bg-[#D1D5DB]'
 }
 
-function toolBorderClass(row: AgentRow): string {
+function toolBorderClass(row: TimelineRow): string {
   if (toolFailed(row)) return 'border-[#EF4444]'
   if (toolWarning(row)) return 'border-[#F59E0B]'
   return 'border-[#E5E7EB]'
@@ -72,7 +72,7 @@ function messagePeer(event: AgentUiEvent): string {
   return eventText(event, event.type === 'inbound_message' ? 'sender' : 'recipient')
 }
 
-function separatorLabel(row: AgentRow): string {
+function separatorLabel(row: TimelineRow): string {
   const channel = messageChannel(row.event)
   if (row.event.type === 'processing_started') return `turn start - ${channel}`
   if (eventFlag(row.event, 'interrupted')) return `turn end - ${channel} - interrupted`
@@ -83,31 +83,9 @@ function separatorLabel(row: AgentRow): string {
 <template>
   <div class="space-y-2">
     <template v-for="row in rows" :key="row.key">
-      <!-- Web Chat bubble -->
-      <div
-        v-if="row.kind === 'bubble'"
-        class="flex"
-        :class="row.event.role === 'user' ? 'justify-end' : 'justify-start'"
-      >
-        <div
-          class="max-w-[86%] rounded-lg px-3 py-2 text-sm leading-6 shadow-[0_1px_2px_rgba(0,0,0,0.04)] md:max-w-[72%]"
-          :class="row.event.role === 'user'
-            ? 'bg-[#111827] text-white'
-            : 'border border-[#E5E7EB] bg-white text-[#111827]'"
-        >
-          <p class="whitespace-pre-wrap break-words">{{ row.event.content }}</p>
-          <div
-            class="mt-1 text-[11px] tabular-nums"
-            :class="row.event.role === 'user' ? 'text-[#D1D5DB]' : 'text-[#9CA3AF]'"
-          >
-            {{ formatTime(row.time) }}
-          </div>
-        </div>
-      </div>
-
       <!-- Tool call / orphan tool result -->
       <div
-        v-else-if="row.event.type === 'tool_call' || row.event.type === 'tool_result'"
+        v-if="row.event.type === 'tool_call' || row.event.type === 'tool_result'"
         class="rounded-lg border bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
         :class="toolBorderClass(row)"
       >
@@ -164,7 +142,7 @@ function separatorLabel(row: AgentRow): string {
         </button>
       </div>
 
-      <!-- Non-web inbound / outbound message -->
+      <!-- Inbound / outbound message, any channel -->
       <div
         v-else-if="row.event.type === 'inbound_message' || row.event.type === 'outbound_message'"
         class="rounded-lg border border-[#E5E7EB] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]"

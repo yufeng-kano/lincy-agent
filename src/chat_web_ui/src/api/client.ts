@@ -1,15 +1,5 @@
 const BASE = ''
 
-export interface WebChatEvent {
-  id: string
-  created_at: string
-  kind: 'message' | 'status' | 'error'
-  role: 'user' | 'assistant' | 'system' | null
-  content: string | null
-  status: 'queued' | 'processing' | 'idle' | 'error' | null
-  request_id: string | null
-}
-
 export async function fetchDashboard(from: string, to: string) {
   const res = await fetch(`${BASE}/api/dashboard?from=${from}&to=${to}`)
   return res.json()
@@ -44,11 +34,6 @@ async function responseJsonOrError(res: Response) {
   return data
 }
 
-export async function fetchChatEvents(limit = 200): Promise<{ events: WebChatEvent[] }> {
-  const res = await fetch(`${BASE}/api/chat/events?limit=${limit}`)
-  return responseJsonOrError(res)
-}
-
 export type AgentUiEventType =
   | 'inbound_message'
   | 'processing_started'
@@ -80,11 +65,21 @@ export async function fetchAgentEvents(limit = 500): Promise<{ events: AgentUiEv
   return responseJsonOrError(res)
 }
 
-export async function sendChatMessage(content: string): Promise<{ event: WebChatEvent }> {
+/** Send channels the composer may attribute a message to; never includes web/system. */
+export async function fetchChatChannels(): Promise<{ channels: string[] }> {
+  const res = await fetch(`${BASE}/api/chat/channels`)
+  return responseJsonOrError(res)
+}
+
+/** The inbound message comes back through the agent event stream, not this response. */
+export async function sendChatMessage(
+  content: string,
+  channel: string,
+): Promise<{ status: string; channel: string }> {
   const res = await fetch(`${BASE}/api/chat/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, channel }),
   })
   return responseJsonOrError(res)
 }

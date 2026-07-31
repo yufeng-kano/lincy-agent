@@ -97,3 +97,45 @@ def test_compact_command_delegates_to_agent(tmp_path):
     adapter._commands._console.print_info.assert_called_once_with(
         "Context compacted via codex remote: 3 messages removed."
     )
+
+
+def test_submit_remote_raises_when_turn_busy():
+    adapter = CLIAdapter.__new__(CLIAdapter)
+    adapter._agent = MagicMock()
+    adapter._commands = MagicMock()
+    adapter._commands.is_command.return_value = False
+    adapter._commands._console = MagicMock()
+    adapter._user_id = "u"
+    adapter.priority = 0
+    adapter._turn_done = threading.Event()
+    adapter._turn_done.clear()
+
+    try:
+        adapter.submit_remote("hello")
+        raised = False
+    except RuntimeError as exc:
+        raised = True
+        assert "processing" in str(exc).lower()
+
+    assert raised
+    adapter._agent.enqueue.assert_not_called()
+
+
+def test_submit_remote_enqueues_cli_message():
+    adapter = CLIAdapter.__new__(CLIAdapter)
+    adapter._agent = MagicMock()
+    adapter._commands = MagicMock()
+    adapter._commands.is_command.return_value = False
+    adapter._user_id = "u"
+    adapter.priority = 0
+    adapter._turn_done = threading.Event()
+    adapter._turn_done.set()
+
+    result = adapter.submit_remote("  hello  ")
+
+    assert result is False
+    assert not adapter._turn_done.is_set()
+    msg = adapter._agent.enqueue.call_args.args[0]
+    assert msg.channel == "cli"
+    assert msg.content == "hello"
+    assert msg.sender == "u"

@@ -2,6 +2,7 @@
 
 Runs a FastAPI app in a daemon thread via uvicorn, exposing
 /health, /shutdown, /session/new, and /reload endpoints for supervisor integration.
+Also exposes the remote-TUI submit path used by chat_web_api.
 """
 
 import logging
@@ -15,9 +16,13 @@ import httpx
 import uvicorn
 from pydantic import ValidationError
 
-from .agent.web_chat import WebChatEvent, WebChatMessageRequest
+from .agent.web_chat import WebChatMessageRequest
 
 logger = logging.getLogger(__name__)
+
+# (content, channel) -> response payload dict
+TuiSubmitFn = Callable[[str, str], dict]
+ChannelsFn = Callable[[], list[str]]
 
 
 def _port_is_available(host: str, port: int) -> bool:
@@ -78,9 +83,13 @@ def create_app(
     shutdown_fn: Callable[[], None],
     new_session_fn: Callable[[], None] | None = None,
     reload_fn: Callable[[], None] | None = None,
-    web_chat_submit_fn: Callable[[str], WebChatEvent] | None = None,
+    tui_submit_fn: TuiSubmitFn | None = None,
+    channels_fn: ChannelsFn | None = None,
+    # Legacy alias kept so older call sites/tests keep working during the rename.
+    web_chat_submit_fn: TuiSubmitFn | None = None,
 ) -> FastAPI:
-    """Build FastAPI app with shutdown/health endpoints."""
+    """Build FastAPI app with shutdown/health/remote-TUI endpoints."""
+    submit_fn = tui_submit_fn or web_chat_submit_fn
     app = FastAPI(title="chat-agent-control", docs_url=None, redoc_url=None)
 
     @app.get("/health")
@@ -112,28 +121,39 @@ def create_app(
         reload_fn()
         return JSONResponse({"status": "reload_requested"})
 
+    @app.get("/channels")
+    def list_channels() -> JSONResponse:
+        if channels_fn is None:
+            return JSONResponse(
+                {"error": "channels listing is not available"},
+                status_code=503,
+            )
+        return JSONResponse({"channels": channels_fn()})
+
     @app.post("/web-chat/messages")
     def web_chat_message(request: WebChatMessageRequest) -> JSONResponse:
+        """Remote-TUI submit (path kept for existing proxies)."""
         text = request.content.strip()
         if not text:
             return JSONResponse({"error": "content is required"}, status_code=400)
-        if web_chat_submit_fn is None:
+        if submit_fn is None:
             return JSONResponse(
-                {"error": "web chat is not available"},
+                {"error": "remote TUI submit is not available"},
                 status_code=503,
             )
+        channel = (request.channel or "cli").strip().lower() or "cli"
         try:
-            event = web_chat_submit_fn(text)
+            payload = submit_fn(text, channel)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except RuntimeError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=503)
+            message = str(exc)
+            # Busy turns are conflict; missing runtime is unavailable.
+            status = 409 if "processing" in message.lower() else 503
+            return JSONResponse({"error": message}, status_code=status)
         except ValidationError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        return JSONResponse(
-            {"event": event.model_dump(mode="json")},
-            status_code=202,
-        )
+        return JSONResponse(payload, status_code=202)
 
     return app
 
@@ -148,7 +168,9 @@ class ControlServer:
         shutdown_fn: Callable[[], None],
         new_session_fn: Callable[[], None] | None = None,
         reload_fn: Callable[[], None] | None = None,
-        web_chat_submit_fn: Callable[[str], WebChatEvent] | None = None,
+        tui_submit_fn: TuiSubmitFn | None = None,
+        channels_fn: ChannelsFn | None = None,
+        web_chat_submit_fn: TuiSubmitFn | None = None,
     ):
         self._host = host
         self._port = port
@@ -156,7 +178,8 @@ class ControlServer:
             shutdown_fn,
             new_session_fn=new_session_fn,
             reload_fn=reload_fn,
-            web_chat_submit_fn=web_chat_submit_fn,
+            tui_submit_fn=tui_submit_fn or web_chat_submit_fn,
+            channels_fn=channels_fn,
         )
         self._thread: threading.Thread | None = None
 

@@ -102,7 +102,25 @@ class CLIAdapter:
     # ------------------------------------------------------------------
 
     def submit_input(self, raw_text: str) -> bool:
-        """Handle text submitted by the Textual UI."""
+        """Handle text submitted by the Textual UI.
+
+        Returns True when the process should exit (e.g. /quit).
+        """
+        try:
+            return self._submit(raw_text, remote=False)
+        except RuntimeError as exc:
+            self._commands._console.print_warning(str(exc))
+            return False
+
+    def submit_remote(self, raw_text: str) -> bool:
+        """Handle text submitted by the web remote-TUI.
+
+        Same semantics as ``submit_input``, but rejects with RuntimeError
+        instead of only printing a warning so the control API can return 409.
+        """
+        return self._submit(raw_text, remote=True)
+
+    def _submit(self, raw_text: str, *, remote: bool) -> bool:
         assert self._agent is not None
 
         user_input = raw_text.strip()
@@ -114,13 +132,19 @@ class CLIAdapter:
                 not self._turn_done.is_set()
                 and not self._commands.can_execute_while_processing(user_input)
             ):
-                self._commands._console.print_warning("Still processing the previous turn.")
+                message = "Still processing the previous turn."
+                if remote:
+                    raise RuntimeError(message)
+                self._commands._console.print_warning(message)
                 return False
             should_stop = self._handle_command(user_input)
             return should_stop
 
         if not self._turn_done.is_set():
-            self._commands._console.print_warning("Still processing the previous turn.")
+            message = "Still processing the previous turn."
+            if remote:
+                raise RuntimeError(message)
+            self._commands._console.print_warning(message)
             return False
 
         msg = InboundMessage(

@@ -28,14 +28,32 @@ logger = logging.getLogger(__name__)
 async def _post_web_chat_message_to_control(
     settings: WebApiSettings,
     text: str,
+    channel: str = "cli",
 ) -> tuple[int, dict]:
-    """Forward one Web Chat message to chat-cli's control API."""
+    """Forward one remote-TUI message to chat-cli's control API."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 f"{settings.control_base_url}/web-chat/messages",
-                json={"content": text},
+                json={"content": text, "channel": channel},
             )
+    except httpx.RequestError:
+        return 503, {"error": "chat-cli control API is unavailable"}
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"error": response.text or "invalid control API response"}
+    return response.status_code, payload
+
+
+async def _fetch_channels_from_control(
+    settings: WebApiSettings,
+) -> tuple[int, dict]:
+    """Fetch selectable send channels from chat-cli's control API."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{settings.control_base_url}/channels")
     except httpx.RequestError:
         return 503, {"error": "chat-cli control API is unavailable"}
 
@@ -454,13 +472,23 @@ def create_app(settings: WebApiSettings) -> FastAPI:
             ]
         }
 
+    @app.get("/api/chat/channels")
+    async def chat_channels() -> JSONResponse:
+        status_code, payload = await _fetch_channels_from_control(settings)
+        return JSONResponse(payload, status_code=status_code)
+
     @app.post("/api/chat/messages")
     async def chat_message(request: WebChatMessageRequest) -> JSONResponse:
         text = request.content.strip()
         if not text:
             return JSONResponse({"error": "content is required"}, status_code=400)
+        channel = (request.channel or "cli").strip().lower() or "cli"
 
-        status_code, payload = await _post_web_chat_message_to_control(settings, text)
+        status_code, payload = await _post_web_chat_message_to_control(
+            settings,
+            text,
+            channel=channel,
+        )
         return JSONResponse(payload, status_code=status_code)
 
     # --- WebSocket ---

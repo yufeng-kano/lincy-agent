@@ -8,7 +8,6 @@ import type { AgentUiEvent } from '@/api/client'
 import {
   buildAgentRows,
   eventText,
-  mergeTimeline,
   pairToolResults,
   useAgentEventsStore,
   type TimelineRow,
@@ -32,22 +31,16 @@ const hasNew = ref(false)
 function visible(events: AgentUiEvent[]): AgentUiEvent[] {
   return events.filter((event) => {
     if (event.type === 'ctx_status') return false
+    // Same as the TUI: outbound is redundant with the send_message tool log.
+    if (event.type === 'outbound_message') return false
     if (event.type === 'debug') return showDebug.value
     return true
   })
 }
 
-const brainEvents = computed(() =>
-  visible(agentStore.brainEvents).filter((event) => {
-    // Web chat bubbles already show these two.
-    const isMessage = event.type === 'inbound_message' || event.type === 'outbound_message'
-    return !(isMessage && eventText(event, 'channel') === 'web')
-  })
-)
-
 const rows = computed<TimelineRow[]>(() => {
   if (activeTab.value === BRAIN_TAB) {
-    return mergeTimeline(buildAgentRows(brainEvents.value), chat.messageEvents)
+    return buildAgentRows(visible(agentStore.brainEvents))
   }
   return buildAgentRows(visible(agentStore.eventsFor(activeTab.value)))
 })
@@ -72,18 +65,15 @@ function runningTool(label: string): string {
   return ''
 }
 
-function statusLabel(status: string): string {
-  if (status === 'queued') return 'Queued'
-  if (status === 'processing') return 'Processing'
-  if (status === 'error') return 'Error'
-  return 'Ready'
-}
+const statusLabel = computed(() => {
+  if (chat.error) return 'Error'
+  return agentStore.busy ? 'Processing' : 'Ready'
+})
 
-function statusClass(status: string): string {
-  if (status === 'queued' || status === 'processing') return 'bg-[#111827]'
-  if (status === 'error') return 'bg-[#EF4444]'
-  return 'bg-[#22C55E]'
-}
+const statusClass = computed(() => {
+  if (chat.error) return 'bg-[#EF4444]'
+  return agentStore.busy ? 'animate-pulse bg-[#111827]' : 'bg-[#22C55E]'
+})
 
 function atBottom(): boolean {
   const el = scrollEl.value
@@ -121,7 +111,7 @@ async function submit() {
 }
 
 onMounted(async () => {
-  await Promise.all([chat.load(), agentStore.load()])
+  await Promise.all([chat.loadChannels(), agentStore.load()])
   await nextTick()
   scrollToBottom()
 })
@@ -130,8 +120,7 @@ onMounted(async () => {
 // folding into its call), so track the newest event instead.
 const timelineSignal = computed(() => {
   const events = agentStore.events
-  const lastSeq = events.length > 0 ? events[events.length - 1].seq : 0
-  return `${lastSeq}:${chat.events.length}`
+  return events.length > 0 ? events[events.length - 1].seq : 0
 })
 
 watch(timelineSignal, async () => {
@@ -163,8 +152,8 @@ watch(timelineSignal, async () => {
           Debug
         </button>
         <span class="flex items-center gap-2">
-          <span class="h-2 w-2 rounded-full" :class="statusClass(chat.latestStatus)" />
-          <span>{{ statusLabel(chat.latestStatus) }}</span>
+          <span class="h-2 w-2 rounded-full" :class="statusClass" />
+          <span>{{ statusLabel }}</span>
         </span>
       </div>
     </div>
@@ -205,7 +194,7 @@ watch(timelineSignal, async () => {
 
     <div class="relative min-h-0 flex-1">
       <div ref="scrollEl" class="h-full overflow-y-auto py-4 pr-1" @scroll="onScroll">
-        <div v-if="chat.loading || agentStore.loading" class="py-10 text-center text-sm text-[#9CA3AF]">
+        <div v-if="agentStore.loading" class="py-10 text-center text-sm text-[#9CA3AF]">
           Loading
         </div>
         <div
@@ -248,6 +237,15 @@ watch(timelineSignal, async () => {
     <div class="shrink-0 border-t border-[#E5E7EB] pt-3">
       <p v-if="chat.error" class="mb-2 text-xs text-[#EF4444]">{{ chat.error }}</p>
       <form class="flex items-end gap-2" @submit.prevent="submit">
+        <select
+          :value="chat.channel"
+          title="Send as channel"
+          class="h-11 shrink-0 rounded-md border border-[#D1D5DB] bg-white px-2 font-mono text-xs text-[#111827] outline-none transition-colors focus:border-[#111827] disabled:cursor-not-allowed disabled:text-[#9CA3AF]"
+          :disabled="chat.sending"
+          @change="chat.selectChannel(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="name in chat.channels" :key="name" :value="name">{{ name }}</option>
+        </select>
         <textarea
           v-model="draft"
           rows="1"
