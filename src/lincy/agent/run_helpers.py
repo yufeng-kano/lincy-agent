@@ -13,7 +13,14 @@ from ..llm.http_error import format_http_status_error
 from ..session.schema import SessionEntry
 from .ui_event_console import AgentUiPort
 
-_TIMESTAMP_PREFIX_RE = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\]\s*")
+# Current: [YYYY-MM-DD (Mon) HH:MM]; legacy: [YYYY-MM-DD HH:MM...] (optional trailer).
+_DAY_ABBR = r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
+_ONE_TIMESTAMP_PREFIX = (
+    rf"\[\d{{4}}-\d{{2}}-\d{{2}}"
+    rf"(?: \({_DAY_ABBR}\) \d{{2}}:\d{{2}}| \d{{2}}:\d{{2}}[^\]]*)"
+    rf"\]\s*"
+)
+_TIMESTAMP_PREFIX_RE = re.compile(rf"^(?:{_ONE_TIMESTAMP_PREFIX})+")
 _DEBUG_RESPONSE_PREVIEW_CHARS = 4000
 _THINKING_PREVIEW_CHARS = 12000
 _SENSITIVE_URL_PARAM_RE = re.compile(
@@ -40,7 +47,7 @@ def _raise_if_cancel_requested(
 
 
 def _strip_timestamp_prefix(text: str) -> str:
-    """Strip leading [YYYY-MM-DD HH:MM...] prefix that LLM may echo."""
+    """Strip all consecutive leading timestamp prefixes the LLM may echo."""
     return _TIMESTAMP_PREFIX_RE.sub("", text)
 
 

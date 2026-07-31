@@ -170,11 +170,12 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
   - result 配對規則：同一 `(agent, name)` 依 seq FIFO；沒有對應 call 的 result（`tui.show_tool_use` 關閉時只會送 failed/warning result）自成一列
   - `tool_stream` 併入該軌目前開著的 tool_call，否則自成 mono 一列
   - `assistant_text` 為 inner monologue 灰塊，超過 3 行折疊
-  - `inbound_message`（人類）與 `outbound_message`（agent）都渲染成聊天泡泡，顯示完整內容（`whitespace-pre-wrap`，不截斷）：
-    - `inbound_message` 靠右、深色泡泡（`bg-[#111827] text-white`），代表人類/我方
+  - `inbound_message`（人類）與 `outbound_message`（agent）都渲染成聊天泡泡，顯示完整內容（Markdown → HTML，經 DOMPurify 消毒後 `v-html`；不截斷）。tool / debug / monologue 仍維持純文字：
+    - `inbound_message` 靠右、深色泡泡（`bg-[#111827] text-white`），代表人類/我方；連結與 code 用可讀的淺色
     - `outbound_message` 靠左、淺色描邊泡泡（`border border-[#E5E7EB] bg-white text-[#111827]`），代表 agent
     - 泡泡上方小字顯示 channel badge（mono）、peer（sender/recipient）、時間（`HH:MM` tabular-nums）；**所有 channel 一視同仁**（含舊資料裡殘留的 `web`）
     - 泡泡寬度上限約 72-86%（`max-w-[86%] sm:max-w-[72%]`），確保左右對齊清楚可辨
+    - 元件：`components/agent/MarkdownContent.vue`（`marked` + `isomorphic-dompurify`）
   - `processing_started` / `processing_finished`（turn start/end 分隔線）與 `resume_history`（分隔線，「processing [channel]」的來源）**只在 Debug 開啟時顯示**；Debug 關閉時整段隱藏，不只是視覺淡化
   - `warning` / `error` 為琥珀 / 紅色列；`interrupt_state` 只渲染非 idle 階段；`ctx_status` 只出現在 header chip
   - 除聊天泡泡外，其餘事件型別（`tool_call`/`tool_result`/`assistant_text`/`warning`/`error`/`tool_stream`/`interrupt_state`/`debug`）維持現有卡片/列表樣式（置中或滿版），不套用左右泡泡

@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { ChevronDown, ChevronRight } from 'lucide-vue-next'
 import type { AgentUiEvent } from '@/api/client'
 import { eventFlag, eventText, type TimelineRow } from '@/stores/agentEvents'
+import MarkdownContent from '@/components/agent/MarkdownContent.vue'
 
 defineProps<{ rows: TimelineRow[] }>()
 
@@ -152,7 +153,9 @@ function separatorLabel(row: TimelineRow): string {
             </span>
             <span class="tabular-nums">{{ formatTime(row.time) }}</span>
           </div>
-          <div class="whitespace-pre-wrap break-words rounded-2xl bg-[#111827] px-3.5 py-2 text-sm leading-6 text-white">{{ eventText(row.event, 'content') }}</div>
+          <div class="rounded-2xl bg-[#111827] px-3.5 py-2">
+            <MarkdownContent :content="eventText(row.event, 'content')" variant="dark" />
+          </div>
         </div>
       </div>
 
@@ -166,7 +169,9 @@ function separatorLabel(row: TimelineRow): string {
             <span v-if="messagePeer(row.event)">{{ messagePeer(row.event) }}</span>
             <span class="tabular-nums">{{ formatTime(row.time) }}</span>
           </div>
-          <div class="whitespace-pre-wrap break-words rounded-2xl border border-[#E5E7EB] bg-white px-3.5 py-2 text-sm leading-6 text-[#111827]">{{ eventText(row.event, 'content') }}</div>
+          <div class="rounded-2xl border border-[#E5E7EB] bg-white px-3.5 py-2">
+            <MarkdownContent :content="eventText(row.event, 'content')" variant="light" />
+          </div>
         </div>
       </div>
 
