@@ -159,9 +159,9 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 
 ### Agent 頁（遠端 TUI）
 
-`pages/ChatPage.vue` 是 chat-cli TUI 的遠端鏡像，路由仍是 `/chat`，sidebar 名稱為「Agent」。**它不是獨立的「Web Chat」頻道**：畫面上沒有聊天泡泡，時間軸就是 agent 活動事件（等同 TUI 的 log），composer 只是把訊息「以某個 channel 的身分」丟進 agent queue。
+`pages/ChatPage.vue` 是 chat-cli TUI 的遠端鏡像，路由仍是 `/chat`，sidebar 名稱為「Agent」。**它不是獨立的「Web Chat」頻道**：composer 只是把訊息「以某個 channel 的身分」丟進 agent queue。時間軸本體是 agent 活動事件（等同 TUI 的 log），但 `inbound_message` / `outbound_message` 以聊天泡泡呈現（右 = 人類、左 = agent），一眼就能分辨誰在說話；其餘事件型別（tool_call/tool_result/assistant_text/warning/error/tool_stream/interrupt/debug）維持置中卡片列的 system-row 樣式，不套用泡泡。
 
-- Header：標題、狀態點、最新 `ctx_status` chip、Debug 開關（預設關；關閉時 `debug` 事件不進時間軸）
+- Header：標題、狀態點、最新 `ctx_status` chip、Debug 開關（預設關；關閉時 `debug`、`processing_started`、`processing_finished`、`resume_history` 都不進時間軸）
 - 狀態點來源是 agent 事件而非 Web Chat 事件：最新的 `processing_*` 事件是 `processing_started` → Processing（黑點 pulse），否則 Ready（綠點）；只有送出失敗才顯示 Error（紅點），與 TUI 的 `busy` 判定一致
 - Tab bar：`Brain` + 每個子代理一個分頁（worker-N / gui_task），有未完成 tool call 時分頁點會 pulse
 - Brain 分頁時間軸只有 `buildAgentRows(brain 軌事件)` 一個來源，不再合併任何 Web Chat 泡泡
@@ -170,10 +170,14 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
   - result 配對規則：同一 `(agent, name)` 依 seq FIFO；沒有對應 call 的 result（`tui.show_tool_use` 關閉時只會送 failed/warning result）自成一列
   - `tool_stream` 併入該軌目前開著的 tool_call，否則自成 mono 一列
   - `assistant_text` 為 inner monologue 灰塊，超過 3 行折疊
-  - `inbound_message` 是帶 channel badge 的緊湊列，可展開；**所有 channel 一視同仁**（含舊資料裡殘留的 `web`）
-  - `outbound_message` 一律隱藏，與 TUI 相同理由：內容和 `send_message` 的 tool log 重複
-  - `processing_started` / `processing_finished` 是細分隔線（`interrupted` 會標注）；`resume_history` 同樣是分隔線
+  - `inbound_message`（人類）與 `outbound_message`（agent）都渲染成聊天泡泡，顯示完整內容（`whitespace-pre-wrap`，不截斷）：
+    - `inbound_message` 靠右、深色泡泡（`bg-[#111827] text-white`），代表人類/我方
+    - `outbound_message` 靠左、淺色描邊泡泡（`border border-[#E5E7EB] bg-white text-[#111827]`），代表 agent
+    - 泡泡上方小字顯示 channel badge（mono）、peer（sender/recipient）、時間（`HH:MM` tabular-nums）；**所有 channel 一視同仁**（含舊資料裡殘留的 `web`）
+    - 泡泡寬度上限約 72-86%（`max-w-[86%] sm:max-w-[72%]`），確保左右對齊清楚可辨
+  - `processing_started` / `processing_finished`（turn start/end 分隔線）與 `resume_history`（分隔線，「processing [channel]」的來源）**只在 Debug 開啟時顯示**；Debug 關閉時整段隱藏，不只是視覺淡化
   - `warning` / `error` 為琥珀 / 紅色列；`interrupt_state` 只渲染非 idle 階段；`ctx_status` 只出現在 header chip
+  - 除聊天泡泡外，其餘事件型別（`tool_call`/`tool_result`/`assistant_text`/`warning`/`error`/`tool_stream`/`interrupt_state`/`debug`）維持現有卡片/列表樣式（置中或滿版），不套用左右泡泡
 - Composer 上方有 live 子代理列（`worker-3 running - execute_shell`），點擊跳到該分頁；沒有 live 時隱藏
 - 捲動：使用者在距底部 80px 內才自動貼底，否則顯示「Jump to latest」；切分頁會重置
 - 空狀態且 WebSocket 斷線時提示 chat-cli 沒有在跑

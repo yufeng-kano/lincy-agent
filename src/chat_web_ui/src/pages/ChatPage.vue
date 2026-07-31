@@ -31,9 +31,11 @@ const hasNew = ref(false)
 function visible(events: AgentUiEvent[]): AgentUiEvent[] {
   return events.filter((event) => {
     if (event.type === 'ctx_status') return false
-    // Same as the TUI: outbound is redundant with the send_message tool log.
-    if (event.type === 'outbound_message') return false
+    // Turn chrome and debug-only rows: only shown when Debug is on.
     if (event.type === 'debug') return showDebug.value
+    if (event.type === 'processing_started') return showDebug.value
+    if (event.type === 'processing_finished') return showDebug.value
+    if (event.type === 'resume_history') return showDebug.value
     return true
   })
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight } from 'lucide-vue-next'
 import type { AgentUiEvent } from '@/api/client'
 import { eventFlag, eventText, type TimelineRow } from '@/stores/agentEvents'
 
@@ -142,36 +142,31 @@ function separatorLabel(row: TimelineRow): string {
         </button>
       </div>
 
-      <!-- Inbound / outbound message, any channel -->
-      <div
-        v-else-if="row.event.type === 'inbound_message' || row.event.type === 'outbound_message'"
-        class="rounded-lg border border-[#E5E7EB] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
-      >
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 px-3 py-2 text-left"
-          @click="toggle(row.key)"
-        >
-          <ArrowDown
-            v-if="row.event.type === 'inbound_message'"
-            class="h-3.5 w-3.5 shrink-0 text-[#6B7280]"
-          />
-          <ArrowUp v-else class="h-3.5 w-3.5 shrink-0 text-[#6B7280]" />
-          <span class="shrink-0 rounded border border-[#E5E7EB] px-1.5 py-0.5 font-mono text-[10px] text-[#6B7280]">
-            {{ messageChannel(row.event) }}
-          </span>
-          <span v-if="messagePeer(row.event)" class="shrink-0 text-[11px] text-[#9CA3AF]">
-            {{ messagePeer(row.event) }}
-          </span>
-          <span class="min-w-0 flex-1 truncate text-xs text-[#111827]">
-            {{ oneLine(eventText(row.event, 'content')) }}
-          </span>
-          <span class="shrink-0 text-[11px] tabular-nums text-[#9CA3AF]">
-            {{ formatTime(row.time) }}
-          </span>
-        </button>
-        <div v-if="expanded.has(row.key)" class="border-t border-[#E5E7EB] px-3 py-2">
-          <p class="whitespace-pre-wrap break-words text-xs leading-5 text-[#111827]">{{ eventText(row.event, 'content') }}</p>
+      <!-- Inbound message (human): right-aligned dark bubble -->
+      <div v-else-if="row.event.type === 'inbound_message'" class="flex justify-end">
+        <div class="flex max-w-[86%] flex-col items-end gap-1 sm:max-w-[72%]">
+          <div class="flex items-center gap-1.5 text-[11px] text-[#9CA3AF]">
+            <span v-if="messagePeer(row.event)">{{ messagePeer(row.event) }}</span>
+            <span class="rounded border border-[#E5E7EB] px-1.5 py-0.5 font-mono text-[10px] text-[#6B7280]">
+              {{ messageChannel(row.event) }}
+            </span>
+            <span class="tabular-nums">{{ formatTime(row.time) }}</span>
+          </div>
+          <div class="whitespace-pre-wrap break-words rounded-2xl bg-[#111827] px-3.5 py-2 text-sm leading-6 text-white">{{ eventText(row.event, 'content') }}</div>
+        </div>
+      </div>
+
+      <!-- Outbound message (agent): left-aligned light bubble -->
+      <div v-else-if="row.event.type === 'outbound_message'" class="flex justify-start">
+        <div class="flex max-w-[86%] flex-col items-start gap-1 sm:max-w-[72%]">
+          <div class="flex items-center gap-1.5 text-[11px] text-[#9CA3AF]">
+            <span class="rounded border border-[#E5E7EB] px-1.5 py-0.5 font-mono text-[10px] text-[#6B7280]">
+              {{ messageChannel(row.event) }}
+            </span>
+            <span v-if="messagePeer(row.event)">{{ messagePeer(row.event) }}</span>
+            <span class="tabular-nums">{{ formatTime(row.time) }}</span>
+          </div>
+          <div class="whitespace-pre-wrap break-words rounded-2xl border border-[#E5E7EB] bg-white px-3.5 py-2 text-sm leading-6 text-[#111827]">{{ eventText(row.event, 'content') }}</div>
         </div>
       </div>
 
