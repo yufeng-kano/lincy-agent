@@ -112,8 +112,18 @@ AGENT_NOTE_DEFINITION = ToolDefinition(
 
 def create_agent_note(
     note_store: NoteStore,
+    *,
+    max_value_chars: int = 80,
+    max_notes: int = 12,
 ) -> Callable[..., str]:
-    """Create an agent_note function bound to a note store."""
+    """Create an agent_note function bound to a note store.
+
+    max_value_chars / max_notes are guardrails (see
+    core/schema.py:AgentNoteToolConfig, cfgs/agent.yaml tools.agent_note):
+    they reject new writes that would make a note too long or the store
+    too large, but never touch existing oversized values already on disk
+    (see _append_oversized_warning).
+    """
 
     def agent_note(
         action: str,
@@ -134,7 +144,7 @@ def create_agent_note(
         if source_error:
             return source_error
         if action == "create":
-            return _handle_create(
+            result = _handle_create(
                 key,
                 value,
                 triggers,
@@ -143,13 +153,15 @@ def create_agent_note(
                 source_id,
                 source_label,
             )
-        if action == "batch_update":
-            return _handle_batch_update(updates)
-        if action == "list":
-            return _handle_list()
-        if action == "remove":
-            return _handle_remove(key)
-        return f"Error: unknown action '{action}'"
+        elif action == "batch_update":
+            result = _handle_batch_update(updates)
+        elif action == "list":
+            result = _handle_list()
+        elif action == "remove":
+            result = _handle_remove(key)
+        else:
+            return f"Error: unknown action '{action}'"
+        return _append_oversized_warning(result)
 
     def _handle_create(
         key: str | None,
@@ -164,6 +176,14 @@ def create_agent_note(
             return "Error: 'key' is required for create"
         if value is None:
             return "Error: 'value' is required for create"
+        if len(value) > max_value_chars:
+            return _value_too_long_error(len(value), max_value_chars)
+        if len(note_store.list_all()) >= max_notes:
+            return (
+                f"Error: note limit reached ({max_notes} notes). Consolidate "
+                "related notes into one, or remove an existing note "
+                "(agent_note remove) before creating a new one."
+            )
 
         result = note_store.create(
             key=key,
@@ -195,7 +215,10 @@ def create_agent_note(
         if isinstance(normalized, str):
             return normalized
 
-        validation_error = _validate_batch_updates(normalized)
+        validation_error = _validate_batch_updates(
+            normalized,
+            max_value_chars=max_value_chars,
+        )
         if validation_error:
             return validation_error
         missing = [
@@ -256,7 +279,51 @@ def create_agent_note(
             return f"Error: note '{key}' not found"
         return f"OK: removed note '{key}'"
 
+    def _append_oversized_warning(result: str) -> str:
+        """Append a warning line listing existing notes over max_value_chars.
+
+        Runs after any successful (non-error) agent_note call. Never
+        injected into the [Agent Notes] prompt block itself (see
+        NoteStore.format_context_block) -- this is tool-result-only
+        feedback so the agent learns about it without bloating every turn.
+        """
+        if result.lstrip().startswith("Error:"):
+            return result
+        offenders = sorted(
+            (
+                (note.key, len(note.value))
+                for note in note_store.list_all()
+                if len(note.value) > max_value_chars
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if not offenders:
+            return result
+        detail = ", ".join(f"{key}({length})" for key, length in offenders)
+        return (
+            f"{result}\n"
+            f"warning: {len(offenders)} notes exceed {max_value_chars} chars: "
+            f"{detail} — compress them"
+        )
+
     return agent_note
+
+
+def _value_too_long_error(
+    length: int,
+    max_value_chars: int,
+    *,
+    key: str | None = None,
+) -> str:
+    """Reject message that teaches where long content actually belongs."""
+    subject = f"note '{key}' value" if key else "Note value"
+    return (
+        f"Error: {subject} too long ({length} > {max_value_chars} chars). "
+        "Notes hold current-state conclusions only. Write process details "
+        "to memory/agent/temp-memory.md and durable lessons to "
+        "memory/agent/long-term.md, then retry with a short value."
+    )
 
 
 def _validate_source_fields(
@@ -317,6 +384,8 @@ def _normalize_batch_updates(
 
 def _validate_batch_updates(
     updates: list[dict[str, Any]],
+    *,
+    max_value_chars: int,
 ) -> str | None:
     allowed_keys = {
         "key",
@@ -341,6 +410,9 @@ def _validate_batch_updates(
         if key in seen:
             return f"Error: duplicate batch_update key '{key}'"
         seen.add(key)
+        value = item.get("value")
+        if isinstance(value, str) and len(value) > max_value_chars:
+            return _value_too_long_error(len(value), max_value_chars, key=key)
         triggers = item.get("triggers")
         if triggers is not None and (
             not isinstance(triggers, list)

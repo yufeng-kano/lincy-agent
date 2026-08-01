@@ -256,9 +256,10 @@ def make_heartbeat_message(
 | `src/lincy/agent/core.py` | 修改：task wake-up eviction、TaskStore 初始化 |
 | `src/lincy/agent/turn_effects.py` | 修改：`had_task_mutation` |
 | `src/lincy/agent/tool_setup.py` | 修改：註冊 `agent_task` tool |
-| `src/lincy/tools/builtin/agent_note.py` | agent_note tool 實作 |
+| `src/lincy/tools/builtin/agent_note.py` | agent_note tool 實作 + guardrail enforcement |
 | `src/lincy/agent/note_store.py` | NoteStore：CRUD + trigger matching + 持久化 |
-| `src/lincy/context/builder.py` | 修改：每 turn 注入 notes block |
+| `src/lincy/agent/turn_overlay.py` | `[Runtime Context]` / `[Decision Reminder]` 文字組裝（純函式） |
+| `src/lincy/agent/responder.py` | `_build_dynamic_turn_overlay`：組出 notes block 等並疊加到 outgoing request |
 | `src/lincy/tools/registry.py` | 修改：`add_side_effect_tools` method |
 | `src/lincy/cli/app.py` | 修改：初始化 stores、late tool registration |
 
@@ -304,17 +305,39 @@ def make_heartbeat_message(
 
 Runtime 規則：`agent_note` 寫入是狀態提交工具，同一 turn 最多成功呼叫一次；若同輪需要改一個或多個 note，都必須用 `batch_update`。`list` 是唯讀，不占提交額度；但同一 turn 連續重複相同 `list` 會被 responder 擋下並結束 tool loop，以避免無意義的 API 花費與延遲。第二次成功後的重複寫入也會被擋下。
 
+### Guardrails（`tools.agent_note`）
+
+設定於 `cfgs/agent.yaml`（`core/schema.py:AgentNoteToolConfig`，載入時驗證為正整數）：
+
+| 欄位 | 預設 | 說明 |
+|------|------|------|
+| `max_value_chars` | 80 | 單一 note value 上限（字元數） |
+| `max_notes` | 12 | store 內 note 總數上限 |
+
+行為：
+
+- `create` / `batch_update` 寫入的 value 超過 `max_value_chars` → 直接 REJECT（error tool result，不改動 state），錯誤訊息會引導改寫到 `memory/agent/temp-memory.md`（過程細節）或 `memory/agent/long-term.md`（長期結論），例如 `Error: Note value too long (N > 80 chars). ...`
+- `create` 時若 store 已達 `max_notes` → REJECT，訊息要求先合併或刪除既有 note
+- 限制只套用在**新寫入**；既有已超長的 value 不會被拒絕或截斷，仍正常運作——每次成功呼叫（含 `list`）後，若 store 內仍有超過 `max_value_chars` 的既有 note，會在 tool result 後面追加一行 warning（例如 `warning: 3 notes exceed 80 chars: expenses_today(902), bedtime_med(850), noon_med(712) — compress them`），依長度遞減排序；這個 warning **不會**出現在注入 prompt 的 `[Agent Notes]` block 裡，只在 tool result 給 agent 看
+- 要調整上限，改 `cfgs/agent.yaml` 的 `tools.agent_note.max_value_chars` / `max_notes` 即可，不需要改程式碼
+
 ### Context 注入
 
-每個 turn 的 latest user message 都附加 notes block：
+每輪 outgoing request 的 latest user message 都附加 notes block：
 
 ```
 [Agent Notes]
-location: "新竹" | updated_at 2026-03-29 14:00
-schedule_today: "14:00 開會" | updated_at 2026-03-29 09:00
+location: "新竹" | updated_at 03-29 14:00
+schedule_today: "14:00 開會" | updated_at 03-29 09:00
 ```
 
-注入位置：`ContextBuilder.build()` 的 `last_user_idx` block，與 `[Runtime Context]`、`[Decision Reminder]` 同層。
+注入位置：**responder overlay**，不是 `ContextBuilder.build()`。實際組裝在 `agent/turn_overlay.py:build_dynamic_turn_overlay_text()`（純函式，組出 `[Runtime Context]` + `[Timing Notice]` + `[Decision Reminder]` + `[Agent Notes]`），再由 `agent/responder.py:_build_dynamic_turn_overlay()` 包成 overlay callable，接在 common-ground overlay 之前一起疊加到 outgoing request 的 latest user message（`core.py:_prepare_turn_attempt` 每個 turn attempt 只組裝一次並快取；同一 turn 內的每次 LLM call、包含 tool loop 重建與 overflow retry，都重複套用同一份快取文字，確保 prompt cache 的 BP4 仍然命中）。
+
+`Conversation`、`ContextBuilder` 的 render cache、以及 session 的 `messages.jsonl` **永遠不會**含有這個 block——只有送給 LLM 的 request（`requests.jsonl` 記錄的內容）才看得到。
+
+**Turn-snapshot 語意**：overlay 文字在 turn 開始時就快照定案；若 agent 在同一 turn 的 tool loop 中途改了某個 note，本輪剩餘的 LLM call 仍會看到 turn 開始時的舊值，直到**下一輪**才會看到新值。這是刻意設計，換取 prompt cache 穩定，不是 bug。
+
+**既有 session 不會回溯**：這個改動生效前，舊 session 已經把 `[Agent Notes]` 等 block 凍結進 render cache（見 `docs/dev/token-only-context-policy.md`）。這些 session 沒有 migration，凍結副本會保留到下次 `context_refresh` 或 compaction 自然清掉為止。
 
 注意：context 注入必須使用穩定字串（例如絕對時間），不可用 `2h ago` 這種相對時間；否則 prompt rebuild 時會因 wall clock 漂移破壞 prompt cache 前綴。
 

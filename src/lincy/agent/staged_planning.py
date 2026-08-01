@@ -27,6 +27,7 @@ from ..llm.schema import (
 from ..send_message_batch_guidance import build_stage2_message_economy_rule
 from ..tools import ToolRegistry
 from ..tools.registry import ToolResult
+from .turn_overlay import DECISION_REMINDER_LABEL
 from .ui_event_console import AgentUiPort
 
 STAGE1_SYNTHETIC_TOOL_NAME = "_stage1_gather"
@@ -286,7 +287,7 @@ def _scrub_stage1_messages(messages: list[Message]) -> list[Message]:
     """Remove action-oriented reminders that mis-prime Stage 1 gathering."""
     reminder_blocks = list(ContextBuilder.channel_reminder_variants())
     reminder_blocks.extend(ContextBuilder._GENERAL_REMINDERS.values())
-    decision_marker = f"\n\n{ContextBuilder._DECISION_REMINDER_LABEL}\n"
+    decision_marker = f"\n\n{DECISION_REMINDER_LABEL}\n"
 
     scrubbed: list[Message] = []
     for msg in messages:

@@ -379,6 +379,59 @@ def test_web_fetch_config_override():
     assert config.tools.web_fetch.allow_private_hosts is True
 
 
+def test_agent_note_tool_config_defaults():
+    config = AppConfig.model_validate(
+        {
+            "agents": {
+                "brain": {
+                    "llm": _ollama_llm(),
+                }
+            }
+        }
+    )
+    assert config.tools.agent_note.max_value_chars == 80
+    assert config.tools.agent_note.max_notes == 12
+
+
+def test_agent_note_tool_config_override():
+    config = AppConfig.model_validate(
+        {
+            "tools": {
+                "agent_note": {
+                    "max_value_chars": 40,
+                    "max_notes": 5,
+                }
+            },
+            "agents": {
+                "brain": {
+                    "llm": _ollama_llm(),
+                }
+            },
+        }
+    )
+    assert config.tools.agent_note.max_value_chars == 40
+    assert config.tools.agent_note.max_notes == 5
+
+
+@pytest.mark.parametrize("field", ["max_value_chars", "max_notes"])
+def test_agent_note_tool_config_rejects_non_positive_values(field: str):
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {
+                "tools": {
+                    "agent_note": {
+                        field: 0,
+                    }
+                },
+                "agents": {
+                    "brain": {
+                        "llm": _ollama_llm(),
+                    }
+                },
+            }
+        )
+
+
 def test_discord_channel_config_validates_ranges():
     with pytest.raises(ValidationError):
         AppConfig.model_validate(

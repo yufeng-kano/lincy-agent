@@ -553,7 +553,6 @@ def main(user: str, resume: str | None = None) -> None:
         format_reminders=config.features.format_reminders.model_dump(),
         decision_reminder=config.features.decision_reminder.model_dump(),
         send_message_batch_guidance=config.features.send_message_batch_guidance.enabled,
-        note_store=note_store,
         fingerprint_boot_files=brain_cache.fingerprint.boot_files,
         fingerprint_boot_files_as_tool=brain_cache.fingerprint.boot_files_as_tool,
     )
@@ -1152,7 +1151,11 @@ def main(user: str, resume: str | None = None) -> None:
     )
     registry.register(
         "agent_note",
-        create_agent_note(note_store),
+        create_agent_note(
+            note_store,
+            max_value_chars=config.tools.agent_note.max_value_chars,
+            max_notes=config.tools.agent_note.max_notes,
+        ),
         AGENT_NOTE_DEFINITION,
     )
     registry.add_side_effect_tools(frozenset({"agent_task", "agent_note"}))

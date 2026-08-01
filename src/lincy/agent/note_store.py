@@ -50,7 +50,7 @@ def _format_age(updated_at: datetime) -> str:
 
 def _format_context_updated_at(updated_at: datetime) -> str:
     """Render a stable local timestamp for prompt context injection."""
-    return tz_localise(updated_at).strftime("%Y-%m-%d %H:%M")
+    return tz_localise(updated_at).strftime("%m-%d %H:%M")
 
 
 class NoteStore:

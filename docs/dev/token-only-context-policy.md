@@ -18,7 +18,8 @@
 - 原因：
   - 會破壞快取前綴穩定性，降低 cache hit
   - Anthropic / Gemini adapter 都只保留最後一個 system 欄位，多個 system message 可能互相覆蓋
-- 若需要本輪近端提醒，只能放在 conversation tier；目前建議做法是附加在**最新 user message**
+- 若需要本輪近端提醒，只能放在 conversation tier；做法是附加在**最新 user message**
+- 目前落地方式：`[Runtime Context]` / `[Timing Notice]` / `[Decision Reminder]` / `[Agent Notes]` 由 `agent/turn_overlay.py` 組字串，`agent/responder.py:_build_dynamic_turn_overlay()` 包成 overlay，接在 common-ground overlay 之前，一起疊加到 latest user message（`core.py:_prepare_turn_attempt` 每個 turn attempt 只組裝、快照一次）。這些 block **只存在於送給 LLM 的 request**，不寫回 `Conversation`，也不進 `ContextBuilder` 的 render cache——`ContextBuilder` 本身不再依賴 `NoteStore` 或這幾個 block 的組字邏輯，所以歷史訊息不會凍結到任何一份 block 的舊副本（詳見 `docs/dev/agent-task-system.md` 的 Agent Note System 一節）
 
 ## Prompt Cache 操作目標
 

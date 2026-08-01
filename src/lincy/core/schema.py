@@ -213,6 +213,18 @@ class AppleAppsToolConfig(StrictConfigModel):
     )
 
 
+class AgentNoteToolConfig(StrictConfigModel):
+    """Configuration for agent_note tool guardrails.
+
+    Limits apply to new writes only (create / batch_update with a new
+    value); existing oversized values already in state/notes.json keep
+    working and are surfaced via a warning instead of being rejected.
+    """
+
+    max_value_chars: int = Field(default=80, ge=1)
+    max_notes: int = Field(default=12, ge=1)
+
+
 class ToolsConfig(StrictConfigModel):
     """Tools configuration for agent capabilities."""
 
@@ -229,6 +241,7 @@ class ToolsConfig(StrictConfigModel):
     skill_governance: SkillGovernanceConfig = Field(
         default_factory=SkillGovernanceConfig
     )
+    agent_note: AgentNoteToolConfig = Field(default_factory=AgentNoteToolConfig)
 
 
 # === Provider-specific reasoning/thinking configs ===

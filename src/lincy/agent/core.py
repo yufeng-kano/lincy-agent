@@ -52,7 +52,12 @@ from ..tui.sink import UiSink
 from ..workspace import WorkspaceManager
 from . import responder as _responder
 from .queue import PersistentPriorityQueue
-from .responder import _CommonGroundTurnDebug, _build_common_ground_overlay
+from .responder import (
+    _CommonGroundTurnDebug,
+    _build_common_ground_overlay,
+    _build_dynamic_turn_overlay,
+    _compose_message_overlays,
+)
 from .run_helpers import (
     _latest_intermediate_text,  # noqa: F401
     _latest_nonempty_assistant_content,  # noqa: F401
@@ -348,7 +353,13 @@ class _PreparedTurn:
     pre_turn_anchor: int
     turn_metadata: dict[str, object] | None
     messages: list[Message]
-    common_ground_overlay: Callable[[list[Message]], list[Message]] | None
+    # Composed overlay applied to the latest user message of every outgoing
+    # request this turn: per-turn dynamic blocks ([Runtime Context],
+    # [Timing Notice], [Decision Reminder], [Agent Notes]) followed by the
+    # common-ground block, in that order. Captured once per turn attempt
+    # (see _prepare_turn_attempt) and reused verbatim across tool-loop
+    # rounds and the single overflow retry so BP4 still hits within the turn.
+    message_overlay: Callable[[list[Message]], list[Message]] | None
     turn_memory_snapshot: _TurnMemorySnapshot
     turn_anchor: int
 
@@ -763,6 +774,18 @@ class AgentCore:
             metadata=turn_metadata,
         )
         messages = self.builder.build(self.conversation)
+        # Snapshot the full per-turn overlay text ONCE here (dynamic blocks
+        # then common ground, preserving today's final on-the-wire order)
+        # and reuse the identical composed callable for every LLM call this
+        # turn, including the single overflow retry. If agent_note edits a
+        # note mid-turn, later rounds of THIS turn still see this snapshot;
+        # the next turn picks up the change.
+        latest_user_entry = self.conversation.get_messages()[-1]
+        dynamic_overlay = _build_dynamic_turn_overlay(
+            entry=latest_user_entry,
+            builder=self.builder,
+            note_store=getattr(self, "note_store", None),
+        )
         common_ground_overlay, common_ground_debug = _build_common_ground_overlay(
             shared_state_store=getattr(self, "shared_state_store", None),
             config=self.config,
@@ -784,7 +807,10 @@ class AgentCore:
             pre_turn_anchor=pre_turn_anchor,
             turn_metadata=turn_metadata,
             messages=messages,
-            common_ground_overlay=common_ground_overlay,
+            message_overlay=_compose_message_overlays(
+                dynamic_overlay,
+                common_ground_overlay,
+            ),
             turn_memory_snapshot=turn_memory_snapshot,
             turn_anchor=turn_anchor,
         )
@@ -797,13 +823,14 @@ class AgentCore:
         sender: str | None,
         timestamp: datetime | None,
         turn_metadata: dict[str, object] | None,
-        common_ground_overlay: Callable[[list[Message]], list[Message]] | None,
+        message_overlay: Callable[[list[Message]], list[Message]] | None,
     ) -> _PreparedTurn:
         """Prepare the single retry after overflow compaction.
 
-        This intentionally reuses the original overlay and skips extra debug
-        output to preserve the previous retry behavior while keeping the
-        original inbound timestamp stable across the single retry.
+        This intentionally reuses the original turn-start overlay (dynamic
+        blocks + common ground) and skips extra debug output to preserve
+        the previous retry behavior while keeping the original inbound
+        timestamp stable across the single retry.
         """
         pre_turn_anchor = len(self.conversation.get_messages())
         self.conversation.add(
@@ -822,7 +849,7 @@ class AgentCore:
             pre_turn_anchor=pre_turn_anchor,
             turn_metadata=turn_metadata,
             messages=messages,
-            common_ground_overlay=common_ground_overlay,
+            message_overlay=message_overlay,
             turn_memory_snapshot=turn_memory_snapshot,
             turn_anchor=turn_anchor,
         )
@@ -960,7 +987,7 @@ class AgentCore:
             memory_edit_turn_retry_limit=self.config.tools.memory_edit.turn_retry_limit,
             is_cancel_requested=is_cancel_requested,
             on_cancel_pending=on_cancel_pending,
-            message_overlay=prepared.common_ground_overlay,
+            message_overlay=prepared.message_overlay,
             on_model_response=self._record_brain_response_usage,
             skill_registry=getattr(self, "skill_registry", None),
             skill_check_agent=getattr(self, "skill_check_agent", None),
@@ -1105,6 +1132,12 @@ class AgentCore:
             memory_edit_turn_retry_limit=self.config.tools.memory_edit.turn_retry_limit,
             is_cancel_requested=is_cancel_requested,
             on_cancel_pending=on_cancel_pending,
+            # Reuse this turn's already-snapshotted overlay (dynamic blocks +
+            # common ground) instead of leaving the re-run overlay-free: the
+            # conscience re-run answers the same turn, so it should see the
+            # same turn-start snapshot as the primary call, not a fresh
+            # re-read of NoteStore/common-ground state.
+            message_overlay=prepared.message_overlay,
             on_model_response=self._record_brain_response_usage,
             skill_registry=getattr(self, "skill_registry", None),
             skill_check_agent=getattr(self, "skill_check_agent", None),
@@ -1337,7 +1370,7 @@ class AgentCore:
             sender=sender,
             timestamp=timestamp,
             turn_metadata=prepared.turn_metadata,
-            common_ground_overlay=prepared.common_ground_overlay,
+            message_overlay=prepared.message_overlay,
         )
         try:
             final_content = self._execute_turn_attempt(

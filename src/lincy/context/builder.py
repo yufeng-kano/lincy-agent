@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ..llm.base import Message
 from ..llm.schema import ContentPart, ToolCall, make_tool_result_message
@@ -10,13 +9,9 @@ from ..send_message_batch_guidance import (
     all_channel_reminder_variants,
     build_channel_reminders,
 )
-from ..turn_timing import build_turn_timing_notice, parse_turn_timing_info
 from ..timezone_utils import localise as tz_localise
 from .cache_breakpoints import build_cache_control
 from .conversation import Conversation
-
-if TYPE_CHECKING:
-    from ..agent.note_store import NoteStore
 
 _TOOL_BOOT_CALL_ID = "boot_ctx_0"
 _TOOL_BOOT_NAME = "read_startup_context"
@@ -35,21 +30,10 @@ class ContextBuilder:
     _GENERAL_REMINDERS: dict[str, str] = {
         "memory": "(memory: search before answering from memory; edit to save new information)",
     }
-    _DECISION_REMINDER_LABEL = "[Decision Reminder]"
-    _DECISION_REMINDER_TEMPLATE = (
-        "Keep {anchors} in mind before acting. Verify constraints, commitments, "
-        "blocked state, cooldown, and current risk. Then decide send_message, "
-        "schedule_action, or silent wait."
-    )
-    _DECISION_REMINDER_WITH_VALUES_TEMPLATE = (
-        "Core values to embody:\n{values}\n"
-        "Verify constraints from {anchors}, then decide."
-    )
 
     def __init__(
         self,
         system_prompt: str | None = None,
-        timezone: str | None = None,
         agent_os_dir: Path | None = None,
         boot_files: list[str] | None = None,
         boot_files_as_tool: list[str] | None = None,
@@ -59,12 +43,10 @@ class ContextBuilder:
         format_reminders: dict[str, bool] | None = None,
         decision_reminder: dict[str, object] | None = None,
         send_message_batch_guidance: bool = False,
-        note_store: NoteStore | None = None,
         fingerprint_boot_files: bool = False,
         fingerprint_boot_files_as_tool: bool = False,
     ):
         self.system_prompt = system_prompt
-        self.timezone = timezone
         self.agent_os_dir = agent_os_dir
         self.boot_files = boot_files
         self.boot_files_as_tool = boot_files_as_tool
@@ -92,12 +74,11 @@ class ContextBuilder:
         self._tool_boot_segments: list[tuple[str, str]] = []
         self._pinned_segments: list[tuple[str, str]] = []
         self._core_values_cache: str | None = None
-        self._note_store = note_store
         # Render cache: frozen rendered content for conversation messages.
         # Keyed by position in conversation.get_messages(). Once a message
-        # is no longer the latest user message, its rendered content (including
-        # any dynamic injections from when it WAS latest) is frozen and reused
-        # on subsequent builds, preventing prompt cache prefix divergence.
+        # is no longer the latest user message, its rendered content is
+        # frozen and reused on subsequent builds, preventing prompt cache
+        # prefix divergence.
         self._rendered_conv: list[Message] = []
         # Parallel list of source SessionEntry objects for identity checks.
         # Used to detect truncation/replace without relying on content comparison.
@@ -107,6 +88,27 @@ class ContextBuilder:
     def channel_reminder_variants(cls) -> tuple[str, ...]:
         """Return all channel reminder variants used by runtime prompting."""
         return all_channel_reminder_variants()
+
+    @property
+    def decision_reminder_enabled(self) -> bool:
+        """Whether the (responder-applied) decision reminder block is enabled."""
+        return self._decision_reminder_enabled
+
+    @property
+    def decision_reminder_files(self) -> list[str]:
+        """Anchor files listed in the decision reminder text."""
+        return self._decision_reminder_files
+
+    @property
+    def decision_reminder_core_values(self) -> str | None:
+        """Core-values section extracted from boot files at reload time.
+
+        Cached by reload_boot_files() (see _extract_section_from_disk) so
+        it stays stable across a turn without re-reading disk; exposed here
+        because the actual decision-reminder text is now assembled by the
+        responder overlay (see agent/turn_overlay.py), not by build().
+        """
+        return self._core_values_cache
 
     def reload_boot_files(self) -> None:
         """Read boot files from disk and cache the result.
@@ -265,33 +267,6 @@ class ContextBuilder:
     def update_system_prompt(self, system_prompt: str) -> None:
         """Replace the resolved system prompt (e.g. after date change)."""
         self.system_prompt = system_prompt
-
-    @staticmethod
-    def _append_text_block(content: str, block: str | None) -> str:
-        """Append one note block while keeping the original user text intact."""
-        if not block:
-            return content
-        if not content:
-            return block
-        return f"{content}\n\n{block}"
-
-    def _build_latest_turn_runtime_context(self, entry) -> str | None:
-        """Build per-turn runtime context using the frozen turn metadata snapshot."""
-        parts: list[str] = []
-        timing = parse_turn_timing_info(entry)
-        if timing is not None and (
-            self.agent_os_dir is not None or self.timezone is not None
-        ):
-            now_local = tz_localise(timing.processing_started_at)
-            day = _DAY_NAMES[now_local.weekday()]
-            parts.append(
-                now_local.strftime(f"current_local_time: %Y-%m-%d ({day}) %H:%M")
-            )
-        if self.agent_os_dir:
-            parts.append(f"agent_os_dir: {self.agent_os_dir}")
-        if not parts:
-            return None
-        return f"[Runtime Context]\n{'\n'.join(parts)}"
 
     def _read_file_sections(self, file_list: list[str] | None) -> str | None:
         """Read files from disk and return combined <file> content."""
@@ -540,53 +515,6 @@ class ContextBuilder:
                 return i
         return None
 
-    @staticmethod
-    def _format_decision_anchor_list(files: list[str]) -> str:
-        """Render short file anchors, keeping basenames unless ambiguous."""
-        if not files:
-            return "key rules"
-
-        counts: dict[str, int] = {}
-        basenames = [Path(path).name or path for path in files]
-        for name in basenames:
-            counts[name] = counts.get(name, 0) + 1
-
-        rendered = [
-            name if counts[name] == 1 else path
-            for path, name in zip(files, basenames, strict=False)
-        ]
-        if len(rendered) == 1:
-            return rendered[0]
-        if len(rendered) == 2:
-            return f"{rendered[0]} and {rendered[1]}"
-        return ", ".join(rendered[:-1]) + f", and {rendered[-1]}"
-
-    def _build_decision_reminder(self) -> str | None:
-        """Build the latest-turn decision reminder text.
-
-        When core values are cached (via inline_section config), inline them
-        directly instead of just referencing a file name.
-        """
-        if not self._decision_reminder_enabled:
-            return None
-        anchors = self._format_decision_anchor_list(
-            self._decision_reminder_files,
-        )
-        if self._core_values_cache:
-            body = self._DECISION_REMINDER_WITH_VALUES_TEMPLATE.format(
-                values=self._core_values_cache,
-                anchors=anchors,
-            )
-        else:
-            body = self._DECISION_REMINDER_TEMPLATE.format(anchors=anchors)
-        return f"{self._DECISION_REMINDER_LABEL}\n{body}"
-
-    def _build_notes_block(self) -> str | None:
-        """Build the agent notes block for context injection."""
-        if self._note_store is None:
-            return None
-        return self._note_store.format_context_block()
-
     def build(self, conversation: Conversation) -> list[Message]:
         """Build context from conversation history."""
         prefix: list[Message] = []
@@ -615,11 +543,10 @@ class ContextBuilder:
         # Inject pinned context files (agent-registered, loaded at reload time)
         prefix.extend(self._build_pinned_context_messages())
 
-        # Process conversation messages with render cache.
-        # Non-latest messages reuse their frozen rendered content so that
-        # dynamic per-turn injections (Runtime Context, Timing Notice, etc.)
-        # persist after the message is no longer latest, keeping the prompt
-        # cache prefix stable across turns.
+        # Process conversation messages with render cache. Non-latest
+        # messages reuse their frozen rendered content (channel/sender tag,
+        # format reminders, timestamp prefix) so re-rendering stays stable
+        # and cheap across turns.
         all_msgs = conversation.get_messages()
         last_user_idx = self._find_last_user_message_index(all_msgs)
 
@@ -668,18 +595,16 @@ class ContextBuilder:
                 for key, text in self._GENERAL_REMINDERS.items():
                     if self._format_reminders.get(key):
                         content = f"{content}\n{text}"
-                # Per-turn dynamic injections: only on the latest user message.
-                # Once frozen by the render cache, these persist on historical
-                # messages and no longer disappear on the next turn.
-                if idx == last_user_idx:
-                    runtime_ctx = self._build_latest_turn_runtime_context(msg)
-                    content = self._append_text_block(content, runtime_ctx)
-                    timing_notice = build_turn_timing_notice(msg)
-                    content = self._append_text_block(content, timing_notice)
-                    reminder = self._build_decision_reminder()
-                    content = self._append_text_block(content, reminder)
-                    notes_block = self._build_notes_block()
-                    content = self._append_text_block(content, notes_block)
+                # Per-turn dynamic blocks ([Runtime Context], [Timing Notice],
+                # [Decision Reminder], [Agent Notes]) are NOT injected here.
+                # They used to be appended to the latest user message and,
+                # once frozen by the render cache, would persist forever on
+                # every historical user message. They are now applied only
+                # to the outgoing request's latest user message by the
+                # responder overlay (see agent/turn_overlay.py and
+                # agent/responder.py), never written back into Conversation
+                # or this render cache. See docs/dev/agent-task-system.md
+                # and docs/dev/token-only-context-policy.md.
 
             if (
                 not rendered_static

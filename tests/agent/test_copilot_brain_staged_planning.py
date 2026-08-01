@@ -4,6 +4,11 @@ from unittest.mock import MagicMock
 
 from lincy.agent.core import _run_brain_responder
 from lincy.agent.turn_context import TurnContext
+from lincy.agent.turn_overlay import (
+    DECISION_REMINDER_LABEL,
+    _DECISION_REMINDER_TEMPLATE,
+    build_decision_reminder_block,
+)
 from lincy.agent.staged_planning import (
     STAGE1_SYNTHETIC_TOOL_NAME,
     Stage1GatheringResult,
@@ -848,7 +853,7 @@ def test_scrub_stage1_messages_removes_action_oriented_reminders():
             reminder = candidate
             break
     memory = ContextBuilder._GENERAL_REMINDERS["memory"]
-    decision = ContextBuilder._DECISION_REMINDER_TEMPLATE.format(
+    decision = _DECISION_REMINDER_TEMPLATE.format(
         anchors="long-term.md",
     )
     messages = [
@@ -858,7 +863,7 @@ def test_scrub_stage1_messages_removes_action_oriented_reminders():
                 "[2026-03-08 (Sun) 12:00] [discord, from alice] hello\n"
                 f"{reminder}\n"
                 f"{memory}\n\n"
-                f"{ContextBuilder._DECISION_REMINDER_LABEL}\n{decision}"
+                f"{DECISION_REMINDER_LABEL}\n{decision}"
             ),
         )
     ]
@@ -903,6 +908,19 @@ def test_scrub_stage1_messages_strips_context_builder_output():
     conv.add("user", "hello", channel="discord", sender="alice")
 
     messages = builder.build(conv)
+    # [Decision Reminder] is no longer injected by ContextBuilder.build();
+    # simulate the responder's per-turn overlay (see agent/turn_overlay.py)
+    # landing on the latest user message before Stage 1 sees it.
+    decision_block = build_decision_reminder_block(
+        enabled=builder.decision_reminder_enabled,
+        anchor_files=builder.decision_reminder_files,
+        core_values=builder.decision_reminder_core_values,
+    )
+    user_idx = next(i for i, m in enumerate(messages) if m.role == "user")
+    messages[user_idx] = messages[user_idx].model_copy(
+        update={"content": f"{messages[user_idx].content}\n\n{decision_block}"}
+    )
+
     scrubbed = _scrub_stage1_messages(messages)
     user_msg = [m for m in scrubbed if m.role == "user"][0]
 
@@ -933,6 +951,18 @@ def test_stage1_information_gathering_uses_scrubbed_messages():
     conv = Conversation()
     conv.add("user", "hello", channel="discord", sender="alice")
     built_messages = builder.build(conv)
+    # [Decision Reminder] is no longer injected by ContextBuilder.build();
+    # simulate the responder's per-turn overlay (see agent/turn_overlay.py)
+    # landing on the latest user message before Stage 1 sees it.
+    decision_block = build_decision_reminder_block(
+        enabled=builder.decision_reminder_enabled,
+        anchor_files=builder.decision_reminder_files,
+        core_values=builder.decision_reminder_core_values,
+    )
+    user_idx = next(i for i, m in enumerate(built_messages) if m.role == "user")
+    built_messages[user_idx] = built_messages[user_idx].model_copy(
+        update={"content": f"{built_messages[user_idx].content}\n\n{decision_block}"}
+    )
     client = _Client()
 
     result = run_stage1_information_gathering(

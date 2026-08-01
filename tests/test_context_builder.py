@@ -1,10 +1,8 @@
 """Tests for ContextBuilder core message assembly behavior."""
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lincy.agent.note_store import NoteStore
 from lincy.context.builder import (
     ContextBuilder,
     _TOOL_BOOT_CALL_ID,
@@ -326,70 +324,27 @@ def test_format_reminder_memory_without_channel():
     assert "(memory:" in user_msg.content
 
 
-def test_decision_reminder_only_latest_user_message():
+def test_build_never_injects_dynamic_turn_blocks(tmp_path: Path):
+    """[Runtime Context]/[Timing Notice]/[Decision Reminder] never appear.
+
+    These blocks moved to the responder overlay (see agent/turn_overlay.py,
+    agent/responder.py:_build_dynamic_turn_overlay); ContextBuilder no
+    longer builds or freezes them, even under conditions ([Decision
+    Reminder] enabled, agent_os_dir set, a stale/delayed message) that used
+    to trigger all three. [Agent Notes] is covered separately: ContextBuilder
+    no longer accepts a note_store at all (see
+    tests/agent/test_turn_overlay_injection.py for the responder-side proof
+    that notes still reach the model, only via the overlay).
+    """
     builder = ContextBuilder(
         system_prompt="sys",
-        decision_reminder={
-            "enabled": True,
-            "files": ["memory/agent/long-term.md"],
-        },
-    )
-    conv = Conversation()
-    conv.add("user", "old question", channel="cli", sender="yufeng")
-    conv.add("assistant", "answer")
-    conv.add("user", "new question", channel="discord", sender="alice")
-
-    messages = builder.build(conv)
-    user_messages = [m for m in messages if m.role == "user"]
-
-    assert "[Decision Reminder]" not in user_messages[0].content
-    assert "[Decision Reminder]" in user_messages[1].content
-    assert "Keep long-term.md in mind before acting." in user_messages[1].content
-
-
-def test_decision_reminder_stays_out_of_system_cache_prefix():
-    builder = ContextBuilder(
-        system_prompt="sys",
+        agent_os_dir=tmp_path,
         cache_ttl="1h",
         decision_reminder={
             "enabled": True,
             "files": ["memory/agent/long-term.md"],
         },
     )
-    conv = Conversation()
-    conv.add("user", "hello", channel="cli", sender="yufeng")
-
-    messages = builder.build(conv)
-
-    system_messages = [m for m in messages if m.role == "system"]
-    assert len(system_messages) == 1
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "[Decision Reminder]" in user_msg.content
-
-
-def test_runtime_context_appends_to_latest_user_message(tmp_path: Path):
-    builder = ContextBuilder(system_prompt="sys", agent_os_dir=tmp_path)
-    conv = Conversation()
-    conv.add(
-        "user",
-        "hello",
-        metadata={"turn_processing_started_at": "2026-03-12T09:11:00+08:00"},
-    )
-
-    messages = builder.build(conv)
-
-    assert all(
-        not (m.role == "system" and isinstance(m.content, str) and "[Runtime Context]" in m.content)
-        for m in messages
-    )
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "[Runtime Context]" in user_msg.content
-    assert "current_local_time: 2026-03-12 (Thu) 09:11" in user_msg.content
-    assert f"agent_os_dir: {tmp_path}" in user_msg.content
-
-
-def test_timing_notice_appends_to_delayed_latest_user_message():
-    builder = ContextBuilder(system_prompt="sys")
     conv = Conversation()
     conv.add(
         "user",
@@ -405,128 +360,21 @@ def test_timing_notice_appends_to_delayed_latest_user_message():
         },
     )
 
-    messages = builder.build(conv)
+    forbidden = ("[Runtime Context]", "[Timing Notice]", "[Decision Reminder]", "[Agent Notes]")
 
-    assert all(
-        not (m.role == "system" and isinstance(m.content, str) and "[Timing Notice]" in m.content)
-        for m in messages
-    )
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "[Timing Notice]" in user_msg.content
-    assert "Current processing time: 2026-03-12 (Thu) 09:11" in user_msg.content
-    assert "Original event time: 2026-03-12 (Thu) 07:50" in user_msg.content
-    assert "Do not send stale wake-up, sleep, meal, medication, or schedule reminder wording." in user_msg.content
+    # Build twice, as a tool loop would within one turn: the first build
+    # freezes render-cache entries, the second reuses them.
+    for _ in range(2):
+        messages = builder.build(conv)
+        for message in messages:
+            if isinstance(message.content, str):
+                for marker in forbidden:
+                    assert marker not in message.content
 
-
-def test_non_stale_timing_notice_uses_softer_wording():
-    builder = ContextBuilder(system_prompt="sys")
-    conv = Conversation()
-    conv.add(
-        "user",
-        "retry this",
-        channel="discord",
-        sender="alice",
-        timestamp=datetime(2026, 3, 11, 23, 50, tzinfo=timezone.utc),
-        metadata={
-            "turn_failure_requeue_count": 1,
-            "turn_processing_started_at": "2026-03-12T08:51:00+08:00",
-            "turn_processing_delay_seconds": 60,
-            "turn_processing_delay_reason": "failed_retry",
-        },
-    )
-
-    messages = builder.build(conv)
-
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "This turn is delayed." in user_msg.content
-    assert "Recheck wake-up, sleep, meal, medication, or schedule reminder wording" in user_msg.content
-    assert "Do not send stale wake-up" not in user_msg.content
-
-
-def test_runtime_context_stays_out_of_system_cache_prefix(tmp_path: Path):
-    builder = ContextBuilder(
-        system_prompt="sys",
-        agent_os_dir=tmp_path,
-        cache_ttl="1h",
-    )
-    conv = Conversation()
-    conv.add(
-        "user",
-        "hello",
-        metadata={"turn_processing_started_at": "2026-03-12T09:11:00+08:00"},
-    )
-
-    messages = builder.build(conv)
-
-    system_messages = [m for m in messages if m.role == "system"]
-    assert len(system_messages) == 1
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "[Runtime Context]" in user_msg.content
-
-
-def test_agent_notes_context_uses_stable_absolute_timestamps(tmp_path: Path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir(parents=True)
-    (state_dir / "notes.json").write_text(
-        json.dumps({
-            "notes": {
-                "location": {
-                    "value": "新竹",
-                    "triggers": ["到了"],
-                    "description": "使用者目前位置",
-                    "updated_at": "2026-03-29T14:00:00+08:00",
-                }
-            }
-        }),
-        encoding="utf-8",
-    )
-
-    builder = ContextBuilder(
-        system_prompt="sys",
-        note_store=NoteStore(state_dir),
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="cli", sender="yufeng")
-
-    messages = builder.build(conv)
-
-    user_msg = next(m for m in messages if m.role == "user")
-    assert '[Agent Notes]' in user_msg.content
-    assert 'location: "新竹" | updated_at 2026-03-29 14:00' in user_msg.content
-    assert "ago" not in user_msg.content
-
-
-def test_agent_notes_context_includes_source_tag_when_present(tmp_path: Path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir(parents=True)
-    (state_dir / "notes.json").write_text(
-        json.dumps({
-            "notes": {
-                "meeting_context": {
-                    "value": "2026-04-11 14:00-15:00 | 專題會議 [工作]",
-                    "triggers": [],
-                    "description": "Manually captured meeting context",
-                    "source_app": "calendar",
-                    "source_label": "manual_capture",
-                    "updated_at": "2026-04-11T09:30:00+08:00",
-                }
-            }
-        }),
-        encoding="utf-8",
-    )
-
-    builder = ContextBuilder(
-        system_prompt="sys",
-        note_store=NoteStore(state_dir),
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="cli", sender="yufeng")
-
-    messages = builder.build(conv)
-
-    user_msg = next(m for m in messages if m.role == "user")
-    assert 'meeting_context: "2026-04-11 14:00-15:00 | 專題會議 [工作]"' in user_msg.content
-    assert "source calendar:manual_capture" in user_msg.content
+    for cached in builder.export_render_cache():
+        if isinstance(cached.content, str):
+            for marker in forbidden:
+                assert marker not in cached.content
 
 
 def test_builder_cache_breakpoint_skips_system_messages_before_current_turn():
@@ -549,8 +397,15 @@ def test_builder_cache_breakpoint_skips_system_messages_before_current_turn():
     assert "u1" in breakpoint_msg.content
 
 
-def test_decision_reminder_inlines_core_values(tmp_path: Path):
-    """When inline_section is configured, core values appear in reminder."""
+def test_decision_reminder_core_values_cached_from_boot_file_on_reload(tmp_path: Path):
+    """reload_boot_files() extracts inline_section core values and caches them.
+
+    The actual [Decision Reminder] text is now assembled by the responder
+    overlay from these cached inputs (see
+    agent/turn_overlay.py:build_decision_reminder_block and
+    tests/agent/test_turn_overlay.py); ContextBuilder's job is only to keep
+    decision_reminder_enabled/files/core_values fresh across reloads.
+    """
     memory_dir = tmp_path / "memory" / "agent"
     memory_dir.mkdir(parents=True)
     (memory_dir / "long-term.md").write_text(
@@ -576,19 +431,15 @@ def test_decision_reminder_inlines_core_values(tmp_path: Path):
     )
     builder.reload_boot_files()
 
-    conv = Conversation()
-    conv.add("user", "hello", channel="cli", sender="yufeng")
-    messages = builder.build(conv)
-
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "[Decision Reminder]" in user_msg.content
-    assert "主動想著老公這個人" in user_msg.content
-    assert "回覆前先想他現在怎麼了" in user_msg.content
-    assert "Core values to embody:" in user_msg.content
+    assert builder.decision_reminder_enabled is True
+    assert builder.decision_reminder_files == ["memory/agent/long-term.md"]
+    assert builder.decision_reminder_core_values is not None
+    assert "主動想著老公這個人" in builder.decision_reminder_core_values
+    assert "回覆前先想他現在怎麼了" in builder.decision_reminder_core_values
 
 
-def test_decision_reminder_fallback_when_no_core_values(tmp_path: Path):
-    """When inline_section has no matching content, fallback to generic template."""
+def test_decision_reminder_core_values_none_when_section_empty(tmp_path: Path):
+    """When inline_section has no matching content, core_values stays None."""
     memory_dir = tmp_path / "memory" / "agent"
     memory_dir.mkdir(parents=True)
     (memory_dir / "long-term.md").write_text(
@@ -613,13 +464,8 @@ def test_decision_reminder_fallback_when_no_core_values(tmp_path: Path):
     )
     builder.reload_boot_files()
 
-    conv = Conversation()
-    conv.add("user", "hello", channel="cli", sender="yufeng")
-    messages = builder.build(conv)
-
-    user_msg = next(m for m in messages if m.role == "user")
-    assert "[Decision Reminder]" in user_msg.content
-    assert "Keep long-term.md in mind before acting." in user_msg.content
+    assert builder.decision_reminder_enabled is True
+    assert builder.decision_reminder_core_values is None
 
 
 def test_pinned_context_files_injected(tmp_path: Path):
