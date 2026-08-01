@@ -65,6 +65,7 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 - `/api/requests` 依 response `ts` 過濾，並 **最新優先**（前端首頁 limit 500 才看得到當前 model）
 - dashboard 的 daily cost / token 也依 response / turn 當日聚合
 | GET | `/api/live` | 當前 active session 的 token 位置 |
+| GET | `/api/context/composition` | 即時分析最新一筆 brain request 的 prompt 組成（segments + token 估計），每次請求都重新解析 `requests.jsonl`、不進快取；session/brain request 不存在時回 `available: false`，見「Context 頁」 |
 | GET | `/api/claude-accounts` | 轉發 claude-code-proxy `/usage`：帳號、5h/週用量、model list；proxy 不可用時回 `available: false` |
 | POST | `/api/claude-accounts/login` | 轉發 proxy `POST /login`：開始 browser OAuth，回 `login_id` + `authorization_url` |
 | POST | `/api/claude-accounts/login/{login_id}/complete` | 轉發 proxy 完成登入：body `{"code": "code#state"}`，token 寫入 proxy store |
@@ -202,12 +203,26 @@ Tech stack：Vue 3 + Vite + Bun + shadcn-vue + Tailwind CSS + Chart.js
 |------|------|------|
 | `/monitor` | MonitorDashboard | 總覽：summary cards + 圖表 + sessions 表格 |
 | `/monitor/requests` | MonitorRequests | 跨 session request log，按 session 分組 |
+| `/monitor/context` | MonitorContext | Brain agent 最新一輪 prompt 組成視覺化：donut + sequence bar + files + breakdown table |
 | `/monitor/:id` | MonitorSession | 單一 session：turn timeline + expandable responses |
 | `/proxy` | ProxyPage | Proxy usage 獨立區塊：Claude / Codex 帳號用量 + 帳號管理（add/promote/remove） |
 | `/chat` | ChatPage | 遠端 TUI：Brain 時間軸 + 子代理分頁 + 帶 channel 選擇的 composer |
 | `/settings` | SettingsPlaceholder | 預留 |
 
-Overview 和 Requests 之間用 tab bar 切換（`MonitorTabs.vue`）。
+Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
+
+### Context 頁
+
+`/monitor/context` 即時視覺化 brain agent 最新一輪 prompt 的組成，用來檢查 prompt cache 前綴大小與各段落佔比。
+
+- 後端分析模組 `src/chat_web_api/context_composition.py`：純函式，不 import FastAPI；輸入 `sessions_dir` + `soft_max_prompt_tokens`，輸出 JSON-safe dict，由 `GET /api/context/composition` 透過 `run_in_threadpool` 呼叫（見上方 API 表）
+- **不進快取、每次請求都重新 parse**：streaming 讀 `requests.jsonl` 找最新一筆 `client_label == "brain"` 的 request（`requests.jsonl` 含完整 message payload，可能 10MB+，依專案慣例不得存進 `cache.py` 或被 `watcher.py` 監控，見「注意事項」）
+- Token 數為估計值：ASCII 固定 3.6 chars/token；CJK 比率從該 request 對應 turn 在 `turns.jsonl` 的 `max_prompt_tokens`（provider 回報值）反推校準，並 clamp 在 `[0.5, 3.0]` tok/char 之間；找不到對應 turn 記錄、或反推值超出 clamp 範圍時，退回固定 1.5 tok/char 並標記 `calibrated: false`
+- **Segment 拆分直接對應 `src/lincy/context/builder.py` 的 `ContextBuilder.build()` 組裝順序**（system prompt → `[Core Rules]` boot files → `read_startup_context` 工具結果 → `read_pinned_context` 工具結果 → 對話歷史 → 當前輪的 user message + 動態注入區塊 + tool loop）：**修改 builder.py 的 segment 結構（新增/移除某個組裝步驟、改變注入順序）時，必須在同一個改動內同步更新 `context_composition.py` 的分類邏輯**，否則兩邊會失準
+- 前端元件 `components/dashboard/ContextDonut.vue`（手刻 SVG donut，geometry 純函式留在元件內，不用 Chart.js）+ `stores/contextComposition.ts`（Pinia store 負責抓取/refresh，並輸出 `staticPrefixTokens`/`largestItem`/`cacheBreakpoints`/`segmentColor` 等純函式給頁面與 donut 元件共用；放在 stores 而非 `src/lib/`，理由同下方「注意事項」）
+- 六色分類色盤（`stores/contextComposition.ts` 的 `CONTEXT_PALETTE`，**非**灰階 ramp）：依 prompt 順序 tool_definitions `#2a78d6`（藍）、system_prompt `#eb6834`（橘）、boot_core_rules `#1baf7a`（青綠）、boot_tool_files `#eda100`（黃）、pinned_context `#e87ba4`（洋紅）、conversation（history + current_turn 共用同一色）`#008300`（綠）；此色盤已做 CVD 驗證，含 donut 首尾相鄰的綠/藍 wrap-around pair。aqua / yellow / magenta 三色在白底上對比度都低於 3:1（約 2.2-2.8:1），**不能只靠色塊辨識**——donut 的 in-slice 百分比標籤、legend 文字與 breakdown table 都要保留，作為顏色以外的 relief。in-slice 標籤文字顏色也因此改用該色的 relative luminance 動態決定黑 `#111827` 或白（`ContextDonut.vue` 的 `labelColorFor`，threshold 依這六色實測校準為 0.3），不是固定索引規則
+- Files bars 與 breakdown table 的色塊都呼叫同一個 `segmentColor()`，顏色不會與 donut 分岔
+- Refresh 時機：mount 時、手動按鈕、`session_updated` WebSocket 事件（debounce 2 秒，避免 tool loop 密集觸發時反覆重新解析大檔）
 
 ### Proxy 頁（Claude Accounts 卡片）
 
@@ -254,6 +269,7 @@ Overview 和 Requests 之間用 tab bar 切換（`MonitorTabs.vue`）。
 - 數字一律 `tabular-nums`
 - **零漸層、零彩色背景**
 - 唯一彩色：Live 綠點 `#22C55E`、token bar 警告色（amber `#F59E0B`、red `#EF4444`）
+- Context 頁的 donut / sequence bar / files bar 色塊是零彩色規則的唯一受認可例外：那是 segment 的 data encoding（六色分類色盤，見「Context 頁」），不是 UI chrome，不得比照拿來用在其他頁面的裝飾或狀態色
 
 ### Token Bar
 
@@ -330,7 +346,7 @@ Production 模式由 `chat-web-api` 直接 serve `dist/` 靜態檔。
 - `channels.web.enabled` 仍控制是否註冊 WebAdapter、以及是否輸出 Agent 活動事件（export sink）。Agent 頁送訊不再走 `web` channel；`history_limit` 只影響殘留的 web_chat JSONL 讀取，前端已不依賴它。
 - Agent 活動事件是**當次執行**的快照：chat-cli 重啟就輪替檔案，Web 端讀不到上一輪歷史（`events.prev.jsonl` 只留給人工檢查）。
 - Agent 活動 export 是唯讀旁路，不得反向影響 TUI；新增事件型別時要同步更新 `ui_event_stream.py` 的 `_EVENT_SPECS` 與前端 `AgentUiEventType`。
-- `requests.jsonl` 含完整 message payload，**不要全部載入 cache**，日後做 lazy load
+- `requests.jsonl` 含完整 message payload，**不要全部載入 cache**；`context_composition.py`（Context 頁）示範了 on-demand、每次請求重新 parse 的做法，之後若有新功能要讀 `requests.jsonl` 應比照此模式
 - `read_cache_rate = cache_read_tokens / prompt_tokens`
 - `write_cache` 和 `read_cache_rate` 分開顯示
 - provider 不支援 write cache 度量時，前端直接顯示「無法測量」

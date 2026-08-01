@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('@/pages/MonitorRequests.vue'),
     },
     {
+      path: '/monitor/context',
+      name: 'context',
+      component: () => import('@/pages/MonitorContext.vue'),
+    },
+    {
       path: '/monitor/:id',
       name: 'session-detail',
       component: () => import('@/pages/MonitorSession.vue'),

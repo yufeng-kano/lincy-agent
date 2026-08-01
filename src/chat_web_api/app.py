@@ -10,6 +10,7 @@ from datetime import date, timedelta
 
 import httpx
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -18,6 +19,7 @@ from lincy.agent.ui_event_stream import UiEventStore
 from lincy.agent.web_chat import WebChatMessageRequest, WebChatStore
 
 from .cache import MetricsCache
+from .context_composition import analyze_latest_brain_request
 from .pricing import fetch_pricing
 from .settings import WebApiSettings
 from .watcher import watch_sessions, watch_ui_events, watch_web_chat_events
@@ -308,6 +310,17 @@ def create_app(settings: WebApiSettings) -> FastAPI:
         if status is None:
             return {"active": False}
         return status
+
+    @app.get("/api/context/composition")
+    async def context_composition() -> dict:
+        # requests.jsonl holds full message payloads (10MB+) and is never
+        # cached (see docs/dev/web-dashboard.md); parse it on demand here,
+        # off the event loop since it's blocking file IO + CPU work.
+        return await run_in_threadpool(
+            analyze_latest_brain_request,
+            settings.sessions_dir,
+            settings.soft_limit_tokens,
+        )
 
     @app.get("/api/claude-accounts")
     async def claude_accounts(refresh: bool = False) -> dict:

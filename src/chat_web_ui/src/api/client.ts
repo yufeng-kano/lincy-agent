@@ -34,6 +34,48 @@ async function responseJsonOrError(res: Response) {
   return data
 }
 
+export interface ContextItem {
+  key: string
+  label: string
+  tokens: number
+}
+
+export interface ContextSegment {
+  key: string
+  label: string
+  tokens: number
+  items: ContextItem[]
+}
+
+export interface ContextCompositionAvailable {
+  available: true
+  session_id: string
+  turn_id: string | null
+  request_id: string
+  request_ts: string
+  round: number | null
+  reported_prompt_tokens: number | null
+  calibrated: boolean
+  total_tokens: number
+  soft_max_prompt_tokens: number
+  message_count: number
+  tool_count: number
+  segments: ContextSegment[]
+}
+
+export interface ContextCompositionUnavailable {
+  available: false
+  reason: string
+}
+
+export type ContextComposition = ContextCompositionAvailable | ContextCompositionUnavailable
+
+/** Live-computed prompt breakdown of the latest brain request; never cached server-side. */
+export async function fetchContextComposition(): Promise<ContextComposition> {
+  const res = await fetch(`${BASE}/api/context/composition`)
+  return responseJsonOrError(res)
+}
+
 export type AgentUiEventType =
   | 'inbound_message'
   | 'processing_started'

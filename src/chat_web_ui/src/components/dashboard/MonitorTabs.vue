@@ -6,6 +6,7 @@ const route = useRoute()
 const tabs = [
   { name: 'Overview', path: '/monitor' },
   { name: 'Requests', path: '/monitor/requests' },
+  { name: 'Context', path: '/monitor/context' },
 ]
 </script>
 
