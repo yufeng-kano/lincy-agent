@@ -38,10 +38,10 @@ class SessionFiles:
 
 
 def read_new_lines(path: Path, state: FileReadState) -> list[dict]:
-    """Read new JSON lines from *path* starting at *state.byte_offset*.
+    """Read complete new JSON lines from *path* starting at *state.byte_offset*.
 
-    Updates *state.byte_offset* to the new EOF position.
-    Returns parsed dicts for each new line.
+    Leaves an unterminated trailing line unread so an append in progress is
+    retried after its writer finishes. Returns parsed dicts for complete lines.
     """
     if not path.exists():
         return []
@@ -50,17 +50,19 @@ def read_new_lines(path: Path, state: FileReadState) -> list[dict]:
         return []
 
     results: list[dict] = []
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, "rb") as fh:
         fh.seek(state.byte_offset)
-        for line in fh:
-            line = line.strip()
+        for raw_line in fh:
+            if not raw_line.endswith(b"\n"):
+                break
+            state.byte_offset += len(raw_line)
+            line = raw_line.decode("utf-8").strip()
             if not line:
                 continue
             try:
                 results.append(json.loads(line))
             except json.JSONDecodeError:
                 logger.warning("Skipping malformed JSON line in %s", path)
-        state.byte_offset = fh.tell()
     return results
 
 

@@ -64,7 +64,7 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 - 跨午夜仍在跑的 session（例如 7/10 建立、7/11 還在用 Grok）在「今天 / 7 天」會出現
 - `/api/requests` 依 response `ts` 過濾，並 **最新優先**（前端首頁 limit 500 才看得到當前 model）
 - dashboard 的 daily cost / token 也依 response / turn 當日聚合
-| GET | `/api/live` | 當前 active session 的 token 位置 |
+| GET | `/api/live` | 當前 active session 的 token 位置（brain-only，見「Live token 口徑」） |
 | GET | `/api/context/composition` | 即時分析最新一筆 brain request 的 prompt 組成（segments + token 估計），每次請求都重新解析 `requests.jsonl`、不進快取；session/brain request 不存在時回 `available: false`，見「Context 頁」 |
 | GET | `/api/claude-accounts` | 轉發 claude-code-proxy `/usage`：帳號、5h/週用量、model list；proxy 不可用時回 `available: false` |
 | POST | `/api/claude-accounts/login` | 轉發 proxy `POST /login`：開始 browser OAuth，回 `login_id` + `authorization_url` |
@@ -109,6 +109,22 @@ Pricing 來源：`https://raw.githubusercontent.com/BerriAI/litellm/main/model_p
 JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 - `seek(offset)` → 讀到 EOF → 更新 offset
 - 不重讀舊資料，新 session 出現時建立新 entry
+
+**部分行（partial line）必須留給下一輪**：writer 端是 `open(..., "a")` + 單次 `write()` + `flush()`，但一筆 turn/response 記錄常超過 stdio buffer（`input_text` / `final_content` 動輒數 KB），會拆成多個 `write()` syscall。FSEvents 在兩次 syscall 之間觸發 reader 時，檔尾就是一行寫到一半的 JSON。
+
+因此 offset 只能推進到**最後一個換行符**，不能用 `fh.tell()`（它回報的是 buffered EOF）：
+- 沒有 trailing `\n` 的尾段一律丟回、不解析、不推進 offset，等下次讀取補齊
+- 舊做法會把半行當成 malformed 跳過並把 offset 推過它，該筆記錄就**永久消失**，是 monitor 數字對不上的主因之一
+
+### Live token 口徑
+
+`/api/live` 與 top bar 的 Token Bar 顯示的是 **brain agent 當前輪的 prompt token**，與 TUI 狀態列同一口徑（見 `docs/dev/token-only-context-policy.md` 的「顯示口徑」）：
+
+- 取「目前最新 turn 的 brain responses 的 `max(prompt_tokens)`」，直接讀 `responses.jsonl`，**不等 `turns.jsonl` 落地**
+  - `turns.jsonl` 只在 `finish_turn()` 才 append，若以它為來源，turn 進行中整條 bar 會停在**上一輪**的數字，直到本輪結束才跳一次——這正是「不是當下 turn 的真實消耗」的來源
+  - 取 max 而非最後一筆，是為了與 TUI 的 `_TurnTokenUsage` 完全一致（turn 內若發生 compaction，prompt 不保證單調遞增）
+- `client_label != "brain"` 的 response（worker-N / memory_sync / skill_check / conscience / web_fetch_summarizer）**不計入**：它們是獨立的 context，不佔 brain 的 context window
+- `hard_limit` 由**最後一筆 brain response** 的 provider/model 解析；不得用 `responses[-1]`，那可能是剛結束的 worker，會讓 bar 的天花板莫名跳動
 
 ## Agent 活動流
 
@@ -217,12 +233,18 @@ Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
 
 - 後端分析模組 `src/chat_web_api/context_composition.py`：純函式，不 import FastAPI；輸入 `sessions_dir` + `soft_max_prompt_tokens`，輸出 JSON-safe dict，由 `GET /api/context/composition` 透過 `run_in_threadpool` 呼叫（見上方 API 表）
 - **不進快取、每次請求都重新 parse**：streaming 讀 `requests.jsonl` 找最新一筆 `client_label == "brain"` 的 request（`requests.jsonl` 含完整 message payload，可能 10MB+，依專案慣例不得存進 `cache.py` 或被 `watcher.py` 監控，見「注意事項」）
-- Token 數為估計值：ASCII 固定 3.6 chars/token；CJK 比率從該 request 對應 turn 在 `turns.jsonl` 的 `max_prompt_tokens`（provider 回報值）反推校準，並 clamp 在 `[0.5, 3.0]` tok/char 之間；找不到對應 turn 記錄、或反推值超出 clamp 範圍時，退回固定 1.5 tok/char 並標記 `calibrated: false`
+- Token 數為估計值：ASCII 固定 3.6 chars/token；CJK 比率從**該筆 request 自己的 response**（`responses.jsonl` 中同 `request_id` 的 `prompt_tokens`）反推校準，並 clamp 在 `[0.5, 3.0]` tok/char 之間；找不到對應 response、或反推值超出 clamp 範圍時，退回固定 1.5 tok/char 並標記 `calibrated: false`
+- **校準基準必須是同一筆 request 的 response，不是整個 turn 的 `max_prompt_tokens`**：頁面顯示的是「最新一筆 brain request 的組成」，但 turn-level 的 `max_prompt_tokens` 是該 turn 所有 round 的最大值，且要等 `finish_turn()` 才落地。用後者校準會有兩個錯：
+  - turn 進行中完全找不到 turn 記錄 → 整頁退回 uncalibrated 粗估
+  - turn 結束後，用「別的 round 的總量」去 apportion「這個 round 的 segment」，donut 的絕對數字對不上該 request 真正的消耗
+- 因此 `reported_prompt_tokens` 的語意是**這一筆 request 的實際 prompt token**；request 已寫入但 response 尚未回來時（tool loop 進行中），該筆沒有可用的 reported 值，改用**上一筆已完成的 brain request** 當顯示對象，確保畫面永遠是「已經真實發生過的一次消耗」而不是半筆
 - **Segment 拆分直接對應 brain request 送給 LLM 時的實際順序**（system prompt → `[Core Rules]` boot files → `read_startup_context` 工具結果 → `read_pinned_context` 工具結果 → 對話歷史 → 當前輪的 user message + 動態注入區塊 + tool loop）：`context_composition.py` 讀的是 `requests.jsonl`（wire-level payload），不是重新呼叫 `ContextBuilder.build()`。system prompt / boot files / 對話歷史的組裝仍在 `src/lincy/context/builder.py` 的 `ContextBuilder.build()`；當前輪的動態注入區塊（`[Runtime Context]` / `[Timing Notice]` / `[Decision Reminder]` / `[Agent Notes]` / common ground）改由 `agent/turn_overlay.py` + `agent/responder.py` 在 `build()` 之後疊加到 latest user message，但落在 wire 上的位置與順序不變，所以 `_LATEST_TURN_MARKERS` 的 substring 掃描邏輯不受影響：**修改這兩邊任一處的組裝步驟或注入順序時，必須在同一個改動內同步更新 `context_composition.py` 的分類邏輯**，否則兩邊會失準
 - 前端元件 `components/dashboard/ContextDonut.vue`（手刻 SVG donut，geometry 純函式留在元件內，不用 Chart.js）+ `stores/contextComposition.ts`（Pinia store 負責抓取/refresh，並輸出 `staticPrefixTokens`/`largestItem`/`cacheBreakpoints`/`segmentColor` 等純函式給頁面與 donut 元件共用；放在 stores 而非 `src/lib/`，理由同下方「注意事項」）
 - 六色分類色盤（`stores/contextComposition.ts` 的 `CONTEXT_PALETTE`，**非**灰階 ramp）：依 prompt 順序 tool_definitions `#2a78d6`（藍）、system_prompt `#eb6834`（橘）、boot_core_rules `#1baf7a`（青綠）、boot_tool_files `#eda100`（黃）、pinned_context `#e87ba4`（洋紅）、conversation（history + current_turn 共用同一色）`#008300`（綠）；此色盤已做 CVD 驗證，含 donut 首尾相鄰的綠/藍 wrap-around pair。aqua / yellow / magenta 三色在白底上對比度都低於 3:1（約 2.2-2.8:1），**不能只靠色塊辨識**——donut 的 in-slice 百分比標籤、legend 文字與 breakdown table 都要保留，作為顏色以外的 relief。in-slice 標籤文字顏色也因此改用該色的 relative luminance 動態決定黑 `#111827` 或白（`ContextDonut.vue` 的 `labelColorFor`，threshold 依這六色實測校準為 0.3），不是固定索引規則
 - Files bars 與 breakdown table 的色塊都呼叫同一個 `segmentColor()`，顏色不會與 donut 分岔
 - Refresh 時機：mount 時、手動按鈕、`session_updated` WebSocket 事件（debounce 2 秒，避免 tool loop 密集觸發時反覆重新解析大檔）
+- debounce 是 **trailing-edge**：連續事件期間不得讓畫面停在第一次的快照，最後一次事件後 2 秒必須實際重抓一次（tool loop 每次 round 都會觸發 `session_updated`，若做成 leading-edge 或在 in-flight 時直接丟棄，畫面會固定落後整個 tool loop）
+- 頁面同時顯示該筆 request 的 `request_ts`，讓「這是哪一刻的消耗」可被直接核對，不必從 turn/round 反推
 
 ### Proxy 頁（Claude Accounts 卡片）
 

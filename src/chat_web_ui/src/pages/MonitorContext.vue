@@ -5,7 +5,7 @@ import MonitorTabs from '@/components/dashboard/MonitorTabs.vue'
 import ContextDonut from '@/components/dashboard/ContextDonut.vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatTokens } from '@/lib/format'
+import { formatClockTime, formatTokens } from '@/lib/format'
 import { useWebSocketStore } from '@/stores/websocket'
 import {
   useContextCompositionStore,
@@ -20,6 +20,16 @@ import type { ContextCompositionAvailable, ContextSegment } from '@/api/client'
 // server-side); debounce rapid session_updated bursts from a fast tool loop
 // instead of re-fetching on each one.
 const REFRESH_DEBOUNCE_MS = 2000
+
+// Upper bound on how long a continuous burst may postpone a refresh: a dense
+// tool loop emits session_updated faster than the debounce window, so a pure
+// trailing debounce would keep re-arming and never fire while the turn runs.
+const REFRESH_MAX_WAIT_MS = 10000
+
+// Re-arm delay used when the debounce fires while a fetch is still in flight;
+// short enough to stay responsive, long enough not to stack parses of a
+// requests.jsonl that can reach hundreds of MB.
+const REFRESH_RETRY_MS = 500
 
 const store = useContextCompositionStore()
 const wsStore = useWebSocketStore()
@@ -133,13 +143,32 @@ const fileRows = computed<FileRow[]>(() => {
 })
 
 let refreshTimer: number | undefined
+// Timestamp of the first event of the current burst; undefined means no burst
+// is pending. Reset whenever a refresh actually fires.
+let burstStartedAt: number | undefined
+
+function fireRefresh() {
+  refreshTimer = undefined
+  if (store.loading) {
+    // A fetch is already in flight; retry shortly instead of stacking a second
+    // server-side parse. Keep the burst marker so the max wait still applies.
+    refreshTimer = window.setTimeout(fireRefresh, REFRESH_RETRY_MS)
+    return
+  }
+  burstStartedAt = undefined
+  store.load()
+}
 
 function scheduleRefresh() {
+  const now = Date.now()
+  if (burstStartedAt === undefined) burstStartedAt = now
+  else if (now - burstStartedAt >= REFRESH_MAX_WAIT_MS) {
+    if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+    fireRefresh()
+    return
+  }
   if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-  refreshTimer = window.setTimeout(() => {
-    refreshTimer = undefined
-    store.load()
-  }, REFRESH_DEBOUNCE_MS)
+  refreshTimer = window.setTimeout(fireRefresh, REFRESH_DEBOUNCE_MS)
 }
 
 onMounted(() => {
@@ -199,7 +228,8 @@ onUnmounted(() => {
         </div>
         <div class="flex items-center justify-end gap-3">
           <span class="text-xs tabular-nums text-[#6B7280]">
-            session {{ payload.session_id }} · turn {{ turnNumber }} · round {{ payload.round ?? '-' }}
+            session {{ payload.session_id }} · turn {{ turnNumber }} · round {{ payload.round ?? '-' }} ·
+            {{ formatClockTime(payload.request_ts) }}
           </span>
           <button
             type="button"

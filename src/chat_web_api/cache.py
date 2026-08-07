@@ -550,7 +550,7 @@ class MetricsCache:
         return results
 
     def get_live_status(self, soft_limit: int) -> dict | None:
-        """Return token position for the most recent active session."""
+        """Return brain token position for the most recent active session."""
         active: SessionFiles | None = None
         for sf in self._files.values():
             if sf.meta is None or sf.meta.status != "active":
@@ -561,23 +561,41 @@ class MetricsCache:
             return None
 
         sid = active.meta.session_id
-        turns = self._turns.get(sid, [])
-        last_prompt = 0
-        if turns:
-            last_prompt = turns[-1].max_prompt_tokens or 0
-
-        # Resolve hard limit from pricing
-        hard_limit = 200_000  # default
         responses = self._responses.get(sid, [])
-        if responses:
-            last_resp = responses[-1]
+        brain_responses: list[ResponseMetrics] = []
+        seen_turn_ids: set[str] = set()
+        for response in reversed(responses):
+            if response.turn_id is None or response.turn_id in seen_turn_ids:
+                continue
+            seen_turn_ids.add(response.turn_id)
+            brain_responses = [
+                candidate
+                for candidate in responses
+                if candidate.turn_id == response.turn_id
+                and candidate.client_label == "brain"
+            ]
+            if brain_responses:
+                break
+
+        last_prompt = max(
+            (response.prompt_tokens for response in brain_responses),
+            default=0,
+        )
+
+        # Worker responses use separate contexts and must not change the brain bar.
+        hard_limit = 200_000
+        if brain_responses:
             from .pricing import resolve_model_key
 
-            model_key = resolve_model_key(last_resp.provider, last_resp.model)
+            last_brain_response = brain_responses[-1]
+            model_key = resolve_model_key(
+                last_brain_response.provider,
+                last_brain_response.model,
+            )
             if model_key and model_key in self.pricing:
-                ml = self.pricing[model_key].max_input_tokens
-                if ml:
-                    hard_limit = ml
+                model_pricing = self.pricing[model_key]
+                if model_pricing.max_input_tokens:
+                    hard_limit = model_pricing.max_input_tokens
 
         return {
             "active": True,

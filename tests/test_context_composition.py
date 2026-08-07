@@ -229,6 +229,23 @@ def _request_record(messages: list[dict], tools: list[dict]) -> dict:
     }
 
 
+def _response_record(request_id: str, prompt_tokens: int) -> dict:
+    return {
+        "seq": 3,
+        "ts": "2026-08-01T09:00:06+08:00",
+        "session_id": SESSION_ID,
+        "turn_id": TURN_ID,
+        "request_id": request_id,
+        "round": 1,
+        "client_label": "brain",
+        "provider": "claude_code",
+        "model": "claude-opus-5",
+        "call_type": "chat_with_tools",
+        "latency_ms": 100,
+        "response": {"prompt_tokens": prompt_tokens},
+    }
+
+
 def _non_brain_record() -> dict:
     return {
         "seq": 1,
@@ -261,19 +278,10 @@ def test_analyze_latest_brain_request_calibrated(tmp_path: Path):
     total_cjk, total_other = _fixture_char_totals(messages, tools)
     target_cjk_rate = 1.2  # within the module's [0.5, 3.0] plausibility clamp
     reported = round(total_other / 3.6 + total_cjk * target_cjk_rate)
-    _write_jsonl(session_dir / "turns.jsonl", [{
-        "turn_id": TURN_ID,
-        "ts_started": "2026-08-01T09:00:00+08:00",
-        "ts_finished": "2026-08-01T09:00:06+08:00",
-        "session_id": SESSION_ID,
-        "channel": "discord",
-        "sender": "毓峰",
-        "inbound_kind": "message",
-        "input_text": "早安",
-        "status": "completed",
-        "llm_rounds": 1,
-        "max_prompt_tokens": reported,
-    }])
+    _write_jsonl(
+        session_dir / "responses.jsonl",
+        [_response_record(REQUEST_ID, reported)],
+    )
 
     result = analyze_latest_brain_request(tmp_path, soft_max_prompt_tokens=400_000)
 
@@ -321,7 +329,7 @@ def test_analyze_latest_brain_request_calibrated(tmp_path: Path):
     assert tool_definitions_items[0]["label"] == "3 tool schemas"
 
 
-def test_analyze_latest_brain_request_without_turn_record_is_uncalibrated(tmp_path: Path):
+def test_analyze_latest_brain_request_uses_matching_response_not_turn_max(tmp_path: Path):
     messages = _build_messages()
     tools = _build_tools()
     session_dir = tmp_path / SESSION_ID
@@ -330,15 +338,60 @@ def test_analyze_latest_brain_request_without_turn_record_is_uncalibrated(tmp_pa
         session_dir / "requests.jsonl",
         [_non_brain_record(), _request_record(messages, tools)],
     )
-    # No turns.jsonl written at all: nothing to calibrate against.
+    total_cjk, total_other = _fixture_char_totals(messages, tools)
+    reported = round(total_other / 3.6 + total_cjk * 1.2)
+    _write_jsonl(session_dir / "responses.jsonl", [_response_record(REQUEST_ID, reported)])
+    _write_jsonl(session_dir / "turns.jsonl", [{
+        "turn_id": TURN_ID,
+        "max_prompt_tokens": reported + 1000,
+    }])
 
     result = analyze_latest_brain_request(tmp_path, soft_max_prompt_tokens=400_000)
 
-    assert result["available"] is True
-    assert result["calibrated"] is False
-    assert result["reported_prompt_tokens"] is None
-    assert result["total_tokens"] == sum(seg["tokens"] for seg in result["segments"])
-    assert result["total_tokens"] > 0
+    assert result["calibrated"] is True
+    assert result["reported_prompt_tokens"] == reported
+    assert result["total_tokens"] == reported
+
+
+def test_analyze_latest_brain_request_falls_back_to_previous_completed_request(tmp_path: Path):
+    messages = _build_messages()
+    tools = _build_tools()
+    session_dir = tmp_path / SESSION_ID
+    session_dir.mkdir()
+    completed = _request_record(messages, tools)
+    completed["request_id"] = "req_000001"
+    completed["ts"] = "2026-08-01T09:00:04+08:00"
+    newest_pending = _request_record(messages, tools)
+    newest_pending["request_id"] = "req_000003"
+    newest_pending["ts"] = "2026-08-01T09:00:07+08:00"
+    _write_jsonl(session_dir / "requests.jsonl", [completed, newest_pending])
+    total_cjk, total_other = _fixture_char_totals(messages, tools)
+    reported = round(total_other / 3.6 + total_cjk * 1.2)
+    _write_jsonl(
+        session_dir / "responses.jsonl",
+        [_response_record("req_000001", reported)],
+    )
+
+    result = analyze_latest_brain_request(tmp_path, soft_max_prompt_tokens=400_000)
+
+    assert result["request_id"] == "req_000001"
+    assert result["request_ts"] == "2026-08-01T09:00:04+08:00"
+    assert result["reported_prompt_tokens"] == reported
+    assert result["calibrated"] is True
+    assert result["total_tokens"] == reported
+
+
+def test_analyze_latest_brain_request_without_response_is_unavailable(tmp_path: Path):
+    messages = _build_messages()
+    tools = _build_tools()
+    session_dir = tmp_path / SESSION_ID
+    session_dir.mkdir()
+    _write_jsonl(session_dir / "requests.jsonl", [_request_record(messages, tools)])
+
+    result = analyze_latest_brain_request(tmp_path, soft_max_prompt_tokens=400_000)
+
+    assert result["available"] is False
+    assert "completed" in result["reason"]
 
 
 def test_analyze_latest_brain_request_empty_sessions_dir(tmp_path: Path):

@@ -33,6 +33,16 @@ export function formatCacheWriteTokens(
   return formatTokens(tokens ?? 0)
 }
 
+/** Wall-clock time of an ISO timestamp in the viewer's timezone, e.g. "14:23:07". */
+export function formatClockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString('en', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
 export function formatLatency(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
   return `${ms}ms`

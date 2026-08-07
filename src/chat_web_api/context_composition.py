@@ -1,11 +1,11 @@
-"""Analyze the brain agent's latest prompt composition from session debug files.
+"""Analyze the brain agent's latest completed prompt from session debug files.
 
-Segments the last brain-labeled request in ``requests.jsonl`` into the same
-prompt regions ``ContextBuilder.build()`` produces (see
+Segments a brain-labeled request in ``requests.jsonl`` into the same prompt
+regions ``ContextBuilder.build()`` produces (see
 ``src/lincy/context/builder.py``): system prompt, boot files, pinned context,
 conversation history, and the current turn. Token counts are estimates
-calibrated against the turn's real ``max_prompt_tokens`` from ``turns.jsonl``
-when available.
+calibrated against that request's own ``response.prompt_tokens`` from
+``responses.jsonl``.
 
 This module is pure (no FastAPI imports) and does no caching of its own:
 ``requests.jsonl`` holds full message payloads and can be 10MB+, so callers
@@ -25,7 +25,7 @@ from .session_reader import discover_sessions
 
 # Token estimation constants. ASCII-ish text is assumed to average this many
 # chars per token; CJK text is much denser and its real rate is solved from
-# the turn's reported prompt tokens (see analyze_latest_brain_request). The
+# the request's reported prompt tokens (see analyze_latest_brain_request). The
 # fixed fallback is only used when no reported total is available to
 # calibrate against.
 _ASCII_CHARS_PER_TOKEN = 3.6
@@ -349,56 +349,62 @@ def _apportion(raw_values: list[float], target_total: int) -> list[int]:
     return result
 
 
-def _last_brain_request(requests_path: Path) -> dict | None:
-    """Stream requests.jsonl and return the last brain-labeled request line.
-
-    Lines carry the full message payload and can be 10MB+, so this avoids
-    json.loads on lines we don't care about (other client labels, e.g.
-    worker-N): a cheap substring check finds candidates and only the last
-    one is actually parsed.
-    """
+def _brain_request_lines(requests_path: Path) -> list[int]:
+    """Collect byte offsets for brain requests without retaining their payloads."""
     if not requests_path.exists():
-        return None
-    last_raw: str | None = None
-    with open(requests_path, "r", encoding="utf-8") as fh:
+        return []
+    offsets: list[int] = []
+    with open(requests_path, "rb") as fh:
+        while line := fh.readline():
+            offset = fh.tell() - len(line)
+            if any(marker.encode() in line for marker in _BRAIN_LABEL_MARKERS):
+                offsets.append(offset)
+    return offsets
+
+
+def _response_prompt_tokens_by_request(responses_path: Path) -> dict[str, int | None]:
+    """Stream response usage by request ID without caching response records."""
+    if not responses_path.exists():
+        return {}
+    prompt_tokens_by_request: dict[str, int | None] = {}
+    with open(responses_path, "r", encoding="utf-8") as fh:
         for line in fh:
-            if any(marker in line for marker in _BRAIN_LABEL_MARKERS):
-                last_raw = line
-    if last_raw is None:
-        return None
-    try:
-        return json.loads(last_raw)
-    except json.JSONDecodeError:
-        return None
-
-
-def _find_latest_brain_request(sessions_dir: Path) -> tuple[str | None, dict | None]:
-    """Return (session_id, request) for the newest session with a brain request."""
-    for session_id in reversed(discover_sessions(sessions_dir)):
-        request = _last_brain_request(sessions_dir / session_id / "requests.jsonl")
-        if request is not None:
-            return session_id, request
-    return None, None
-
-
-def _find_turn_max_prompt_tokens(turns_path: Path, turn_id: str) -> int | None:
-    """Look up the reported max_prompt_tokens for one turn from turns.jsonl."""
-    if not turns_path.exists():
-        return None
-    with open(turns_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            if turn_id not in line:
-                continue
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if record.get("turn_id") != turn_id:
+            request_id = record.get("request_id")
+            response = record.get("response")
+            if not isinstance(request_id, str) or not isinstance(response, dict):
                 continue
-            tokens = record.get("max_prompt_tokens")
-            if isinstance(tokens, int):
-                return tokens
-    return None
+            prompt_tokens = response.get("prompt_tokens")
+            prompt_tokens_by_request[request_id] = (
+                prompt_tokens if isinstance(prompt_tokens, int) else None
+            )
+    return prompt_tokens_by_request
+
+
+def _find_latest_brain_request(sessions_dir: Path) -> tuple[str | None, dict | None, int | None]:
+    """Return the newest completed brain request and its own prompt token count."""
+    for session_id in reversed(discover_sessions(sessions_dir)):
+        session_dir = sessions_dir / session_id
+        offsets = _brain_request_lines(session_dir / "requests.jsonl")
+        if not offsets:
+            continue
+        reported_by_request = _response_prompt_tokens_by_request(
+            session_dir / "responses.jsonl"
+        )
+        with open(session_dir / "requests.jsonl", "rb") as fh:
+            for offset in reversed(offsets):
+                fh.seek(offset)
+                try:
+                    request = json.loads(fh.readline().decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                request_id = request.get("request_id")
+                if isinstance(request_id, str) and request_id in reported_by_request:
+                    return session_id, request, reported_by_request[request_id]
+    return None, None, None
 
 
 def _raw_tokens(item: _Item, cjk_rate: float) -> float:
@@ -406,16 +412,17 @@ def _raw_tokens(item: _Item, cjk_rate: float) -> float:
 
 
 def analyze_latest_brain_request(sessions_dir: Path, soft_max_prompt_tokens: int) -> dict:
-    """Segment the newest brain request's prompt and estimate its token composition.
+    """Segment the newest completed brain request and estimate its prompt composition.
 
-    Reads requests.jsonl / turns.jsonl directly (never cached: see module
+    Reads requests.jsonl / responses.jsonl directly (never cached: see module
     docstring). Returns a JSON-safe dict; on any expected failure mode
-    (no sessions, no brain request) returns {"available": False, "reason": ...}
-    instead of raising, matching the /api/claude-accounts convention.
+    (no sessions, no completed brain request) returns {"available": False,
+    "reason": ...} instead of raising, matching the /api/claude-accounts
+    convention.
     """
-    session_id, request = _find_latest_brain_request(sessions_dir)
+    session_id, request, reported = _find_latest_brain_request(sessions_dir)
     if session_id is None or request is None:
-        return {"available": False, "reason": "No brain request found in any session."}
+        return {"available": False, "reason": "No completed brain request found in any session."}
 
     messages = request.get("messages") or []
     tools = request.get("tools") or []
@@ -426,9 +433,7 @@ def analyze_latest_brain_request(sessions_dir: Path, soft_max_prompt_tokens: int
     if not ordered_keys:
         return {"available": False, "reason": "Latest brain request has no classifiable content."}
 
-    reported = None
-    if turn_id:
-        reported = _find_turn_max_prompt_tokens(sessions_dir / session_id / "turns.jsonl", turn_id)
+    # reported is this exact request's response usage, never a turn-wide maximum.
 
     total_cjk = sum(
         item.cjk for key in ordered_keys for item in segments_by_key[key].items

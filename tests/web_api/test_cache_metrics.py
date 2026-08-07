@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lincy.session.schema import SessionMetadata
 from chat_web_api.cache import MetricsCache, ResponseMetrics
+from chat_web_api.pricing import ModelPricing
 from chat_web_api.session_reader import SessionFiles
 
 
@@ -158,6 +159,106 @@ def test_all_requests_reports_ollama_read_cache_rate_unavailable():
     rows = cache.get_all_requests(date(2026, 4, 11), date(2026, 4, 11))
 
     assert rows[0]["read_cache_rate"] is None
+
+
+def test_live_status_uses_current_turn_brain_max_without_turn_record():
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [
+        ResponseMetrics(
+            ts=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
+            round=1,
+            provider="claude_code",
+            model="claude-opus-5",
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            latency_ms=10,
+            cost=None,
+            turn_id="turn_000002",
+            client_label="brain",
+        ),
+        ResponseMetrics(
+            ts=datetime(2026, 4, 11, 12, 1, tzinfo=UTC),
+            round=2,
+            provider="claude_code",
+            model="claude-opus-5",
+            prompt_tokens=200,
+            completion_tokens=10,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            latency_ms=10,
+            cost=None,
+            turn_id="turn_000002",
+            client_label="brain",
+        ),
+    ]
+
+    status = cache.get_live_status(400_000)
+
+    assert status is not None
+    assert status["prompt_tokens"] == 200
+
+
+def test_live_status_ignores_worker_responses_for_prompt_and_hard_limit():
+    brain_pricing = ModelPricing(0.0, 0.0, max_input_tokens=400_000)
+    worker_pricing = ModelPricing(0.0, 0.0, max_input_tokens=1_000_000)
+    cache = MetricsCache(Path("/tmp"), {
+        "brain-model": brain_pricing,
+        "worker-model": worker_pricing,
+    })
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [
+        ResponseMetrics(
+            ts=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
+            round=1,
+            provider=None,
+            model="brain-model",
+            prompt_tokens=150,
+            completion_tokens=10,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            latency_ms=10,
+            cost=None,
+            turn_id="turn_000002",
+            client_label="brain",
+        ),
+        ResponseMetrics(
+            ts=datetime(2026, 4, 11, 12, 1, tzinfo=UTC),
+            round=1,
+            provider=None,
+            model="worker-model",
+            prompt_tokens=999_999,
+            completion_tokens=10,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            latency_ms=10,
+            cost=None,
+            turn_id="turn_000002",
+            client_label="worker-1",
+        ),
+        ResponseMetrics(
+            ts=datetime(2026, 4, 11, 12, 2, tzinfo=UTC),
+            round=1,
+            provider=None,
+            model="worker-model",
+            prompt_tokens=888_888,
+            completion_tokens=10,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            latency_ms=10,
+            cost=None,
+            turn_id="turn_000003",
+            client_label="web_fetch_summarizer",
+        ),
+    ]
+
+    status = cache.get_live_status(400_000)
+
+    assert status is not None
+    assert status["prompt_tokens"] == 150
+    assert status["hard_limit"] == 400_000
 
 
 def test_all_requests_filters_by_response_ts_not_session_created():
