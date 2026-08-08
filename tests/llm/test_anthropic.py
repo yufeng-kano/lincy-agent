@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from lincy.core.schema import AnthropicConfig
 from lincy.llm.providers.anthropic import AnthropicClient
-from lincy.llm.schema import Message, ToolDefinition, ToolParameter
+from lincy.llm.schema import Message, ToolCall, ToolDefinition, ToolParameter
 
 
 class _FakeResponse:
@@ -187,6 +187,72 @@ def test_disabled_thinking_keeps_temperature(monkeypatch):
 
     assert calls[0]["json"]["temperature"] == 0.2
 
+
+
+def test_parallel_tool_results_share_one_user_message(monkeypatch):
+    payload = {"content": [{"type": "text", "text": "ok"}]}
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+    client = _make_client()
+
+    messages = [
+        Message(role="user", content="do both"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[
+                ToolCall(id="t1", name="read_file", arguments={"path": "a"}),
+                ToolCall(id="t2", name="read_file", arguments={"path": "b"}),
+            ],
+        ),
+        Message(role="tool", content="A", tool_call_id="t1"),
+        Message(role="tool", content="B", tool_call_id="t2"),
+        Message(role="user", content="thanks"),
+    ]
+
+    client.chat(messages)
+
+    sent = calls[0]["json"]["messages"]
+    assert [m["role"] for m in sent] == ["user", "assistant", "user", "user"]
+    results = sent[2]["content"]
+    assert [b["tool_use_id"] for b in results] == ["t1", "t2"]
+    assert sent[3]["content"] == [{"type": "text", "text": "thanks"}]
+
+
+def test_tool_results_of_separate_turns_stay_separate(monkeypatch):
+    payload = {"content": [{"type": "text", "text": "ok"}]}
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+    client = _make_client()
+
+    messages = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "a"})],
+        ),
+        Message(role="tool", content="A", tool_call_id="t1"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="t2", name="read_file", arguments={"path": "b"})],
+        ),
+        Message(role="tool", content="B", tool_call_id="t2"),
+    ]
+
+    client.chat(messages)
+
+    sent = calls[0]["json"]["messages"]
+    assert [m["role"] for m in sent] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert sent[2]["content"][0]["tool_use_id"] == "t1"
+    assert sent[4]["content"][0]["tool_use_id"] == "t2"
 
 
 def test_active_thinking_omits_temperature(monkeypatch):

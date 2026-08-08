@@ -118,6 +118,8 @@ class AnthropicClient:
         """
         system_blocks: list[dict[str, Any]] = []
         result: list[AnthropicMessagePayload] = []
+        # Index of the user message currently collecting tool_result blocks.
+        pending_tool_result_index: int | None = None
 
         for m in messages:
             if m.role == "system":
@@ -138,29 +140,33 @@ class AnthropicClient:
                     system_blocks.append(block)
                 continue
             elif m.role == "tool":
+                block_or_result: AnthropicContent | dict[str, Any]
                 if isinstance(m.content, list):
                     # Multimodal tool result: wrap content blocks in tool_result
-                    inner_blocks = self._convert_content_parts_to_blocks(m.content)
-                    result.append(
-                        AnthropicMessagePayload(
-                            role="user",
-                            content=[
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": m.tool_call_id or "",
-                                    "content": inner_blocks,
-                                }
-                            ],
-                        )
-                    )
+                    block_or_result = {
+                        "type": "tool_result",
+                        "tool_use_id": m.tool_call_id or "",
+                        "content": self._convert_content_parts_to_blocks(m.content),
+                    }
                 else:
-                    tool_result = AnthropicToolResultContent(
+                    block_or_result = AnthropicToolResultContent(
                         tool_use_id=m.tool_call_id or "",
                         content=m.content or "",
                     )
-                    result.append(
-                        AnthropicMessagePayload(role="user", content=[tool_result])
-                    )
+                # All results of one parallel tool_use turn belong in a single
+                # user message. Splitting them works on api.anthropic.com only
+                # because it merges consecutive user turns; the heyroute gateway
+                # rejects the split form. See docs/dev/provider-api-spec.md.
+                if pending_tool_result_index is not None:
+                    pending = result[pending_tool_result_index]
+                    if isinstance(pending.content, list):
+                        pending.content.append(block_or_result)
+                        continue
+                result.append(
+                    AnthropicMessagePayload(role="user", content=[block_or_result])
+                )
+                pending_tool_result_index = len(result) - 1
+                continue
             elif m.role == "assistant" and m.tool_calls:
                 content_blocks: list[AnthropicContent] = []
                 if isinstance(m.content, str) and m.content:
@@ -176,6 +182,7 @@ class AnthropicClient:
                 result.append(
                     AnthropicMessagePayload(role="assistant", content=content_blocks)
                 )
+                pending_tool_result_index = None
             else:
                 # Always use content-block array format for stable prefix
                 # serialization (Anthropic prompt cache is byte-level).
@@ -187,6 +194,7 @@ class AnthropicClient:
                         block["cache_control"] = m.cache_control
                     blocks = [block]
                 result.append(AnthropicMessagePayload(role=m.role, content=blocks))
+                pending_tool_result_index = None
 
         system: str | list[dict[str, Any]] | None = None
         if system_blocks:

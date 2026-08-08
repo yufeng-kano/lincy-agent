@@ -399,12 +399,23 @@
 | Base URL | 預設 `https://heyroute.ai/`，config validator 會去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://heyroute.ai/v1/messages`，不會有 double slash |
 | API key env | `HEYROUTE_API_KEY` | `src/lincy/core/schema.py` + `src/lincy/core/config.py` | 依既有 provider 的 `api_key_env` 解析規則 |
 | Payload / response | Heyroute client 重用 Anthropic Messages adapter，不複製 payload 與 response mapping | `src/lincy/llm/providers/heyroute.py` | 只重用已確認的本專案 Anthropic-compatible shape |
+| Tool result 合併 | 連續的 `role: "tool"` message 會合併成單一 user message 的多個 `tool_result` block；遇到 assistant / user message 才開新的 | `src/lincy/llm/providers/anthropic.py` | 這是 Anthropic 平行 tool use 的正規形狀，同時是 heyroute 的硬性要求 |
 | Temperature | thinking 為 active 時省略；disabled 或未設定 thinking 時照既有 Anthropic 規則送出 | `src/lincy/llm/providers/anthropic.py` | gateway 行為未獨立驗證 |
 | Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 已明確與 Anthropic adapter 相同而納入 |
 
 ### 3. 實測 / 逆向資訊
 
-無。heyroute.ai 的 endpoint 行為、模型 entitlement、錯誤格式、實際 effort 支援矩陣與 rate-limit 行為均未驗證。
+以 2026-08-09 實際 request 對 `https://heyroute.ai/v1/messages` 逐項 bisect（重放真實失敗的 brain request，Claude-Max20x key）：
+
+| 項目 | 實測結果 | 備註 |
+|------|---------|------|
+| 平行 tool_use 的 tool_result 擺放 | **必須把同一個 assistant turn 的所有 `tool_result` 放在同一個 user message**；拆成多個 user message 一律 `HTTP 400 invalid_request` | gateway 比 api.anthropic.com 嚴格：官方端點會自行合併連續 user turn，所以拆開也能過 |
+| 連續同 role message（純 text） | 可接受，不會 400 | 400 只由拆開的 tool_result 觸發 |
+| 錯誤格式 | `{"error": {"type": "invalid_request", "message": "请求无效，请检查请求参数。 (code: invalid_request, request id: ...)"}, "type": "error"}` | 訊息不指出違規欄位，只能靠 bisect 定位 |
+| Endpoint / auth / thinking / effort / cache_control | 皆與 Anthropic native shape 相容（`thinking: adaptive`、`output_config.effort: xhigh`、`cache_control` 含 `ttl: 1h` 均回 200，且 usage 有 `ephemeral_1h_input_tokens`） | 原「假設未驗證」欄位已實測通過 |
+| max_tokens | 128000 可接受 | |
+| 模型 entitlement | key 逐一白名單；`claude-opus-5[1M]` / `claude-sonnet-5[1M]` 回 `HTTP 403 token_model_forbidden`，允許清單為 `claude-fable-5, claude-haiku-4-5, claude-opus-5, claude-sonnet-5` | `[1M]` 後綴視為獨立模型名，非 context 旗標 |
+| Temperature | `temperature != 1` 在 claude-5 系列（fable-5 / sonnet-5）回 400；`claude-sonnet-4-6` 不受限 | 與 Anthropic「thinking active 時 temperature 必須為 1」一致；本專案 adapter 在 thinking active 時已省略 temperature，故不受影響 |
 
 ---
 
