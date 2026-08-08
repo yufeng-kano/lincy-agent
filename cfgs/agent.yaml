@@ -341,7 +341,6 @@ agents:
     excluded_tools:
       - gui_task
       - screenshot
-      - screenshot_by_subagent
       - shell_task
     cache:
       enabled: true

@@ -46,7 +46,9 @@ Worker 與 brain 共用 `src/lincy/context/cache_breakpoints.py`：
 - 啟動驗證：所有 `registry.register()` 跑完後呼叫 `validate_excluded_tools()`（`src/lincy/agent/tool_setup.py`），排除清單裡有未註冊的工具名就 `SystemExit`
   - 注意 `gui_task` / `screenshot` / `screenshot_by_subagent` 是條件式註冊；若關掉 GUI 或改 vision 設定，worker 的排除清單要跟著調整
 
-目前設定：brain 排除 `execute_shell` + `shell_task`；worker 排除 `gui_task`、`screenshot`、`screenshot_by_subagent`、`shell_task`（保留 `execute_shell`）。
+目前設定：brain 排除 `execute_shell` + `shell_task`；worker 排除 `gui_task`、`screenshot`、`shell_task`（保留 `execute_shell`）。
+
+`screenshot_by_subagent` 不在排除清單內：brain 目前的 LLM chain 全為 vision 模型，`adaptive_own_vision` 不成立，該工具不會被註冊。若日後把 non-vision fallback 加回 brain chain，需同步補回排除項。
 
 ## 任務單規則（brain 端）
 
