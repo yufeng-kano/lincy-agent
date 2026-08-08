@@ -1,0 +1,24 @@
+# Heyroute Anthropic-compatible Messages API profile for Claude Opus 5 with thinking disabled.
+provider: heyroute
+# Upstream model id used by Anthropic.
+model: claude-opus-5
+# API key environment variable.
+api_key_env: HEYROUTE_API_KEY
+# Heyroute gateway root. The client appends /v1/messages.
+base_url: https://heyroute.ai/
+# Output token cap for this profile.
+max_tokens: 128000
+# HTTP timeout in seconds.
+request_timeout: 600.0
+# Sampling temperature. Anthropic only sends this when thinking is disabled.
+temperature: 1.0
+# Whether the app may send image inputs to this profile.
+vision: true
+
+# Opus 5 defaults to adaptive thinking; type must be set explicitly to disable it.
+thinking:
+  type: disabled
+
+# Upstream rejects disabled thinking above effort high, so keep this profile at or below high.
+output_config:
+  effort: low

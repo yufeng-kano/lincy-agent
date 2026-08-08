@@ -117,11 +117,11 @@ def test_repo_agent_config_enables_shell_handoff_rules():
     ]
 
 
-def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
+def test_repo_agent_config_brain_uses_heyroute_with_expected_fallbacks():
     config = config_module.load_config("agent.yaml")
 
     brain_llm = config.agents["brain"].llm
-    assert brain_llm.provider == "claude_code"
+    assert brain_llm.provider == "heyroute"
     assert brain_llm.model == "claude-opus-5"
     assert brain_llm.thinking is not None
     assert brain_llm.thinking.type == "adaptive"
@@ -130,34 +130,41 @@ def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
     assert brain_llm.temperature == 1.0
 
     fallbacks = config.agents["brain"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["openrouter"]
-    assert [cfg.model for cfg in fallbacks] == ["x-ai/grok-4.5"]
-    assert fallbacks[0].reasoning.enabled is True
-    assert fallbacks[0].reasoning.effort == "high"
+    assert [cfg.provider for cfg in fallbacks] == ["claude_code", "deepseek"]
+    assert [cfg.model for cfg in fallbacks] == ["claude-opus-5", "deepseek-v4-pro"]
+    assert fallbacks[0].thinking.type == "adaptive"
+    assert fallbacks[1].thinking.enabled is True
 
 
-def test_repo_agent_config_memory_editor_uses_claude_sonnet_5_no_thinking():
+def test_repo_agent_config_worker_uses_heyroute_with_expected_fallbacks():
+    config = config_module.load_config("agent.yaml")
+
+    worker_llm = config.agents["worker"].llm
+    assert worker_llm.provider == "heyroute"
+    assert worker_llm.model == "claude-opus-5"
+    assert worker_llm.thinking is not None
+    assert worker_llm.thinking.type == "adaptive"
+
+    fallbacks = config.agents["worker"].llm_fallbacks
+    assert [cfg.provider for cfg in fallbacks] == ["claude_code", "deepseek"]
+    assert [cfg.model for cfg in fallbacks] == ["claude-opus-5", "deepseek-v4-pro"]
+
+
+def test_repo_agent_config_memory_editor_uses_deepseek_v4_flash_no_thinking():
     config = config_module.load_config("agent.yaml")
 
     memory_editor_llm = config.agents["memory_editor"].llm
-    assert memory_editor_llm.provider == "claude_code"
-    assert memory_editor_llm.model == "claude-sonnet-5"
+    assert memory_editor_llm.provider == "deepseek"
+    assert memory_editor_llm.model == "deepseek-v4-flash"
     assert memory_editor_llm.thinking is not None
-    assert memory_editor_llm.thinking.type == "disabled"
-    assert memory_editor_llm.output_config is not None
-    assert memory_editor_llm.output_config.effort == "low"
+    assert memory_editor_llm.thinking.enabled is False
 
     fallbacks = config.agents["memory_editor"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["deepseek", "deepseek", "codex"]
-    assert [cfg.model for cfg in fallbacks] == [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-        "gpt-5.5",
-    ]
+    assert [cfg.provider for cfg in fallbacks] == ["deepseek", "codex"]
+    assert [cfg.model for cfg in fallbacks] == ["deepseek-v4-pro", "gpt-5.5"]
     assert fallbacks[0].thinking.enabled is False
-    assert fallbacks[1].thinking.enabled is False
-    assert fallbacks[2].reasoning.enabled is True
-    assert fallbacks[2].reasoning.effort == "low"
+    assert fallbacks[1].reasoning.enabled is True
+    assert fallbacks[1].reasoning.effort == "low"
 
 
 def test_repo_kimi_k26_cloud_profile_loads():

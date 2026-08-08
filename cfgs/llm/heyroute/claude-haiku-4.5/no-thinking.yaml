@@ -1,11 +1,11 @@
-# Anthropic native Messages API profile for Claude Haiku 4.5 without thinking.
-provider: anthropic
+# Heyroute Anthropic-compatible Messages API profile for Claude Haiku 4.5 without thinking.
+provider: heyroute
 # Upstream model id used by Anthropic.
 model: claude-haiku-4-5-20251001
 # API key environment variable.
-api_key_env: ANTHROPIC_API_KEY
-# Anthropic API root. The client appends /v1/messages.
-base_url: https://api.anthropic.com
+api_key_env: HEYROUTE_API_KEY
+# Heyroute gateway root. The client appends /v1/messages.
+base_url: https://heyroute.ai/
 # Output token cap for this profile.
 max_tokens: 8192
 # HTTP timeout in seconds.

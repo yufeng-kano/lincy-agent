@@ -348,24 +348,63 @@
 | Vision media types | `image/jpeg`, `image/png`, `image/gif`, `image/webp` | 官方文件 | [Messages API](https://platform.claude.com/docs/en/api/messages) | 高 | 否 |
 | **Extended thinking（手動）** | `thinking: {"type": "enabled", "budget_tokens": N}`，budget_tokens >= 1024 | 官方文件 | [Extended Thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) | 高 | 是（見下方） |
 | **Adaptive thinking** | `thinking: {"type": "adaptive"}` | 官方文件 | [Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) | 高 | 是（僅 Opus 4.6, Sonnet 4.6） |
-| **Effort 參數** | `output_config: {"effort": "low"\|"medium"\|"high"\|"max"}`，**獨立於 thinking**，影響所有 token | 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) 段落 "The effort parameter is supported by Claude Opus 4.6, Claude Sonnet 4.6, and Claude Opus 4.5"，代碼範例 `output_config={"effort": "medium"}` | 高 | 是（僅 Opus 4.6, Sonnet 4.6, Opus 4.5） |
-| Effort `max` | 僅 Opus 4.6，其他模型報錯 | 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | 是 |
+| **Effort 參數** | `output_config: {"effort": "low"\|"medium"\|"high"\|"max"}`，**獨立於 thinking**，影響所有 token；Sonnet 5 / Opus 5 另支援 `xhigh` | 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | 是 |
+| Effort `max` | 在 4.x 世代僅 Opus 4.6；Sonnet 5 / Opus 5 亦支援 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | 是 |
 | **Opus 4.6 deprecation** | `thinking: {"type": "enabled", "budget_tokens": N}` 在 Opus 4.6 和 Sonnet 4.6 上 deprecated | 官方文件 | [Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) Warning box 原文："`thinking.type: 'enabled'` and `budget_tokens` are **deprecated** on Opus 4.6 and Sonnet 4.6" | 高 | 是 |
 | 舊模型 | Sonnet 4.5, Opus 4.5, Sonnet 4, Haiku 4.5 等僅支援 `thinking: {"type": "enabled", "budget_tokens": N}` | 官方文件 | [Extended Thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) | 高 | 是 |
-| Thinking disabled | 省略 `thinking` 參數 或 `thinking: {"type": "disabled"}` | 官方文件 | [Messages API](https://platform.claude.com/docs/en/api/messages) | 高 | 否 |
+| Sonnet 5 thinking 預設 | Claude Sonnet 5（`claude-sonnet-5`）adaptive thinking 預設開啟；顯式送 `thinking.type=adaptive` 可保留同一語意，`thinking.type=enabled` + `budget_tokens` 回 400；需顯式送 `thinking.type=disabled` 才能關閉 | Anthropic 官方文件 | [Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) | 高 | — |
+| Sonnet 5 effort 支援值 | 官方支援 `low/medium/high/xhigh/max` | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
+| Opus 5 thinking 預設 | Claude Opus 5（`claude-opus-5`）adaptive thinking 預設開啟；`thinking.type=enabled` + `budget_tokens` 回 400；需顯式送 `thinking.type=disabled` 才能關閉 | Anthropic 官方文件 | [Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) | 高 | — |
+| Opus 5 disabled thinking 的 effort 上限 | `thinking.type=disabled` 只在 effort `high` 以下被接受，配 `xhigh`/`max` 回 400 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
+| Opus 5 effort 支援值 | 官方支援 `low/medium/high/xhigh/max`；非預設 `temperature`/`top_p`/`top_k` 可能回 400 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
 
 ### 2. 本專案 adapter 規則
 
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|-----------|------|
-| Thinking payload | `_map_thinking()` 組裝 `{"type": "enabled", "budget_tokens": N}` | `src/lincy/llm/providers/anthropic.py` | 不支援 adaptive thinking 和 output_config.effort |
-| `effort` 驗證擋掉 | Anthropic schema 不提供 `reasoning.effort` 欄位（改用 `AnthropicThinkingConfig`） | `src/lincy/core/schema.py` | 本專案 adapter 尚未支援 `output_config.effort` |
-| `budget_tokens` 必填 | `enabled=true` 時必須有 max_tokens 或 override | `src/lincy/core/schema.py`（`AnthropicConfig.validate_reasoning()`） | 本專案規則 |
-| `provider_overrides` | `anthropic_thinking` / `anthropic_thinking_budget_tokens` | `src/lincy/llm/providers/anthropic.py` + `src/lincy/core/schema.py` | 本專案 escape hatch |
+| Thinking payload | YAML 直接使用 Anthropic `thinking` 物件：`type=adaptive|enabled|disabled`；`enabled` 時可選 `budget_tokens`，且最低 1024 | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 本專案 adapter 遵循 Messages API native shape |
+| Effort payload | YAML 直接使用 `output_config.effort`；client 原樣 passthrough 成 upstream `output_config` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | `low/medium/high/xhigh/max` |
+| Effort beta header | request 有 `output_config.effort` 時送 `anthropic-beta: effort-2025-11-24` | `src/lincy/llm/providers/anthropic.py` | 與 Claude Code proxy 的動態 beta 規則一致 |
+| Effort x model 相容性 | config 載入時早停驗證；只列文件已知有限制的 family，未知/未來 model id 放行 | `src/lincy/core/schema.py` | 不在 client runtime 降級 |
+| Opus 5 disabled thinking 驗證 | `thinking.type=disabled` + `effort` `xhigh`/`max` 在載入時直接報錯 | `src/lincy/core/schema.py` | 對齊官方 400 限制 |
+| Vision | YAML 使用 plain `vision: true` | `src/lincy/core/schema.py` | 與 Claude Code provider 一致 |
+| `provider_overrides` | Anthropic config 不提供 override escape hatch；native fields 已可直接表達 payload | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 舊 `anthropic_thinking*` override 已移除 |
 
 ### 3. 逆向/實測資訊
 
 無。
+
+---
+
+## Heyroute
+
+> **重要標示**：heyroute.ai 的實際 API 文件目前不可得。本節只把使用者提供的「Anthropic Messages API compatible gateway」建模為**假設相容、尚未驗證**，不把 gateway 的模型、限制或額外欄位寫成已知事實。
+
+### 1. 假設的 Anthropic-compatible 介面（尚未驗證）
+
+| 項目 | 事實 | 來源類型 | 可信度 | 備註 |
+|------|------|---------|--------|------|
+| Endpoint | `POST /v1/messages` | 假設 Anthropic-compatible / 未驗證 | 低 | base URL 由使用者指定為 `https://heyroute.ai/`；client 依既有 Anthropic joining convention 附加 `/v1/messages` |
+| Auth | `x-api-key: {api_key}` + `anthropic-version: 2023-06-01` | 假設 Anthropic-compatible / 未驗證 | 低 | 未宣稱 heyroute.ai 已公開保證此 header 行為 |
+| Request / response shape | Anthropic Messages API native shape | 假設 Anthropic-compatible / 未驗證 | 低 | 不新增 gateway-specific 欄位 |
+| Thinking | `thinking: {"type": "adaptive"|"enabled"|"disabled"}`；enabled 可帶 `budget_tokens` | 假設 Anthropic-compatible / 未驗證 | 低 | 完全沿用本專案 Anthropic adapter shape |
+| Effort | `output_config: {"effort": "low"|"medium"|"high"|"xhigh"|"max"}` | 假設 Anthropic-compatible / 未驗證 | 低 | 不推測 heyroute 的額外 effort 值或模型能力 |
+| Effort beta header | `anthropic-beta: effort-2025-11-24` | 假設 Anthropic-compatible / 未驗證 | 低 | 只在 request 有 output_config.effort 時送出 |
+
+### 2. 本專案 adapter 規則
+
+| 項目 | 規則 | 程式碼位置 | 備註 |
+|------|------|---------|------|
+| Provider 名稱 | 使用獨立 `provider: heyroute` 與 `HeyrouteConfig` / `HeyrouteClient` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/heyroute.py` | Heyroute 是獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
+| Base URL | 預設 `https://heyroute.ai/`，config validator 會去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://heyroute.ai/v1/messages`，不會有 double slash |
+| API key env | `HEYROUTE_API_KEY` | `src/lincy/core/schema.py` + `src/lincy/core/config.py` | 依既有 provider 的 `api_key_env` 解析規則 |
+| Payload / response | Heyroute client 重用 Anthropic Messages adapter，不複製 payload 與 response mapping | `src/lincy/llm/providers/heyroute.py` | 只重用已確認的本專案 Anthropic-compatible shape |
+| Temperature | thinking 為 active 時省略；disabled 或未設定 thinking 時照既有 Anthropic 規則送出 | `src/lincy/llm/providers/anthropic.py` | gateway 行為未獨立驗證 |
+| Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 已明確與 Anthropic adapter 相同而納入 |
+
+### 3. 實測 / 逆向資訊
+
+無。heyroute.ai 的 endpoint 行為、模型 entitlement、錯誤格式、實際 effort 支援矩陣與 rate-limit 行為均未驗證。
 
 ---
 
@@ -494,17 +533,17 @@
 
 ## 差異總結表
 
-| 項目 | Copilot | Claude Code | Grok (OAuth proxy) | OpenAI | Anthropic | Gemini | OpenRouter | Ollama |
-|------|---------|-------------|-------------------|--------|-----------|--------|------------|--------|
-| Endpoint | OpenAI compat（歷史/實測） | `/v1/messages`（Anthropic schema） | OpenAI compat via local proxy | Chat Completions | `/v1/messages` | `generateContent` | OpenAI compat | native `/api/chat` |
-| Reasoning 參數 | `reasoning_effort`（頂層，逆向/實測） | `thinking.type` + `output_config.effort` | `reasoning_effort`（頂層） | `reasoning_effort`（頂層） | `thinking.type` + `output_config.effort` | `thinkingConfig` | `reasoning: {"effort":...}` | `think`（native） |
-| Effort 值 | low/medium/high/xhigh（curated profiles；backend 逆向） | low/medium/high/max（`output_config.effort`） | none/low/medium/high/xhigh（model-dependent） | low/medium/high/xhigh/max（adapter passthrough；官方另列 none） | low/medium/high/max（output_config） | minimal/low/medium/high（依模型） | none/minimal/low/medium/high/xhigh | low/medium/high/xhigh/max（adapter passthrough） |
-| Token budget | 無 | `thinking.budget_tokens` | 無 | 無 | `thinking.budget_tokens` | `thinkingBudget` | `reasoning.max_tokens` | 無 |
-| Vision | `image_url`（實測） | `image` block（base64） | `image_url` | `image_url` | `image` block（base64/url） | `inlineData`（base64） | `image_url` | 依模型 |
-| Tools | OpenAI function（實測） | Anthropic `input_schema` | OpenAI function | OpenAI function | Anthropic `input_schema` | Gemini `functionDeclarations` | OpenAI function | native `tools` |
-| Auth | proxy 處理（逆向） | proxy 處理（Claude Code OAuth bearer，逆向） | proxy 處理（SuperGrok OAuth） | Bearer token | Bearer/x-api-key + version | API key (header/query) | Bearer token | 本機 daemon 無 |
-| max_tokens | 不需要（實測） | **必填** | 可選 | 可選（GPT-5+ 用 `max_completion_tokens`） | **必填** | 可選（maxOutputTokens） | 可選 | `options.num_predict` |
-| Prompt cache | 無 | Anthropic breakpoint | 自動 prefix + `x-grok-conv-id` sticky | 自動 prefix（`prompt_cache_retention: "24h"`） | Anthropic breakpoint | 無 | `cache_control` breakpoint | 無 |
+| 項目 | Copilot | Claude Code | Grok (OAuth proxy) | OpenAI | Anthropic | Heyroute | Gemini | OpenRouter | Ollama |
+|------|---------|-------------|-------------------|--------|-----------|----------|--------|------------|--------|
+| Endpoint | OpenAI compat（歷史/實測） | `/v1/messages`（Anthropic schema） | OpenAI compat via local proxy | Chat Completions | `/v1/messages` | `/v1/messages`（假設相容/未驗證） | `generateContent` | OpenAI compat | native `/api/chat` |
+| Reasoning 參數 | `reasoning_effort`（頂層，逆向/實測） | `thinking.type` + `output_config.effort` | `reasoning_effort`（頂層） | `reasoning_effort`（頂層） | `thinking.type` + `output_config.effort` | `thinking.type` + `output_config.effort`（假設相容/未驗證） | `thinkingConfig` | `reasoning: {"effort":...}` | `think`（native） |
+| Effort 值 | low/medium/high/xhigh（curated profiles；backend 逆向） | low/medium/high/max（`output_config.effort`） | none/low/medium/high/xhigh（model-dependent） | low/medium/high/xhigh/max（adapter passthrough；官方另列 none） | low/medium/high/max（output_config） | low/medium/high/xhigh/max（假設相容/未驗證） | minimal/low/medium/high（依模型） | none/minimal/low/medium/high/xhigh | low/medium/high/xhigh/max（adapter passthrough） |
+| Token budget | 無 | `thinking.budget_tokens` | 無 | 無 | `thinking.budget_tokens` | `thinking.budget_tokens`（假設相容/未驗證） | `thinkingBudget` | `reasoning.max_tokens` | 無 |
+| Vision | `image_url`（實測） | `image` block（base64） | `image_url` | `image_url` | `image` block（base64/url） | `image` block（假設相容/未驗證） | `inlineData`（base64） | `image_url` | 依模型 |
+| Tools | OpenAI function（實測） | Anthropic `input_schema` | OpenAI function | OpenAI function | Anthropic `input_schema` | Anthropic `input_schema`（假設相容/未驗證） | Gemini `functionDeclarations` | OpenAI function | native `tools` |
+| Auth | proxy 處理（逆向） | proxy 處理（Claude Code OAuth bearer，逆向） | proxy 處理（SuperGrok OAuth） | Bearer token | Bearer/x-api-key + version | x-api-key + version（假設相容/未驗證） | API key (header/query) | Bearer token | 本機 daemon 無 |
+| max_tokens | 不需要（實測） | **必填** | 可選 | 可選（GPT-5+ 用 `max_completion_tokens`） | **必填** | **必填**（假設相容/未驗證） | 可選（maxOutputTokens） | 可選 | `options.num_predict` |
+| Prompt cache | 無 | Anthropic breakpoint | 自動 prefix + `x-grok-conv-id` sticky | 自動 prefix（`prompt_cache_retention: "24h"`） | Anthropic breakpoint | Anthropic breakpoint（假設相容/未驗證） | 無 | `cache_control` breakpoint | 無 |
 
 ---
 

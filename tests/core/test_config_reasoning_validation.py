@@ -220,27 +220,85 @@ def test_openai_accepts_max_effort_even_when_profile_list_is_old(
     assert config.reasoning.effort == "max"
 
 
-def test_anthropic_requires_budget_tokens(monkeypatch, tmp_path: Path):
+def test_anthropic_accepts_native_thinking_and_effort(monkeypatch, tmp_path: Path):
     _write_yaml(
         tmp_path / "llm" / "x.yaml",
         {
             "provider": "anthropic",
-            "model": "claude-test",
-            "api_key": "test-key",
-            "reasoning": {"enabled": True},
-            "capabilities": {
-                "reasoning": {
-                    "supports_toggle": True,
-                    "supported_efforts": [],
-                    "supports_max_tokens": True,
-                }
-            },
+            "model": "claude-sonnet-5",
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "xhigh"},
         },
     )
     monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
 
-    with pytest.raises(ValueError, match="Anthropic thinking requires"):
+    config = config_module.resolve_llm_config("llm/x.yaml")
+    assert config.thinking is not None
+    assert config.thinking.type == "adaptive"
+    assert config.output_config.effort == "xhigh"
+
+
+def test_anthropic_budget_tokens_requires_enabled_type(monkeypatch, tmp_path: Path):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "thinking": {"type": "adaptive", "budget_tokens": 2048},
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(Exception):
         config_module.resolve_llm_config("llm/x.yaml")
+
+
+def test_anthropic_budget_tokens_rejects_below_minimum(monkeypatch, tmp_path: Path):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "thinking": {"type": "enabled", "budget_tokens": 512},
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(Exception):
+        config_module.resolve_llm_config("llm/x.yaml")
+
+
+@pytest.mark.parametrize("effort", ["xhigh", "max"])
+def test_anthropic_rejects_disabled_high_effort_on_opus_5(
+    monkeypatch, tmp_path: Path, effort: str
+):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": effort},
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="only works at effort high or below"):
+        config_module.resolve_llm_config("llm/x.yaml")
+
+def test_anthropic_allows_unknown_model_effort(monkeypatch, tmp_path: Path):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {
+            "provider": "anthropic",
+            "model": "claude-future-9",
+            "output_config": {"effort": "max"},
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.resolve_llm_config("llm/x.yaml")
+    assert config.output_config.effort == "max"
 
 
 def test_copilot_validates_supported_efforts(monkeypatch, tmp_path: Path):

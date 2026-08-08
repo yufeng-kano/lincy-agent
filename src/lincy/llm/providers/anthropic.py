@@ -1,7 +1,6 @@
 """Anthropic provider client.
 
-Thinking: supports both manual mode (thinking: {"type": "enabled",
-"budget_tokens": N}) and adaptive mode (thinking: {"type": "adaptive"}).
+Thinking and output_config are passed through in the native Messages API shape.
 See docs/dev/provider-api-spec.md.
 """
 
@@ -9,7 +8,11 @@ from typing import Any
 
 import httpx
 
-from ...core.schema import AnthropicConfig, AnthropicThinkingConfig
+from ...core.schema import (
+    AnthropicConfig,
+    AnthropicOutputConfig,
+    AnthropicThinkingConfig,
+)
 from ..schema import (
     AnthropicContent,
     AnthropicMessagePayload,
@@ -28,45 +31,27 @@ from ..schema import (
 
 
 def _map_thinking(
-    reasoning: AnthropicThinkingConfig | None,
-    provider_overrides: dict[str, Any] | None,
+    thinking: AnthropicThinkingConfig | None,
 ) -> dict[str, Any] | None:
-    """Map thinking config to Anthropic thinking object.
-
-    Returns {"type": "enabled", "budget_tokens": N} or None.
-    Supports provider_overrides.anthropic_thinking (full override)
-    and provider_overrides.anthropic_thinking_budget_tokens.
-    """
-    if provider_overrides:
-        override = provider_overrides.get("anthropic_thinking")
-        if override is not None:
-            if not isinstance(override, dict):
-                raise ValueError(
-                    "provider_overrides.anthropic_thinking must be an object"
-                )
-            return override
-
-    if reasoning is None or reasoning.enabled is False:
+    if thinking is None:
         return None
-
-    budget_tokens = reasoning.max_tokens
-    if budget_tokens is None and provider_overrides:
-        budget_override = provider_overrides.get("anthropic_thinking_budget_tokens")
-        if budget_override is not None:
-            if not isinstance(budget_override, int) or budget_override <= 0:
-                raise ValueError(
-                    "provider_overrides.anthropic_thinking_budget_tokens must be > 0"
-                )
-            budget_tokens = budget_override
-
-    # Adaptive thinking for Sonnet 4.6 / Opus 4.6: no budget needed.
-    if reasoning.enabled and budget_tokens is None:
-        return {"type": "adaptive"}
-
-    payload: dict[str, Any] = {"type": "enabled"}
+    payload: dict[str, Any] = {"type": thinking.type}
+    budget_tokens = getattr(thinking, "budget_tokens", None)
     if budget_tokens is not None:
         payload["budget_tokens"] = budget_tokens
     return payload
+
+
+def _map_output_config(
+    output_config: AnthropicOutputConfig | None,
+) -> dict[str, Any] | None:
+    if output_config is None or output_config.effort is None:
+        return None
+    return {"effort": output_config.effort}
+
+
+def _has_active_thinking(thinking: dict[str, Any] | None) -> bool:
+    return thinking is not None and thinking.get("type") != "disabled"
 
 
 class AnthropicClient:
@@ -77,10 +62,9 @@ class AnthropicClient:
         self.max_tokens = config.max_tokens
         self.request_timeout = config.request_timeout
         self.temperature = config.temperature
-        self.thinking = _map_thinking(
-            config.reasoning,
-            config.provider_overrides,
-        )
+        self.thinking = _map_thinking(config.thinking)
+        self.output_config = _map_output_config(config.output_config)
+        self.has_active_thinking = _has_active_thinking(self.thinking)
 
     def _convert_tools(self, tools: list[ToolDefinition]) -> list[AnthropicTool]:
         """Convert ToolDefinition list to Anthropic tools format."""
@@ -283,6 +267,8 @@ class AnthropicClient:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
+        if self.output_config:
+            headers["anthropic-beta"] = "effort-2025-11-24"
 
         system, chat_messages = self._convert_messages(messages)
 
@@ -295,8 +281,10 @@ class AnthropicClient:
             request_data["system"] = system
         if self.thinking:
             request_data["thinking"] = self.thinking
+        if self.output_config:
+            request_data["output_config"] = self.output_config
         effective_temp = temperature if temperature is not None else self.temperature
-        if effective_temp is not None and not self.thinking:
+        if effective_temp is not None and not self.has_active_thinking:
             request_data["temperature"] = effective_temp
 
         with httpx.Client(timeout=self.request_timeout) as client:
@@ -325,6 +313,8 @@ class AnthropicClient:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
+        if self.output_config:
+            headers["anthropic-beta"] = "effort-2025-11-24"
 
         system, chat_messages = self._convert_messages(messages)
         anthropic_tools = self._convert_tools(tools) if tools else None
@@ -340,8 +330,10 @@ class AnthropicClient:
             request_data["tools"] = [t.model_dump() for t in anthropic_tools]
         if self.thinking:
             request_data["thinking"] = self.thinking
+        if self.output_config:
+            request_data["output_config"] = self.output_config
         effective_temp = temperature if temperature is not None else self.temperature
-        if effective_temp is not None and not self.thinking:
+        if effective_temp is not None and not self.has_active_thinking:
             request_data["temperature"] = effective_temp
 
         with httpx.Client(timeout=self.request_timeout) as client:

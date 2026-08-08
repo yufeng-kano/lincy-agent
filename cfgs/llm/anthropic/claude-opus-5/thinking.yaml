@@ -1,24 +1,26 @@
-# Anthropic native Messages API profile for Claude Sonnet 4.6 with adaptive thinking.
+# Anthropic native Messages API profile for Claude Opus 5 with adaptive thinking.
 provider: anthropic
 # Upstream model id used by Anthropic.
-model: claude-sonnet-4-6
+model: claude-opus-5
 # API key environment variable.
 api_key_env: ANTHROPIC_API_KEY
 # Anthropic API root. The client appends /v1/messages.
 base_url: https://api.anthropic.com
 # Output token cap for this profile.
-max_tokens: 16384
+max_tokens: 128000
 # HTTP timeout in seconds.
-request_timeout: 180.0
+request_timeout: 600.0
 # Sampling temperature. Anthropic omits temperature when thinking is active.
 temperature: 1.0
 # Whether the app may send image inputs to this profile.
 vision: true
 
-# Native Anthropic adaptive thinking payload.
+# Opus 5 thinks by default; adaptive is stated explicitly to keep the payload self-describing.
 thinking:
   type: adaptive
 
-# Native Anthropic output_config payload.
+# xhigh is the recommended tier for agentic tool loops on Opus 5. max is left
+# for latency-insensitive one-off work: it overthinks conversational turns and
+# burns the subscription Opus quota faster for little gain here.
 output_config:
-  effort: low
+  effort: xhigh

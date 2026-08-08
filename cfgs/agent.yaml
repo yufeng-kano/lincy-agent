@@ -271,8 +271,9 @@ tools:
 # Agents
 agents:
   brain:
-    llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
+    llm: cfgs/llm/heyroute/claude-opus-5/thinking.yaml
     llm_fallbacks:
+      - cfgs/llm/claude_code/claude-opus-5/thinking.yaml
       - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
     llm_request_timeout: 600
     llm_transient_retries: 3
@@ -328,7 +329,10 @@ agents:
 
   worker:
     enabled: true
-    llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
+    llm: cfgs/llm/heyroute/claude-opus-5/thinking.yaml
+    llm_fallbacks:
+      - cfgs/llm/claude_code/claude-opus-5/thinking.yaml
+      - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
     llm_request_timeout: 600
     llm_transient_retries: 2
     warn_on_failure: true
@@ -346,9 +350,8 @@ agents:
 
   memory_editor:
     enabled: true
-    llm: cfgs/llm/claude_code/claude-sonnet-5/no-thinking.yaml
+    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
     llm_fallbacks:
-      - cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
       - cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml
       - cfgs/llm/codex/gpt-5.5/low-thinking.yaml
     llm_request_timeout: 600

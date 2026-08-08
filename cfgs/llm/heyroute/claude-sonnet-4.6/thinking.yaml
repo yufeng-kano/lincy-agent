@@ -1,11 +1,11 @@
-# Anthropic native Messages API profile for Claude Sonnet 4.6 with adaptive thinking.
-provider: anthropic
+# Heyroute Anthropic-compatible Messages API profile for Claude Sonnet 4.6 with adaptive thinking.
+provider: heyroute
 # Upstream model id used by Anthropic.
 model: claude-sonnet-4-6
 # API key environment variable.
-api_key_env: ANTHROPIC_API_KEY
-# Anthropic API root. The client appends /v1/messages.
-base_url: https://api.anthropic.com
+api_key_env: HEYROUTE_API_KEY
+# Heyroute gateway root. The client appends /v1/messages.
+base_url: https://heyroute.ai/
 # Output token cap for this profile.
 max_tokens: 16384
 # HTTP timeout in seconds.
@@ -15,10 +15,10 @@ temperature: 1.0
 # Whether the app may send image inputs to this profile.
 vision: true
 
-# Native Anthropic adaptive thinking payload.
+# Assumed Anthropic-compatible adaptive thinking payload.
 thinking:
   type: adaptive
 
-# Native Anthropic output_config payload.
+# Assumed Anthropic-compatible output_config payload.
 output_config:
   effort: low

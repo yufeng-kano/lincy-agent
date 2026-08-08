@@ -844,38 +844,58 @@ class DeepSeekConfig(LLMProviderConfig):
         return DeepSeekClient(self)
 
 
-class AnthropicThinkingConfig(StrictConfigModel):
-    """Anthropic thinking config.
+class AnthropicAdaptiveThinkingConfig(StrictConfigModel):
+    """Anthropic adaptive thinking config."""
 
-    Maps to thinking: {"type": "enabled", "budget_tokens": N} (manual mode)
-    or {"type": "adaptive"} when enabled=True and no budget is given
-    (requires capabilities.reasoning.supports_adaptive).
-    See docs/dev/provider-api-spec.md.
-    """
-
-    enabled: bool | None = None
-    max_tokens: int | None = Field(default=None, gt=0)
+    type: Literal["adaptive"]
 
 
-class AnthropicCapabilities(StrictConfigModel):
-    reasoning: "AnthropicReasoningCapabilities"
-    vision: bool = False
+class AnthropicEnabledThinkingConfig(StrictConfigModel):
+    """Anthropic manual extended thinking config."""
+
+    type: Literal["enabled"]
+    budget_tokens: int | None = Field(default=None, ge=1024)
 
 
-class AnthropicReasoningCapabilities(StrictConfigModel):
-    supports_toggle: bool
-    supported_efforts: list[str] = Field(default_factory=list)
-    supports_max_tokens: bool
-    supports_adaptive: bool = False
+class AnthropicDisabledThinkingConfig(StrictConfigModel):
+    """Anthropic disabled thinking config."""
+
+    type: Literal["disabled"]
+
+
+AnthropicThinkingConfig = Annotated[
+    AnthropicAdaptiveThinkingConfig
+    | AnthropicEnabledThinkingConfig
+    | AnthropicDisabledThinkingConfig,
+    Field(discriminator="type"),
+]
+
+
+class AnthropicOutputConfig(StrictConfigModel):
+    """Anthropic output_config block."""
+
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+
+    @model_validator(mode="after")
+    def validate_non_empty(self) -> "AnthropicOutputConfig":
+        if self.effort is None:
+            raise ValueError("output_config must set at least one field")
+        return self
+
+
+# Keep this list aligned with the Claude Code native provider. Only model
+# families with documented limits are listed; unknown and future ids pass through.
+_ANTHROPIC_MODEL_EFFORTS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("haiku-4-5", frozenset()),
+    ("sonnet-4-5", frozenset()),
+    ("opus-4-5", frozenset({"low", "medium", "high"})),
+    ("opus-4-6", frozenset({"low", "medium", "high", "max"})),
+    ("sonnet-4-6", frozenset({"low", "medium", "high", "max"})),
+)
 
 
 class AnthropicConfig(LLMProviderConfig):
-    """Anthropic provider configuration.
-
-    Uses thinking: {"type": "enabled", "budget_tokens": N} (manual mode)
-    or {"type": "adaptive"} (no budget needed, Sonnet 4.6+ / Opus 4.6+).
-    See docs/dev/provider-api-spec.md.
-    """
+    """Anthropic provider configuration using native Messages API fields."""
 
     provider: Literal["anthropic"] = "anthropic"
     model: str
@@ -885,50 +905,76 @@ class AnthropicConfig(LLMProviderConfig):
     max_tokens: int = 4096
     request_timeout: float = Field(default=120.0, gt=0)
     temperature: float | None = None
-    reasoning: AnthropicThinkingConfig | None = None
-    capabilities: AnthropicCapabilities | None = None
-    provider_overrides: dict[str, Any] | None = None
+    vision: bool = False
+    thinking: AnthropicThinkingConfig | None = None
+    output_config: AnthropicOutputConfig | None = None
 
     def validate_reasoning(self, *, source_path: Path) -> "AnthropicConfig":
-        reasoning = self.reasoning
-        if reasoning is None:
+        effort = self.output_config.effort if self.output_config else None
+        if effort is None:
             return self
+
         ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        if reasoning.enabled is False and reasoning.max_tokens is not None:
-            raise ValueError("reasoning.max_tokens cannot be set when enabled is false " + ctx)
-        if self.capabilities is None:
-            raise ValueError(
-                "reasoning is configured but capabilities.reasoning is missing " + ctx
-            )
-        caps = self.capabilities.reasoning
-        if reasoning.enabled is not None and not caps.supports_toggle:
-            raise ValueError(
-                "reasoning.enabled is set, but supports_toggle=false " + ctx
-            )
-        if reasoning.max_tokens is not None and not caps.supports_max_tokens:
-            raise ValueError(
-                "reasoning.max_tokens is set, but supports_max_tokens=false " + ctx
-            )
-        overrides = self.provider_overrides or {}
-        if reasoning.enabled is True and (
-            reasoning.max_tokens is None
-            and overrides.get("anthropic_thinking") is None
-            and overrides.get("anthropic_thinking_budget_tokens") is None
-            and not caps.supports_adaptive
+        model = self.model.lower()
+        for family, allowed in _ANTHROPIC_MODEL_EFFORTS:
+            if family not in model:
+                continue
+            if effort not in allowed:
+                supported = ", ".join(sorted(allowed)) if allowed else "none"
+                raise ValueError(
+                    f"output_config.effort={effort} is not supported upstream by this "
+                    f"model (supported: {supported}) " + ctx
+                )
+            break
+
+        thinking_disabled = (
+            self.thinking is not None and self.thinking.type == "disabled"
+        )
+        if (
+            thinking_disabled
+            and effort in ("xhigh", "max")
+            and "opus-5" in model
         ):
             raise ValueError(
-                "Anthropic thinking requires reasoning.max_tokens, "
-                "provider_overrides.anthropic_thinking_budget_tokens, "
-                "or capabilities.reasoning.supports_adaptive " + ctx
+                f"thinking.type=disabled only works at effort high or below on this "
+                f"model, got effort={effort} " + ctx
             )
         return self
 
     def get_vision(self) -> bool:
-        return bool(self.capabilities and self.capabilities.vision)
+        return self.vision
 
     def create_client(self) -> Any:
         from ..llm.providers.anthropic import AnthropicClient
         return AnthropicClient(self)
+
+
+class HeyrouteConfig(AnthropicConfig):
+    """Heyroute gateway using the assumed Anthropic-compatible Messages API."""
+
+    provider: Literal["heyroute"] = "heyroute"
+    api_key_env: str | None = "HEYROUTE_API_KEY"
+    base_url: str = Field(
+        default="https://heyroute.ai/",
+        validate_default=True,
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        trimmed = value.strip().rstrip("/")
+        if not trimmed:
+            raise ValueError("base_url must not be empty")
+        if trimmed.endswith("/v1") or trimmed.endswith("/v1/messages"):
+            raise ValueError(
+                "Heyroute base_url must point to the gateway root, "
+                "not /v1 or /v1/messages"
+            )
+        return trimmed
+
+    def create_client(self) -> Any:
+        from ..llm.providers.heyroute import HeyrouteClient
+        return HeyrouteClient(self)
 
 
 class GeminiThinkingConfig(StrictConfigModel):
@@ -1187,6 +1233,7 @@ LLMConfig = Annotated[
     | OpenAIConfig
     | DeepSeekConfig
     | AnthropicConfig
+    | HeyrouteConfig
     | GeminiConfig
     | OpenRouterConfig
     | LiteLLMConfig,

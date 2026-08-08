@@ -1,4 +1,4 @@
-# Anthropic native Messages API profile for Claude Sonnet 4.6 with adaptive thinking.
+# Anthropic native Messages API profile for Claude Sonnet 4.6 with thinking disabled.
 provider: anthropic
 # Upstream model id used by Anthropic.
 model: claude-sonnet-4-6
@@ -10,14 +10,14 @@ base_url: https://api.anthropic.com
 max_tokens: 16384
 # HTTP timeout in seconds.
 request_timeout: 180.0
-# Sampling temperature. Anthropic omits temperature when thinking is active.
+# Sampling temperature. Anthropic only sends this when thinking is disabled.
 temperature: 1.0
 # Whether the app may send image inputs to this profile.
 vision: true
 
-# Native Anthropic adaptive thinking payload.
+# Explicitly disable adaptive thinking for this profile.
 thinking:
-  type: adaptive
+  type: disabled
 
 # Native Anthropic output_config payload.
 output_config:

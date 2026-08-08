@@ -102,7 +102,7 @@ base_url: http://localhost:11434
 ```yaml
 # cfgs/llm/anthropic/default.yaml
 provider: anthropic
-model: claude-sonnet-4-20250514
+model: claude-sonnet-4-6
 api_key_env: ANTHROPIC_API_KEY    # 從環境變數讀取
 max_tokens: 4096
 ```

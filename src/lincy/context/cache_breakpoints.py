@@ -17,11 +17,14 @@ from ..llm.schema import ContentPart, Message
 
 logger = logging.getLogger(__name__)
 
-BREAKPOINT_CACHE_PROVIDERS = frozenset({"openrouter", "claude_code", "anthropic"})
+BREAKPOINT_CACHE_PROVIDERS = frozenset(
+    {"openrouter", "claude_code", "anthropic", "heyroute"}
+)
 BREAKPOINT_MAX_TTL = {
     "openrouter": "1h",
     "claude_code": "1h",
     "anthropic": "1h",
+    "heyroute": "1h",
 }
 # Project-wide TTL tokens. Keep in sync with CacheConfig.ttl Literal.
 ALLOWED_CACHE_TTLS = frozenset({"ephemeral", "1h", "24h"})

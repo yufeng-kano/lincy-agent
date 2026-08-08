@@ -5,6 +5,7 @@ from .copilot import CopilotClient
 from .deepseek import DeepSeekClient
 from .gemini import GeminiClient
 from .grok import GrokClient
+from .heyroute import HeyrouteClient
 from .ollama_native import OllamaNativeClient
 from .openai import OpenAIClient
 from .openai_compat import OpenAICompatibleClient
@@ -18,6 +19,7 @@ __all__ = [
     "DeepSeekClient",
     "GeminiClient",
     "GrokClient",
+    "HeyrouteClient",
     "OllamaNativeClient",
     "OpenAIClient",
     "OpenAICompatibleClient",

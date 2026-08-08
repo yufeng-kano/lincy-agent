@@ -59,7 +59,7 @@ def _image_char_estimate(width: int, height: int, provider: str) -> int:
     - Anthropic: pixel area / 750 * 4
     - Gemini: flat 258 tokens * 4
     """
-    if provider in ("anthropic",):
+    if provider in ("anthropic", "heyroute"):
         if width <= 0 or height <= 0:
             return 1000
         return (width * height) // 750 * 4

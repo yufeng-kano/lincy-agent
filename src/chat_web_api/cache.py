@@ -27,11 +27,14 @@ _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
         "copilot",
         "deepseek",
         "grok",
+        "heyroute",
         "openai",
         "openrouter",
     }
 )
-_WRITE_CACHE_MEASURABLE_PROVIDERS = frozenset({"anthropic", "claude_code", "openrouter"})
+_WRITE_CACHE_MEASURABLE_PROVIDERS = frozenset(
+    {"anthropic", "claude_code", "heyroute", "openrouter"}
+)
 
 
 def _compute_read_cache_rate(
