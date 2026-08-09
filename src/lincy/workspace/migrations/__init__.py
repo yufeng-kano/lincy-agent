@@ -174,6 +174,7 @@ from .m0163_brain_shell_delegation import M0163BrainShellDelegation
 from .m0164_memory_maintenance_worker_native import M0164MemoryMaintenanceWorkerNative
 from .m0165_worker_async_dispatch import M0165WorkerAsyncDispatch
 from .m0166_worker_memory_file_access import M0166WorkerMemoryFileAccess
+from .m0167_temp_memory_delta_write import M0167TempMemoryDeltaWrite
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -340,4 +341,5 @@ ALL_MIGRATIONS = [
     M0164MemoryMaintenanceWorkerNative(),
     M0165WorkerAsyncDispatch(),
     M0166WorkerMemoryFileAccess(),
+    M0167TempMemoryDeltaWrite(),
 ]

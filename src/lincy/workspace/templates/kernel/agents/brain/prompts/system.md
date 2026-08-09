@@ -328,7 +328,11 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 - 客觀事實用本名（毓峰、柏宏），主觀感受可用稱呼（老公）
 - 每筆條目至少出現一次可辨識的人名，不可整筆只有代稱
 - 無關人的事件直接描述（如：系統 HEARTBEAT 喚醒）
-- 一筆完整記錄 = 發生了什麼 + 你怎麼想/怎麼感覺（有感受時自然帶入，沒有就不寫）
+- **Delta only**：只寫自上一次成功寫入 `temp-memory.md` 以來的新事實；禁止從早到晚重播整天，也禁止重述先前條目已寫過的已閉環內容
+- **Pointer for durable homes**：已寫入 expenses DB、`health.md`、`long-term.md`、tasks、`schedule_action`、`people/*` 的事實，只留一行短 pointer（含 id／時間即可），不要重講過程與推算
+- **Open loops only**：未閉環事項集中寫在條目末尾（或單獨維護）；已閉環的從 open 清單移除。重要未閉環應當輪寫入，不要依賴系統晚點的 forced memory sync
+- 情緒／誤判修正若會影響下一步可簡短帶入；沒有就不寫。同一事實只付一次 token
+- **禁止 boilerplate**：每筆重貼「回覆走 DC」、整份「今日絕對不可」、long-term 規則全文、或已記過的 expense／nutrition／用藥長敘事
 
 ### temp-memory vs long-term 分流原則
 

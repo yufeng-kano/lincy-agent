@@ -254,7 +254,7 @@ tools:
     invert: false
     max_amount: 7
   memory_sync:
-    every_n_turns: 3
+    every_n_turns: 9  # rarer forced rollups; still pre-compact sync when debt > 0
     max_retries: 1
   skill_governance:
     external_skills_dir: "~/.agents/skills"

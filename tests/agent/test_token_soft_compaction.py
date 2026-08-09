@@ -425,6 +425,10 @@ def test_memory_sync_reminder_uses_rollup_instruction():
     assert "not been updated for 5 turns" in text
     assert "EXACTLY ONE rollup entry" in text
     assert "[rollup 5 turns]" in text
+    assert "DELTA ONLY" in text
+    assert "Open loops only" in text
+    assert "POINTER for durable homes" in text
+    assert "FORBIDDEN boilerplate" in text
 
 
 def test_memory_sync_side_channel_uses_brain_client(monkeypatch, tmp_path):
