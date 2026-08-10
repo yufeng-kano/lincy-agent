@@ -37,6 +37,30 @@ class _DebugSinkProtocol:
     """Minimal type hint for the session debug sink."""
 
 
+def run_simple_tool_loop(
+    client: LLMClient,
+    *,
+    build_messages: Any,
+    tool_definitions: list[Any],
+    handle_tool_calls: Any,
+    finalization_messages: Any,
+) -> str:
+    """Run a basic synchronous tool loop and require a final text response."""
+    response = client.chat_with_tools(build_messages(), tool_definitions)
+    while response.has_tool_calls():
+        handle_tool_calls(response)
+        response = client.chat_with_tools(build_messages(), tool_definitions)
+
+    content = response.content or ""
+    if not content.strip():
+        content = client.chat_with_tools(build_messages(), []).content or ""
+    if not content.strip():
+        content = client.chat_with_tools(finalization_messages(), []).content or ""
+    if not content.strip():
+        raise RuntimeError("Model returned empty final response during tool loop.")
+    return content
+
+
 class WorkerRunner:
     """Run autonomous tool loops with an independent context window."""
 

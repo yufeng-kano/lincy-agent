@@ -368,11 +368,6 @@ agents:
     allow_wait_tool: false # false = disable wait tool
     step_delay_min: 0.1 # min forced delay (sec) after each tool step
     step_delay_max: 0.3 # max forced delay (sec); random in [min, max]
-    gui_intent_max_chars: null # gui_task 意圖顯示截斷
-    gui_instruction_max_chars: null # ask_worker 指令顯示截斷（null=不截斷）
-    gui_text_max_chars: null # type_text 文字顯示截斷（null=不截斷）
-    gui_worker_result_max_chars: null # worker 觀察結果顯示截斷（null=不截斷）
-    gui_result_max_chars: null # 一般結果顯示截斷（null=不截斷）
     screenshot_max_width: 1000 # 截圖最大寬度（等比縮放；供 brain screenshot 工具與 gui_worker 用）
     screenshot_quality: 70 # JPEG 壓縮品質（1-100）
     ax: # AX-first 後端（OpenComputerUse MCP server）

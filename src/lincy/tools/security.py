@@ -5,41 +5,68 @@ from pathlib import Path
 import re
 
 
-def is_path_allowed(path: str, allowed_paths: list[str], base_dir: Path) -> bool:
-    """Check if a path is within allowed directories.
-
-    Args:
-        path: The path to check (absolute or relative).
-        allowed_paths: List of allowed directory paths.
-        base_dir: Base directory for resolving relative paths.
-
-    Returns:
-        True if path is allowed, False otherwise.
-    """
-    # Resolve the target path
-    target = Path(path)
+def resolve_allowed_path(
+    path: str,
+    allowed_paths: list[str],
+    base_dir: Path,
+) -> Path | None:
+    """Resolve a path and return it only when it is allowed."""
+    target = Path(path).expanduser()
     if not target.is_absolute():
         target = base_dir / target
     target = target.resolve()
+    base_dir = base_dir.expanduser().resolve()
 
-    # If no allowed paths specified, only allow within base_dir
-    if not allowed_paths:
-        try:
-            target.relative_to(base_dir)
-            return True
-        except ValueError:
-            return False
-
-    # Check against each allowed path
-    for allowed in allowed_paths:
-        allowed_path = Path(allowed).expanduser().resolve()
+    allowed = allowed_paths or [str(base_dir)]
+    for allowed_path_text in allowed:
+        allowed_path = Path(allowed_path_text).expanduser().resolve()
         try:
             target.relative_to(allowed_path)
-            return True
+            return target
         except ValueError:
             continue
+    return None
 
-    return False
+
+def is_path_allowed(path: str, allowed_paths: list[str], base_dir: Path) -> bool:
+    """Check whether a path resolves within an allowed directory."""
+    return resolve_allowed_path(path, allowed_paths, base_dir) is not None
+
+
+_BLACKLIST_HINTS: dict[str, str] = {
+    "python": "Use 'uv run python ...' or 'uv run script.py' instead",
+    "pip": "Use 'uv add <package>' or 'uv run --with <package>' instead",
+}
+
+
+def check_shell_command(command: str, blacklist: list[str] | tuple[re.Pattern[str], ...]) -> str | None:
+    """Return a standard error for a blacklisted command, if any."""
+    for pattern in blacklist:
+        compiled = re.compile(pattern) if isinstance(pattern, str) else pattern
+        if compiled.search(command):
+            hint = next(
+                (hint for keyword, hint in _BLACKLIST_HINTS.items() if keyword in compiled.pattern),
+                None,
+            )
+            message = f"Error: Command blocked by pattern '{compiled.pattern}'"
+            return f"{message}. {hint}" if hint else message
+    return None
+
+
+def clamp_timeout(requested: int | None, default: int) -> int:
+    """Use the requested timeout without allowing it below the default."""
+    return max(requested if requested is not None else default, default)
+
+
+MAX_OUTPUT_SIZE = 100 * 1024
+_OUTPUT_TRUNCATED_SUFFIX = "\n... (output truncated)"
+
+
+def truncate_output(text: str) -> str:
+    """Bound shell output to the shared maximum size."""
+    if len(text) <= MAX_OUTPUT_SIZE:
+        return text
+    return text[:MAX_OUTPUT_SIZE] + _OUTPUT_TRUNCATED_SUFFIX
 
 
 @lru_cache(maxsize=None)

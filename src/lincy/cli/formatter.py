@@ -1,6 +1,7 @@
 import json
 
 from ..llm.schema import ToolCall
+from ..tui.formatting import indent_lines
 
 
 def _pretty_json(value: object) -> str:
@@ -20,11 +21,6 @@ def _parse_json_text(text: str) -> object | None:
     except json.JSONDecodeError:
         return None
 
-
-def _indent_block(text: str, prefix: str = "  ") -> str:
-    """Indent a multiline block while preserving blank lines."""
-    lines = text.splitlines() or [""]
-    return "\n".join(f"{prefix}{line}" for line in lines)
 
 
 def _format_send_message_call(args: dict) -> str:
@@ -49,10 +45,10 @@ def _format_send_message_call(args: dict) -> str:
     body = args.get("body")
     if isinstance(body, str):
         lines.append("body:")
-        lines.append(_indent_block(body, "  "))
+        lines.append(indent_lines(body, "  "))
     elif body is not None:
         lines.append("body:")
-        lines.append(_indent_block(_pretty_json(body), "  "))
+        lines.append(indent_lines(_pretty_json(body), "  "))
     else:
         lines.append("body: ?")
 
@@ -149,11 +145,7 @@ def _collect_memory_result_warnings(payload: dict) -> list[str]:
     return items
 
 
-def format_tool_call(
-    tool_call: ToolCall,
-    *,
-    gui_intent_max_chars: int | None = None,
-) -> str:
+def format_tool_call(tool_call: ToolCall) -> str:
     """Format tool call for display."""
     name = tool_call.name
     args = tool_call.arguments
@@ -202,55 +194,23 @@ def format_tool_call(
         return f"{name}: {args}"
 
 
-def format_gui_tool_call(
-    tool_call: ToolCall,
-    *,
-    instruction_max_chars: int | None = None,
-    text_max_chars: int | None = None,
-) -> str:
+def format_gui_tool_call(tool_call: ToolCall) -> str:
     """Format a GUI manager internal tool call for display."""
     name = tool_call.name
     args = tool_call.arguments
 
-    if name == "ask_worker":
-        instruction = args.get("instruction", "?")
-        return f"ask_worker: {instruction}"
-    elif name == "click":
-        bbox = args.get("bbox", "?")
-        return f"click: bbox={bbox}"
-    elif name == "type_text":
-        text = args.get("text", "?")
-        return f'type_text: "{text}"'
-    elif name == "key_press":
-        return f"key_press: {args.get('key', '?')}"
-    elif name == "screenshot":
-        return "screenshot"
-    elif name == "done":
+    if name == "done":
         return f"done: {args.get('summary', '?')}"
-    elif name == "fail":
+    if name == "fail":
         return f"fail: {args.get('reason', '?')}"
-    elif name == "report_problem":
+    if name == "report_problem":
         return f"report_problem: {args.get('problem', '?')}"
-    else:
-        return f"{name}: {args}"
+    return f"{name}: {args}"
 
 
-def format_gui_tool_result(
-    tool_call: ToolCall,
-    result: str,
-    *,
-    worker_result_max_chars: int | None = None,
-    result_max_chars: int | None = None,
-) -> str:
+def format_gui_tool_result(tool_call: ToolCall, result: str) -> str:
     """Format a GUI manager internal tool result for display."""
-    name = tool_call.name
-
-    if name == "screenshot":
-        return "(screenshot captured)"
-    elif name == "ask_worker":
-        return result
-    else:
-        return result
+    return result
 
 
 def format_tool_result(tool_call: ToolCall, result: str) -> str:

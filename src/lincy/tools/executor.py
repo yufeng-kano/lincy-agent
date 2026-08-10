@@ -11,8 +11,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-# Output truncation limit (100KB)
-MAX_OUTPUT_SIZE = 100 * 1024
+from .security import clamp_timeout, check_shell_command, truncate_output
 
 # Marker for extracting cwd after command execution
 _CWD_MARKER = "__CWD_MARKER_8f3a2b__"
@@ -32,20 +31,6 @@ def _load_env_allowlist(keys: list[str]) -> dict[str, str]:
         return {}
     all_values = dotenv_values()
     return {k: all_values[k] for k in keys if k in all_values}
-
-
-_BLACKLIST_HINTS: dict[str, str] = {
-    "python": "Use 'uv run python ...' or 'uv run script.py' instead",
-    "pip": "Use 'uv add <package>' or 'uv run --with <package>' instead",
-}
-
-
-def _blacklist_hint(pattern: str) -> str | None:
-    """Return a user-facing hint when a known blacklist pattern fires."""
-    for keyword, hint in _BLACKLIST_HINTS.items():
-        if keyword in pattern:
-            return hint
-    return None
 
 
 class ShellExecutor:
@@ -115,20 +100,15 @@ class ShellExecutor:
             Command output (stdout + stderr) or error message.
         """
         # Check blacklist
-        blocked = self.is_blocked(command)
+        blocked = check_shell_command(command, self._blacklist)
         if blocked:
-            hint = _blacklist_hint(blocked)
-            msg = f"Error: Command blocked by pattern '{blocked}'"
-            return f"{msg}. {hint}" if hint else msg
+            return blocked
 
         # Append pwd to track directory changes
         # Use newlines instead of semicolons to avoid breaking heredocs
         full_command = f"{command}\necho '{_CWD_MARKER}'\npwd"
 
-        # Use provided timeout or fall back to default; clamp to configured minimum
-        effective_timeout = timeout if timeout is not None else self._timeout
-        if effective_timeout < self._timeout:
-            effective_timeout = self._timeout
+        effective_timeout = clamp_timeout(timeout, self._timeout)
 
         try:
             env = {**os.environ, **self._extra_env} if self._extra_env else None
@@ -175,11 +155,7 @@ class ShellExecutor:
                     return f"Error: Command timed out after {effective_timeout} seconds"
                 output = self._process_cwd_marker(raw)
 
-            # Truncate if too large
-            if len(output) > MAX_OUTPUT_SIZE:
-                output = output[:MAX_OUTPUT_SIZE] + "\n... (output truncated)"
-
-            return output
+            return truncate_output(output)
 
         except _CommandCancelledError:
             return "Error: Command cancelled by user"

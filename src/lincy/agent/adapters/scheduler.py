@@ -8,91 +8,22 @@ AgentCore._process_inbound auto-creates the next one with a random delay.
 from __future__ import annotations
 
 import logging
-import random
-import re
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from ..heartbeat import apply_quiet_hours, make_heartbeat_message, parse_interval, random_delay
 from ..schema import InboundMessage, OutboundMessage
-from ...timezone_utils import get_tz, localise as tz_localise, now as tz_now
+from ...timezone_utils import now as tz_now
 
 if TYPE_CHECKING:
     from ..core import AgentCore
 
 logger = logging.getLogger(__name__)
 
-# Matches "2h-5h", "30m-90m", or mixed "1h-30m"
-_INTERVAL_RE = re.compile(r"^(\d+)([hm])-(\d+)([hm])$")
-
 _STARTUP_CONTENT = (
     "[STARTUP]\n"
     "You just woke up. Check your memory for anything important.\n"
     "Greet the user if appropriate, or stay silent."
 )
-
-_HEARTBEAT_TEMPLATE = (
-    "[HEARTBEAT]\n"
-    "Time: {time}\n\n"
-    "You have woken up spontaneously.\n"
-    "Check your memory for pending tasks, reminders, or anything\n"
-    "you want to tell the user. If nothing to do, do nothing."
-)
-
-
-def _to_minutes(value: int, unit: str) -> int:
-    """Convert a value with unit suffix to minutes."""
-    return value * 60 if unit == "h" else value
-
-
-def parse_interval(spec: str) -> tuple[int, int]:
-    """Parse interval spec into (lo_minutes, hi_minutes).
-
-    Accepts hours (h) or minutes (m) on each side independently:
-    ``"2h-5h"``, ``"30m-90m"``, ``"1h-30m"`` are all valid.
-    """
-    m = _INTERVAL_RE.match(spec)
-    if not m:
-        raise ValueError(f"Invalid interval spec: {spec!r}")
-    lo = _to_minutes(int(m.group(1)), m.group(2))
-    hi = _to_minutes(int(m.group(3)), m.group(4))
-    if lo > hi:
-        lo, hi = hi, lo
-    return lo, hi
-
-
-def random_delay(spec: str) -> timedelta:
-    """Return a random timedelta within the interval spec."""
-    lo, hi = parse_interval(spec)
-    minutes = random.uniform(lo, hi)
-    return timedelta(minutes=minutes)
-
-
-def make_heartbeat_message(
-    *,
-    not_before=None,
-    interval_spec: str = "2h-5h",
-    is_startup: bool = False,
-) -> InboundMessage:
-    """Create a heartbeat InboundMessage."""
-    if is_startup:
-        content = _STARTUP_CONTENT
-    else:
-        heartbeat_time = tz_localise(not_before) if not_before else tz_now()
-        time_str = heartbeat_time.strftime("%Y-%m-%d %H:%M")
-        content = _HEARTBEAT_TEMPLATE.format(time=time_str)
-
-    return InboundMessage(
-        channel="system",
-        content=content,
-        priority=5,
-        sender="system",
-        metadata={
-            "system": True,
-            "recurring": True,
-            "recur_spec": interval_spec,
-        },
-        not_before=not_before,
-    )
 
 
 def make_upgrade_notice_message(
@@ -154,7 +85,7 @@ class SchedulerAdapter:
         upgrade_message: str = "",
         quiet_windows: list[tuple] | None = None,
     ) -> None:
-        self._interval = interval
+        self.interval = interval
         self._enqueue_startup = enqueue_startup
         self._enqueue_upgrade_notice = enqueue_upgrade_notice
         self._upgrade_message = upgrade_message
@@ -186,7 +117,7 @@ class SchedulerAdapter:
                 msg.metadata.get("recurring")
                 and msg.not_before
                 and msg.not_before > now
-                and msg.metadata.get("recur_spec") == self._interval
+                and msg.metadata.get("recur_spec") == self.interval
                 for _, msg in system_pending
             )
             if has_future_heartbeat:
@@ -232,11 +163,11 @@ class SchedulerAdapter:
                     )
                 else:
                     logger.info("Upgrade notice enqueued")
-            delay = random_delay(self._interval)
+            delay = random_delay(self.interval)
             next_time = self._apply_quiet_hours(tz_now() + delay)
             delayed_msg = make_heartbeat_message(
                 not_before=next_time,
-                interval_spec=self._interval,
+                interval_spec=self.interval,
             )
             agent.enqueue(delayed_msg)
             logger.info("Startup heartbeat disabled; seeded delayed heartbeat")
@@ -259,7 +190,7 @@ class SchedulerAdapter:
             metadata={
                 "system": True,
                 "recurring": True,
-                "recur_spec": self._interval,
+                "recur_spec": self.interval,
             },
             not_before=startup_at if startup_at > now else None,
         )
@@ -270,17 +201,7 @@ class SchedulerAdapter:
             logger.info("Startup heartbeat enqueued")
 
     def _apply_quiet_hours(self, dt):
-        """Push *dt* past quiet hours if it falls within a blackout window."""
-        if not self._quiet_windows:
-            return dt
-        from ...core.schema import is_in_quiet_hours, next_quiet_end
-
-        tz = get_tz()
-        if is_in_quiet_hours(dt, self._quiet_windows, tz):
-            end = next_quiet_end(dt, self._quiet_windows, tz)
-            logger.info("Heartbeat deferred past quiet hours to %s", end.astimezone(tz))
-            return end
-        return dt
+        return apply_quiet_hours(dt, self._quiet_windows)
 
     def send(self, message: OutboundMessage) -> None:
         """No-op: system channel does not send outbound messages."""

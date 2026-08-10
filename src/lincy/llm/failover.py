@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timezone
-from email.utils import parsedate_to_datetime
 import json
 import logging
 import re
@@ -14,9 +12,13 @@ from typing import Any, Sequence, TypeVar
 
 import httpx
 
-from ..timezone_utils import now as tz_now
 from .base import LLMClient
-from .http_error import classify_http_status_error
+from .http_error import (
+    classify_http_status_error,
+    extract_http_status_error_detail,
+    is_transient_error,
+    parse_retry_after_seconds,
+)
 from .schema import ContentPart, LLMResponse, Message, ToolDefinition
 
 T = TypeVar("T")
@@ -140,47 +142,8 @@ def llm_failover_key(config: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _extract_http_error_detail(exc: httpx.HTTPStatusError) -> str:
-    response = exc.response
-    if response is None:
-        return ""
-    text = response.text.strip()
-    if not text:
-        return ""
-    try:
-        payload = json.loads(text)
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        for key in ("error", "message", "detail"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if isinstance(value, dict):
-                nested = value.get("message")
-                if isinstance(nested, str) and nested.strip():
-                    return nested.strip()
-    return " ".join(text.split())
-
-
-def _parse_retry_after_seconds(raw: str | None) -> float | None:
-    if not raw:
-        return None
-    value = raw.strip()
-    if not value:
-        return None
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        pass
-    try:
-        retry_at = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if retry_at.tzinfo is None:
-        retry_at = retry_at.replace(tzinfo=timezone.utc)
-    delta = (retry_at - tz_now()).total_seconds()
-    return max(0.0, delta)
+_extract_http_error_detail = extract_http_status_error_detail
+_parse_retry_after_seconds = parse_retry_after_seconds
 
 
 def _failover_cooldown_seconds(
@@ -197,31 +160,19 @@ def _failover_cooldown_seconds(
 
 
 def _should_failover(exc: Exception) -> bool:
-    if isinstance(
-        exc,
-        (
-            httpx.TimeoutException,
-            TimeoutError,
-            httpx.ConnectError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
-        ),
+    if is_transient_error(exc) or (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response is not None
+        and exc.response.status_code == 429
     ):
         return True
-
     if not isinstance(exc, httpx.HTTPStatusError):
         return False
-
-    response = exc.response
-    status = response.status_code if response is not None else None
-    if status in {429, 500, 502, 503, 504, 529}:
-        return True
-
     if classify_http_status_error(exc) != "provider-api":
         return False
-
-    detail = _extract_http_error_detail(exc)
-    return any(pattern.search(detail) for pattern in _FAILOVER_ERROR_PATTERNS)
+    # The shared extractor prefers message/detail before error.code, so
+    # availability phrases remain matchable when both are present.
+    return any(pattern.search(_extract_http_error_detail(exc)) for pattern in _FAILOVER_ERROR_PATTERNS)
 
 
 def _format_error(exc: Exception) -> str:

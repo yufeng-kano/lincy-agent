@@ -6,6 +6,7 @@ from .deepseek import DeepSeekClient
 from .gemini import GeminiClient
 from .grok import GrokClient
 from .heyroute import HeyrouteClient
+from .litellm import LiteLLMClient
 from .ollama_native import OllamaNativeClient
 from .openai import OpenAIClient
 from .openai_compat import OpenAICompatibleClient
@@ -20,6 +21,7 @@ __all__ = [
     "GeminiClient",
     "GrokClient",
     "HeyrouteClient",
+    "LiteLLMClient",
     "OllamaNativeClient",
     "OpenAIClient",
     "OpenAICompatibleClient",

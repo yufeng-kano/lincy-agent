@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any, TYPE_CHECKING
 
 from ...llm.schema import ToolDefinition, ToolParameter
+from .batch_helpers import format_source_result, normalize_batch_items, validate_source_fields
 
 if TYPE_CHECKING:
     from ...agent.note_store import NoteStore
@@ -136,7 +137,7 @@ def create_agent_note(
         source_label: str | None = None,
         updates: list[dict[str, Any]] | str | None = None,
     ) -> str:
-        source_error = _validate_source_fields(
+        source_error = validate_source_fields(
             source_app=source_app,
             source_id=source_id,
             source_label=source_label,
@@ -197,7 +198,7 @@ def create_agent_note(
         if isinstance(result, str):
             return result
         parts = [f"OK: created note '{key}'"]
-        source = _format_source_result(
+        source = format_source_result(
             result.source_app,
             result.source_label,
             result.source_id,
@@ -249,7 +250,7 @@ def create_agent_note(
             if changed:
                 changed_count += 1
             status = "changed" if changed else "unchanged"
-            source = _format_source_result(
+            source = format_source_result(
                 updated.source_app,
                 updated.source_label,
                 updated.source_id,
@@ -326,32 +327,6 @@ def _value_too_long_error(
     )
 
 
-def _validate_source_fields(
-    *,
-    source_app: str | None,
-    source_id: str | None,
-    source_label: str | None,
-) -> str | None:
-    if (source_id or source_label) and not source_app:
-        return "Error: 'source_app' is required when source_id or source_label is set"
-    return None
-
-
-def _format_source_result(
-    source_app: str | None,
-    source_label: str | None,
-    source_id: str | None,
-) -> str | None:
-    if not source_app:
-        return None
-    text = source_app
-    if source_label:
-        text = f"{text}:{source_label}"
-    if source_id:
-        text = f"{text} ({source_id})"
-    return text
-
-
 def _note_snapshot(note: Any) -> tuple[object, ...]:
     return (
         note.value,
@@ -366,20 +341,13 @@ def _note_snapshot(note: Any) -> tuple[object, ...]:
 def _normalize_batch_updates(
     updates: list[dict[str, Any]] | str | None,
 ) -> list[dict[str, Any]] | str:
-    if isinstance(updates, str):
-        try:
-            updates = json.loads(updates)
-        except (json.JSONDecodeError, TypeError):
-            return "Error: 'updates' must be an array for batch_update"
-    if not isinstance(updates, list):
-        return "Error: 'updates' must be an array for batch_update"
-    if not updates:
-        return "Error: 'updates' must contain at least one item"
-    if len(updates) > 12:
-        return "Error: 'updates' supports at most 12 items"
-    if not all(isinstance(item, dict) for item in updates):
-        return "Error: each batch_update item must be an object"
-    return updates
+    """Normalize batch update items using the shared scaffold."""
+    result = normalize_batch_items(updates, "updates", 12)
+    if isinstance(result, str):
+        return result.replace("'updates' must be an array", "'updates' must be an array for batch_update").replace(
+            "each updates item", "each batch_update item"
+        )
+    return result
 
 
 def _validate_batch_updates(
@@ -419,7 +387,7 @@ def _validate_batch_updates(
             or not all(isinstance(trigger, str) for trigger in triggers)
         ):
             return f"Error: triggers for note '{key}' must be a string array"
-        source_error = _validate_source_fields(
+        source_error = validate_source_fields(
             source_app=item.get("source_app"),
             source_id=item.get("source_id"),
             source_label=item.get("source_label"),

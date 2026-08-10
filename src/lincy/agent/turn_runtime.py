@@ -15,6 +15,8 @@ from ..llm.schema import Message, ToolCall, ToolDefinition, make_tool_result_mes
 from ..memory import extract_memory_edit_paths
 from ..memory.hooks import check_and_archive_buffers
 from ..tools import ToolRegistry
+from .side_channel import run_side_channel_tool_loop
+from .tool_setup import resolve_memory_path
 from .run_helpers import (
     _debug_print_responder_output,
     _raise_if_cancel_requested,
@@ -40,7 +42,6 @@ class _TurnMemorySnapshot:
 
     def __init__(self, *, agent_os_dir: Path):
         self._agent_os_dir = agent_os_dir
-        self._memory_root = (agent_os_dir / "memory").resolve()
         self._temp_memory_file = (
             agent_os_dir / "memory" / "agent" / "temp-memory.md"
         ).resolve()
@@ -111,24 +112,11 @@ class _TurnMemorySnapshot:
         return restored
 
     def _resolve_memory_file(self, raw_path: str) -> Path | None:
-        normalized = raw_path.strip().replace("\\", "/")
-        if normalized.startswith("./"):
-            normalized = normalized[2:]
-
-        candidate = Path(normalized)
-        if not candidate.is_absolute():
-            candidate = self._agent_os_dir / candidate
-
-        resolved = candidate.resolve(strict=False)
-        try:
-            resolved.relative_to(self._memory_root)
-        except ValueError:
-            return None
-        return resolved
+        return resolve_memory_path(raw_path, self._agent_os_dir)
 
 
 @dataclass
-class _TurnTokenUsage:
+class TurnTokenUsage:
     """Per-turn usage aggregation for brain responses."""
 
     usage_available: bool = False
@@ -169,7 +157,7 @@ class _TurnTokenUsage:
 
 
 @dataclass
-class _LatestTokenStatus:
+class LatestTokenStatus:
     """Latest token usage shown in the status bar."""
 
     prompt_tokens: int | None = None
@@ -354,64 +342,47 @@ def _run_memory_sync_side_channel(
         ),
     )
 
+    def execute_memory_edit(tool_call: ToolCall):
+        if tool_call.name != "memory_edit" or not registry.has_tool(tool_call.name):
+            return None
+        if on_before_tool_call is not None:
+            on_before_tool_call(tool_call)
+        _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
+        with console.spinner("Executing..."):
+            result = registry.execute(tool_call)
+        _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
+        return result
+
     for attempt in range(1 + max_retries):
-        _raise_if_cancel_requested(
-            is_cancel_requested,
-            on_pending=on_cancel_pending,
-        )
-        with console.spinner():
-            response = client.chat_with_tools(local_messages, tools)
-        _raise_if_cancel_requested(
-            is_cancel_requested,
-            on_pending=on_cancel_pending,
-        )
-        _debug_print_responder_output(console, response, label="memory-sync")
-
         had_error = False
-        for tool_call in response.tool_calls:
-            if tool_call.name != "memory_edit":
-                continue
-            if not registry.has_tool(tool_call.name):
-                continue
-            console.print_tool_call(tool_call)
-            if on_before_tool_call is not None:
-                on_before_tool_call(tool_call)
-            _raise_if_cancel_requested(
-                is_cancel_requested,
-                on_pending=on_cancel_pending,
-            )
-            with console.spinner("Executing..."):
-                result = registry.execute(tool_call)
-            console.print_tool_result(tool_call, result.content)
-            _raise_if_cancel_requested(
-                is_cancel_requested,
-                on_pending=on_cancel_pending,
-            )
-            if result.is_error:
-                had_error = True
-                local_messages.append(
-                    Message(
-                        role="assistant",
-                        content=None,
-                        tool_calls=[tool_call],
-                    ),
-                )
-                local_messages.append(
-                    make_tool_result_message(
-                        tool_call_id=tool_call.id,
-                        name=tool_call.name,
-                        content=result.content,
-                    ),
-                )
 
+        def observe(response: LLMResponse) -> bool:
+            _debug_print_responder_output(console, response, label="memory-sync")
+            return False
+
+        def execute_memory_edit_with_status(tool_call: ToolCall):
+            nonlocal had_error
+            result = execute_memory_edit(tool_call)
+            if result is not None and result.is_error:
+                had_error = True
+            return result
+
+        run_side_channel_tool_loop(
+            client=client,
+            messages=local_messages,
+            tools=tools,
+            execute_fn=execute_memory_edit_with_status,
+            console=console,
+            max_iterations=1,
+            raise_if_cancel_requested=lambda: _raise_if_cancel_requested(
+                is_cancel_requested, on_pending=on_cancel_pending,
+            ),
+            on_response=observe,
+        )
         if not had_error:
             break
         if attempt < max_retries:
-            logger.info(
-                "memory-sync retry %d/%d after error",
-                attempt + 1,
-                max_retries,
-            )
+            logger.info("memory-sync retry %d/%d after error", attempt + 1, max_retries)
 
 
 _EMPTY_RESPONSE_NUDGE = (

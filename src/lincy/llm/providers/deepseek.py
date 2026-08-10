@@ -17,9 +17,19 @@ from ..schema import (
     OpenAIMessagePayload,
     OpenAIRequest,
     OpenAIResponse,
+    OpenAIUsage,
     ToolDefinition,
 )
-from .openai_compat import OpenAICompatibleClient
+from .openai_compat import OpenAICompatibleClient, merge_leading_system_messages
+
+
+class DeepSeekUsage(OpenAIUsage):
+    prompt_cache_hit_tokens: int | None = None
+    prompt_cache_miss_tokens: int | None = None
+
+
+class DeepSeekResponse(OpenAIResponse):
+    usage: DeepSeekUsage | None = None
 
 
 class DeepSeekThinkingPayload(BaseModel):
@@ -37,6 +47,8 @@ def _map_thinking(config: DeepSeekConfig) -> tuple[dict[str, str], str | None]:
 
 
 class DeepSeekClient(OpenAICompatibleClient):
+    response_type = DeepSeekResponse
+
     def __init__(self, config: DeepSeekConfig):
         if config.thinking.enabled and config.temperature is not None:
             raise ValueError(
@@ -87,28 +99,7 @@ class DeepSeekClient(OpenAICompatibleClient):
                 updates["reasoning_content"] = ""
             rewritten.append(msg.model_copy(update=updates) if updates else msg)
 
-        if len(rewritten) < 2:
-            return rewritten
-
-        sys_end = 0
-        while sys_end < len(rewritten) and rewritten[sys_end].role == "system":
-            sys_end += 1
-        if sys_end <= 1:
-            return rewritten
-
-        merged_parts: list[str] = []
-        for msg in rewritten[:sys_end]:
-            if isinstance(msg.content, str):
-                merged_parts.append(msg.content)
-            elif isinstance(msg.content, list):
-                for part in msg.content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        merged_parts.append(part["text"])
-        merged = OpenAIMessagePayload(
-            role="system",
-            content="\n\n".join(merged_parts),
-        )
-        return [merged] + rewritten[sys_end:]
+        return merge_leading_system_messages(rewritten)
 
     def _build_request(
         self,

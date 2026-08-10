@@ -13,7 +13,6 @@ import httpx
 from ...core.schema import OllamaNativeConfig
 from ..schema import (
     ContentPart,
-    ContextLengthExceededError,
     LLMResponse,
     MalformedFunctionCallError,
     Message,
@@ -27,6 +26,10 @@ from ..schema import (
     ToolDefinition,
     make_tool_result_message,
 )
+from ..schema import raise_if_context_length_error
+from .openai_compat import repair_missing_tool_results
+
+_CONTEXT_LENGTH_PATTERNS = ("context length", "context window", "max prompt tokens")
 
 logger = logging.getLogger(__name__)
 
@@ -126,48 +129,13 @@ class OllamaNativeClient:
 
     @staticmethod
     def _repair_missing_tool_results(messages: list[Message]) -> list[Message]:
-        """Ensure every assistant tool_call has immediate named tool results."""
-        repaired: list[Message] = []
-        idx = 0
-        while idx < len(messages):
-            msg = messages[idx]
-            repaired.append(msg)
-            if msg.role != "assistant" or not msg.tool_calls:
-                idx += 1
-                continue
-
-            expected = {tc.id: tc.name for tc in msg.tool_calls if tc.id}
-            idx += 1
-            while idx < len(messages) and messages[idx].role == "tool":
-                tool_msg = messages[idx]
-                if not tool_msg.name and tool_msg.tool_call_id:
-                    repaired_name = expected.get(tool_msg.tool_call_id)
-                    if repaired_name:
-                        logger.debug(
-                            "Repaired missing Ollama tool name: id=%s name=%s",
-                            tool_msg.tool_call_id,
-                            repaired_name,
-                        )
-                        tool_msg = make_tool_result_message(
-                            tool_call_id=tool_msg.tool_call_id,
-                            name=repaired_name,
-                            content=tool_msg.content,
-                            timestamp=tool_msg.timestamp,
-                        )
-                repaired.append(tool_msg)
-                if tool_msg.tool_call_id in expected:
-                    expected.pop(tool_msg.tool_call_id, None)
-                idx += 1
-
-            for missing_id, missing_name in expected.items():
-                repaired.append(
-                    make_tool_result_message(
-                        tool_call_id=missing_id,
-                        name=missing_name,
-                        content="[Recovered missing tool result]",
-                    )
-                )
-        return repaired
+        # Native Ollama history may include provider-generated orphan results;
+        # preserve them because dropping them changes the upstream replay.
+        return repair_missing_tool_results(
+            messages,
+            repair_names=True,
+            drop_orphans=False,
+        )
 
     @staticmethod
     def _split_content_parts(parts: list[ContentPart]) -> tuple[str | None, list[str]]:
@@ -373,14 +341,7 @@ class OllamaNativeClient:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 400:
-                    body = exc.response.text.lower()
-                    if (
-                        "context length" in body
-                        or "context window" in body
-                        or "max prompt tokens" in body
-                    ):
-                        raise ContextLengthExceededError(exc.response.text) from None
+                raise_if_context_length_error(exc, patterns=_CONTEXT_LENGTH_PATTERNS)
                 raise
             return response.json()
 

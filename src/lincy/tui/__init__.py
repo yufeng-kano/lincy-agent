@@ -2,7 +2,6 @@
 
 from .app import ChatTextualApp
 from .controller import TextualController, TurnCancelController
-from .console import TextualUiConsole
 from .history_modal import HistoryModal
 from .events import (
     AssistantTextEvent,
@@ -38,7 +37,6 @@ __all__ = [
     "QueueUiSink",
     "ResumeHistoryEvent",
     "TextualController",
-    "TextualUiConsole",
     "ToolCallEvent",
     "ToolResultEvent",
     "ToolStreamEvent",

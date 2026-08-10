@@ -16,7 +16,7 @@ from collections.abc import Callable
 
 from ...core.schema import GrokConfig, GrokReasoningConfig
 from ..schema import Message, OpenAIMessagePayload
-from .openai_compat import OpenAICompatibleClient
+from .openai_compat import OpenAICompatibleClient, merge_leading_system_messages
 
 # Proxy injects the real SuperGrok OAuth token; header must still be present.
 _LOCAL_PROXY_BEARER = "local-proxy"
@@ -76,24 +76,4 @@ class GrokClient(OpenAICompatibleClient):
         not a documented guarantee, so merge them like the OpenAI adapter.
         Stable leading system prefix also keeps automatic prompt cache hits.
         """
-        converted = super()._convert_messages(messages)
-        if len(converted) < 2:
-            return converted
-        sys_end = 0
-        while sys_end < len(converted) and converted[sys_end].role == "system":
-            sys_end += 1
-        if sys_end <= 1:
-            return converted
-        merged_parts: list[str] = []
-        for msg in converted[:sys_end]:
-            if isinstance(msg.content, str):
-                merged_parts.append(msg.content)
-            elif isinstance(msg.content, list):
-                for part in msg.content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        merged_parts.append(part["text"])
-        merged = OpenAIMessagePayload(
-            role="system",
-            content="\n\n".join(merged_parts),
-        )
-        return [merged] + converted[sys_end:]
+        return merge_leading_system_messages(super()._convert_messages(messages))

@@ -74,32 +74,48 @@ from ..tools.security import is_memory_write_shell_command
 
 logger = logging.getLogger(__name__)
 
+# These tools render their own progress, so a responder spinner obscures it.
+SPINNER_SUPPRESSED_TOOLS = frozenset({"gui_task"})
 
-def _normalize_memory_path(path: str) -> str:
-    """Normalize path string for memory path checks."""
-    return path.strip().replace("\\", "/")
+
+def should_skip_tool_spinner(name: str, arguments: dict[str, object], *, show_tool_use: bool) -> bool:
+    """Return whether a tool owns its execution progress display."""
+    if name in SPINNER_SUPPRESSED_TOOLS:
+        return True
+    if name != "execute_shell" or not show_tool_use:
+        return False
+    command = arguments.get("command")
+    if not isinstance(command, str):
+        return False
+    from ..tools import is_claude_code_stream_json_command
+
+    return is_claude_code_stream_json_command(command)
+
+
+def resolve_memory_path(raw: str, agent_os_dir: Path) -> Path | None:
+    """Resolve a path only when it stays within the agent memory directory."""
+    normalized = raw.strip().replace("\\", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    if normalized == "memory" or normalized.startswith("memory/"):
+        candidate = agent_os_dir / normalized
+    elif normalized.startswith(".agent/memory/"):
+        candidate = agent_os_dir / normalized.removeprefix(".agent/")
+    else:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = agent_os_dir / candidate
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to((agent_os_dir / "memory").resolve())
+    except ValueError:
+        return None
+    return resolved
 
 
 def _is_memory_path(path: str, *, agent_os_dir: Path) -> bool:
-    """Check whether a path points to memory/ in relative or absolute form."""
-    normalized = _normalize_memory_path(path)
-    if normalized.startswith("./"):
-        normalized = normalized[2:]
-
-    if normalized == "memory" or normalized.startswith("memory/"):
-        return True
-    if normalized.startswith(".agent/memory/"):
-        return True
-
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = agent_os_dir / candidate
-    try:
-        resolved = candidate.resolve()
-        resolved.relative_to((agent_os_dir / "memory").resolve())
-        return True
-    except Exception:
-        return False
+    """Check whether a path points to the guarded memory directory."""
+    return resolve_memory_path(path, agent_os_dir) is not None
 
 
 def build_worker_file_tools(

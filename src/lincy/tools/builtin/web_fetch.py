@@ -14,9 +14,8 @@ from urllib.parse import urlparse
 
 import httpx
 from cachetools import TTLCache
-from markdownify import markdownify
-
 from ...llm.schema import Message, ToolDefinition, ToolParameter
+from .image import IMAGE_EXTENSIONS_BY_MIME, html_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +25,6 @@ _MIN_MAX_CHARS = 200
 _DEFAULT_USER_AGENT = "chat-agent-web-fetch/1.0"
 
 _IMAGE_SAVE_DIR = Path("/tmp/chat-agent-images")
-_IMAGE_EXTENSIONS: dict[str, str] = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-    "image/bmp": ".bmp",
-}
 
 # LRU cache: keyed by URL, TTL 15 minutes, max 50 MB worth of entries (capped by maxsize).
 _CACHE_TTL = 15 * 60
@@ -150,7 +142,7 @@ def _classify_content_type(content_type: str, body: bytes) -> str:
         return "markdown"
     if mime == "application/pdf":
         return "pdf"
-    if mime in _IMAGE_EXTENSIONS:
+    if mime in IMAGE_EXTENSIONS_BY_MIME:
         return "image"
     if mime.startswith("text/"):
         return "text"
@@ -206,19 +198,10 @@ def _decode_body(body: bytes, content_type: str) -> str:
     return body.decode("utf-8", errors="replace")
 
 
-def _html_to_markdown(html: str) -> str:
-    """Convert HTML to Markdown, stripping scripts/styles."""
-    return markdownify(
-        html,
-        strip=["script", "style", "noscript", "template"],
-        heading_style="ATX",
-    ).strip()
-
-
 def _save_fetched_image(body: bytes, content_type: str) -> str:
     """Save fetched image bytes to disk, return the file path."""
     mime = content_type.split(";", 1)[0].strip().lower()
-    ext = _IMAGE_EXTENSIONS.get(mime, ".bin")
+    ext = IMAGE_EXTENSIONS_BY_MIME.get(mime, ".bin")
     _IMAGE_SAVE_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
     path = _IMAGE_SAVE_DIR / filename
@@ -245,7 +228,7 @@ def _render_payload(body: bytes, content_type: str) -> str | None:
     decoded = _decode_body(body, content_type)
 
     if content_kind == "html":
-        return _html_to_markdown(decoded)
+        return html_to_markdown(decoded)
     if content_kind == "markdown":
         return decoded.strip()
     if content_kind == "json":

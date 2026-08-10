@@ -15,6 +15,20 @@ class ContextLengthExceededError(RuntimeError):
     """Prompt token count exceeds the model's context length limit; not retryable."""
 
 
+def raise_if_context_length_error(
+    exc: Any,
+    *,
+    patterns: tuple[str, ...],
+) -> None:
+    """Translate provider-specific context-limit 400 responses."""
+    response = getattr(exc, "response", None)
+    if response is None or response.status_code != 400:
+        return
+    body = response.text
+    if any(pattern.lower() in body.lower() for pattern in patterns):
+        raise ContextLengthExceededError(body) from None
+
+
 # === Multimodal Content ===
 class ContentPart(BaseModel):
     """A single part of multimodal message content."""
@@ -231,11 +245,8 @@ class OpenAIRequest(BaseModel):
     max_completion_tokens: int | None = None
     tools: list[OpenAITool] | None = None
     reasoning_effort: str | None = None
-    reasoning: dict[str, Any] | None = None
-    provider: dict[str, Any] | None = None
     response_format: dict[str, Any] | None = None
     temperature: float | None = None
-    prompt_cache_retention: str | None = None
 
 
 class OpenAIResponseMessage(BaseModel):
@@ -272,8 +283,6 @@ class OpenAIUsage(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     prompt_tokens_details: OpenAIPromptTokensDetails | None = None
-    prompt_cache_hit_tokens: int | None = None
-    prompt_cache_miss_tokens: int | None = None
 
     model_config = ConfigDict(extra="ignore")
 

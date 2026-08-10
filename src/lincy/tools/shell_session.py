@@ -19,8 +19,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from .shell_handoff import ShellHandoffEvaluator, ShellHandoffObservation
-
-MAX_OUTPUT_SIZE = 100 * 1024
+from .security import MAX_OUTPUT_SIZE, truncate_output
 _SELECT_TIMEOUT_SECONDS = 0.2
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _HEADLESS_ENV_KEYS = (
@@ -330,8 +329,7 @@ class InteractiveShellSession:
     def _append_chunk_locked(self, chunk: str) -> None:
         self._output_parts.append(chunk)
         if sum(len(part) for part in self._output_parts) > MAX_OUTPUT_SIZE:
-            joined = "".join(self._output_parts)
-            self._output_parts = [joined[:MAX_OUTPUT_SIZE] + "\n... (output truncated)"]
+            self._output_parts = [truncate_output("".join(self._output_parts))]
 
         secrets = tuple(self._secret_inputs)
         text = chunk.replace("\r\n", "\n").replace("\r", "\n")

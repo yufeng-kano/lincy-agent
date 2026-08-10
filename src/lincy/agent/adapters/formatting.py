@@ -1,6 +1,40 @@
 """Text formatting utilities for channel adapters."""
 
 import re
+from typing import Any
+
+
+def format_attachment_lines(
+    attachments: list[dict[str, Any]],
+    *,
+    indent: str = "",
+) -> list[str]:
+    """Format downloaded attachment records for inbound model context."""
+    if not attachments:
+        return []
+    lines = [f"{indent}[Attachments]"]
+    detail_prefix = f"{indent}  "
+    for attachment in attachments:
+        name = attachment.get("filename") or "file"
+        content_type = attachment.get("content_type") or "unknown"
+        local_path = attachment.get("local_path")
+        line = f"{indent}- {name} ({content_type})"
+        if local_path:
+            line += f" -> {local_path}"
+        elif attachment.get("download_note"):
+            line += f" [{attachment['download_note']}]"
+        lines.append(line)
+        if not local_path and attachment.get("url"):
+            lines.append(f"{detail_prefix}url: {attachment['url']}")
+        if attachment.get("image_summary"):
+            lines.append(f"{detail_prefix}image_summary: {attachment['image_summary']}")
+        elif attachment.get("needs_summary") and local_path:
+            lines.append(
+                f"{detail_prefix}image_summary: [pending] Use read_image_by_subagent on {local_path}"
+            )
+    return lines
+
+
 
 # Code fences: ```lang\n...\n``` (entire block including content)
 _CODE_FENCE_BLOCK_RE = re.compile(

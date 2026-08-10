@@ -274,16 +274,14 @@ class GeminiClient:
             config["thinkingConfig"] = self.thinking_config
         return config
 
-    def chat(
+    def _build_request(
         self,
         messages: list[Message],
+        *,
+        tools: list[ToolDefinition] | None = None,
         response_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
-    ) -> str:
-        url = f"{self.base_url}/v1beta/models/{self.model}:generateContent"
-        params = {"key": self.api_key}
-        headers = {"Content-Type": "application/json"}
-
+    ) -> dict[str, Any]:
         system_instruction, contents = self._convert_messages(messages)
         generation_config = self._build_generation_config()
         effective_temp = temperature if temperature is not None else self.temperature
@@ -292,32 +290,28 @@ class GeminiClient:
         if response_schema is not None:
             generation_config["responseMimeType"] = "application/json"
             generation_config["responseSchema"] = response_schema
-        request_data = self._serialize_request(
+        return self._serialize_request(
             contents,
             system_instruction,
-            None,
+            self._convert_tools(tools) if tools else None,
             generation_config,
         )
-        data = self._post(url, params, headers, request_data)
 
-        result = GeminiResponse.model_validate(data)
-        if not result.candidates:
-            return ""
-        candidate = result.candidates[0]
-        if (
-            candidate.finish_reason == "MALFORMED_FUNCTION_CALL"
-            and not candidate.content.parts
-        ):
-            detail = candidate.finish_message or "Gemini returned malformed function call."
-            raise MalformedFunctionCallError(
-                f"Gemini returned MALFORMED_FUNCTION_CALL: {detail}"
+    def chat(
+        self,
+        messages: list[Message],
+        response_schema: dict[str, Any] | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        result = GeminiResponse.model_validate(
+            self._post(
+                f"{self.base_url}/v1beta/models/{self.model}:generateContent",
+                {"key": self.api_key},
+                {"Content-Type": "application/json"},
+                self._build_request(messages, response_schema=response_schema, temperature=temperature),
             )
-        # Concatenate all text parts in-order.
-        text_parts: list[str] = []
-        for part in candidate.content.parts:
-            if part.text:
-                text_parts.append(part.text)
-        return "".join(text_parts)
+        )
+        return self._parse_response(result).content or ""
 
     def chat_with_tools(
         self,
@@ -325,26 +319,14 @@ class GeminiClient:
         tools: list[ToolDefinition],
         temperature: float | None = None,
     ) -> LLMResponse:
-        """Send messages with tool definitions and return response."""
-        url = f"{self.base_url}/v1beta/models/{self.model}:generateContent"
-        params = {"key": self.api_key}
-        headers = {"Content-Type": "application/json"}
-
-        system_instruction, contents = self._convert_messages(messages)
-        gemini_tools = self._convert_tools(tools) if tools else None
-        generation_config = self._build_generation_config()
-        effective_temp = temperature if temperature is not None else self.temperature
-        if effective_temp is not None:
-            generation_config["temperature"] = effective_temp
-        request_data = self._serialize_request(
-            contents,
-            system_instruction,
-            gemini_tools,
-            generation_config,
+        result = GeminiResponse.model_validate(
+            self._post(
+                f"{self.base_url}/v1beta/models/{self.model}:generateContent",
+                {"key": self.api_key},
+                {"Content-Type": "application/json"},
+                self._build_request(messages, tools=tools, temperature=temperature),
+            )
         )
-        data = self._post(url, params, headers, request_data)
-
-        result = GeminiResponse.model_validate(data)
         return self._parse_response(result)
 
     def _post(

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..llm.schema import ToolDefinition, ToolParameter
+from ..tools.background_dispatch import dispatch_background_task
 from .runner import WorkerResult, WorkerRunner
 
 if TYPE_CHECKING:
@@ -141,25 +142,6 @@ def create_worker_tool(
             },
         )
 
-    def _run_background(
-        prompt: str,
-        description: str,
-        file_list: list[str] | None,
-        turns_override: int | None,
-        worker_label: str,
-    ) -> None:
-        try:
-            result = _run(prompt, file_list, turns_override, worker_label)
-            body = format_worker_result(result, description)
-            queue.put(_result_message(worker_label, description, body))  # type: ignore[union-attr]
-        except Exception as e:
-            logger.error("Background worker task error: %s", e)
-            queue.put(  # type: ignore[union-attr]
-                _result_message(worker_label, description, f"[WORKER ERROR] {e}")
-            )
-        finally:
-            slots.release()
-
     def worker_impl(
         prompt: str = "",
         description: str = "",
@@ -188,23 +170,28 @@ def create_worker_tool(
             result = _run(prompt, file_list, turns_override, worker_label)
             return format_worker_result(result, description)
 
-        if not slots.acquire(blocking=False):
+        def format_background(result: WorkerResult | None, error: Exception | None):
+            if error is not None:
+                logger.error("Background worker task error: %s", error)
+                body = f"[WORKER ERROR] {error}"
+            else:
+                assert result is not None
+                body = format_worker_result(result, description)
+            return _result_message(worker_label, description, body)
+
+        busy = dispatch_background_task(
+            queue,
+            slots,
+            "WORKER",
+            lambda: _run(prompt, file_list, turns_override, worker_label),
+            format_background,
+        )
+        if busy is not None:
             return (
                 "[WORKER BUSY] Too many worker tasks are already running. "
                 "Wait for a [worker, from system] result message before "
                 "dispatching more, or retry later via schedule_action."
             )
-
-        thread = threading.Thread(
-            target=_run_background,
-            args=(prompt, description, file_list, turns_override, worker_label),
-            daemon=True,
-        )
-        try:
-            thread.start()
-        except Exception:
-            slots.release()
-            raise
         return (
             f"[WORKER DISPATCHED] {worker_label} ({description}) is running "
             "in background. The result will be delivered as a "

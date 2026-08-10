@@ -26,7 +26,7 @@ import httpx
 from ..contact_map import ContactMap
 from ..schema import InboundMessage, OutboundMessage
 from ..thread_registry import ThreadRegistry
-from .formatting import markdown_to_plaintext
+from .formatting import format_attachment_lines, markdown_to_plaintext
 
 if TYPE_CHECKING:
     from ..core import AgentCore
@@ -365,6 +365,7 @@ class GmailAdapter:
         self._thread: threading.Thread | None = None
         # Track message IDs already enqueued this session to avoid duplicates
         self._processed_ids: set[str] = set()
+        self._processed_ids_max = 10_000
 
     @property
     def attachments_dir(self) -> str:
@@ -531,6 +532,8 @@ class GmailAdapter:
         assert self._agent is not None
         full = self._gmail.get_message(msg_id)
         self._processed_ids.add(msg_id)
+        if len(self._processed_ids) > self._processed_ids_max:
+            self._processed_ids = set(list(self._processed_ids)[-self._processed_ids_max:])
 
         # Parse headers (lowercase keys for easy lookup)
         headers = {
@@ -581,12 +584,17 @@ class GmailAdapter:
         # Download attachments (synchronous — completes before LLM sees message)
         attachment_metas: list[dict[str, Any]] = []
         _collect_attachments(full.get("payload", {}), attachment_metas)
-        attachment_lines: list[str] = []
+        attachments: list[dict[str, Any]] = []
         for att in attachment_metas:
+            record: dict[str, Any] = {
+                "filename": att["filename"],
+                "content_type": att["mime_type"],
+                "local_path": None,
+                "download_note": None,
+            }
             if att["size"] > _MAX_ATTACHMENT_BYTES:
-                attachment_lines.append(
-                    f"- {att['filename']} ({att['mime_type']}, {att['size']} bytes) [too large, not downloaded]"
-                )
+                record["download_note"] = "too large, not downloaded"
+                attachments.append(record)
                 continue
             try:
                 raw_bytes = self._gmail.get_attachment(msg_id, att["attachment_id"])
@@ -594,14 +602,12 @@ class GmailAdapter:
                 msg_dir.mkdir(parents=True, exist_ok=True)
                 file_path = msg_dir / att["filename"]
                 file_path.write_bytes(raw_bytes)
-                attachment_lines.append(
-                    f"- {att['filename']} ({att['mime_type']}) -> {file_path}"
-                )
+                record["local_path"] = str(file_path)
             except Exception:
                 logger.exception("Failed to download attachment %s", att["filename"])
-                attachment_lines.append(
-                    f"- {att['filename']} ({att['mime_type']}) [download failed]"
-                )
+                record["download_note"] = "download failed"
+            attachments.append(record)
+        attachment_lines = format_attachment_lines(attachments)
 
         # Build content: always include subject for topic context
         # Strip leading "Re: " prefixes for cleanliness

@@ -88,6 +88,7 @@
 |------|------|-----------|
 | 對內 API | `ClaudeCodeClient` 只打本專案 native proxy `POST /v1/messages` | `src/lincy/llm/providers/claude_code.py` |
 | Payload 保真 | client 保留 `system` block array、message block array、`cache_control`；**不壓平成單一 system string** | `src/lincy/llm/providers/claude_code.py` |
+| Tool result 合併 | 同一 assistant tool-use turn 的連續 `role: "tool"` 結果合併為一個 user message 的多個 `tool_result` block；與 Anthropic/Heyroute 共用 Messages mapper | `src/lincy/llm/providers/anthropic_messages.py` | 符合 Messages API 平行 tool use 形狀，且 heyroute 明確拒絕拆分結果 |
 | Required prompt 注入 | proxy 在 upstream request 的第一個 system block 固定注入 Claude Code 必要 prompt；若已存在同內容首 block，則不重複注入 | `src/claude_code_proxy/service.py` |
 | Browser OAuth login | `uv run proxy claude-code login` 走 browser OAuth + 手動貼 `code#state`；成功後 append 到本專案多顆 token store（`tokens.json`），每顆自動配 id。可重複登入多顆帳號 | `src/claude_code_proxy/__main__.py` + `src/claude_code_proxy/auth.py` |
 | Multi-token failover | serve 平時只用優先級最高（預設最新登入）的一顆；upstream 回 401/403/429 才把該顆 bench，由下一次 `acquire()` 決定是否有下一顆可切（避免 lock-free 全域計數 race）。bench 帶冷卻（`FAILURE_COOLDOWN_SECONDS`，預設 300s）而非永久，冷卻後自動歸隊。**bench 語義限定為「upstream auth/quota 失敗」**：transport timeout 不 bench（見下方 Timeout 一列），過期又沒有 refresh token 也不 bench（每次重評成本為零，直接當成錯誤回報）。本輪所有顆都回 HTTP failover status 時回傳**上游原始錯誤**；所有顆都 timeout 時回 `504`；完全沒有可試的 token 才回 `503`（`ClaudeCodeTokenUnavailableError`） | `src/claude_code_proxy/service.py` + `src/claude_code_proxy/app.py` |
@@ -445,8 +446,8 @@
 | `_EFFORT_TO_LEVEL` | `low->LOW`, `medium->MEDIUM`, `high->HIGH` | `src/lincy/llm/providers/gemini.py` | 官方 API 值是小寫，SDK 用大寫 |
 | `thinkingBudget` 設定 | `reasoning.max_tokens` -> `thinkingBudget` | `src/lincy/llm/providers/gemini.py` | 直接映射 |
 | `enabled=True` 無 budget | 預設 `thinkingBudget: 1024` | `src/lincy/llm/providers/gemini.py` | 本專案 fallback |
-| `enabled=False` | 設 `thinkingBudget: 0` | `src/lincy/llm/providers/gemini.py` | 對 Gemini 3 Pro 有問題（不能關閉） |
-| 不支援 `minimal` | mapping 只有 low/medium/high | `src/lincy/llm/providers/gemini.py` | 遺漏 Gemini 3 Flash 的 minimal |
+| `enabled=False` | 設 `thinkingBudget: 0` | `src/lincy/llm/providers/gemini.py` | `GeminiConfig` 會在 config 載入時拒絕 Gemini 3 Pro，避免 runtime request error |
+| 不支援 `minimal` | mapping 只有 low/medium/high | `src/lincy/llm/providers/gemini.py` | `GeminiConfig` 會在 config 載入時拒絕 minimal，避免 runtime KeyError |
 | `provider_overrides` | `gemini_thinking_config` 整體覆蓋 | `src/lincy/llm/providers/gemini.py` | 本專案 escape hatch |
 
 ### 3. 逆向/實測資訊

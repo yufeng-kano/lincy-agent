@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from ...llm.schema import ToolDefinition, ToolParameter
-from ..security import is_path_allowed
+from ..security import resolve_allowed_path
 
 # ---------------------------------------------------------------------------
 # Curly-quote normalization (edit_file)
@@ -224,12 +224,9 @@ def create_read_file(
         output_format: str = "text",
     ) -> str:
         """Read a file with optional offset and limit."""
-        if not is_path_allowed(path, allowed_paths, base_dir):
+        target = resolve_allowed_path(path, allowed_paths, base_dir)
+        if target is None:
             return f"Error: Path '{path}' is not allowed"
-
-        target = Path(path)
-        if not target.is_absolute():
-            target = base_dir / target
 
         if not target.exists():
             return f"Error: File '{target}' does not exist"
@@ -311,12 +308,9 @@ def create_write_file(
 
     def write_file(path: str, content: str) -> str:
         """Write content to a file."""
-        if not is_path_allowed(path, allowed_paths, base_dir):
+        target = resolve_allowed_path(path, allowed_paths, base_dir)
+        if target is None:
             return f"Error: Path '{path}' is not allowed"
-
-        target = Path(path)
-        if not target.is_absolute():
-            target = base_dir / target
 
         if target.exists() and not target.is_file():
             return f"Error: '{target}' is not a file"
@@ -387,12 +381,9 @@ def create_edit_file(
         replace_all: bool = False,
     ) -> str:
         """Edit a file by replacing strings."""
-        if not is_path_allowed(path, allowed_paths, base_dir):
+        target = resolve_allowed_path(path, allowed_paths, base_dir)
+        if target is None:
             return f"Error: Path '{path}' is not allowed"
-
-        target = Path(path)
-        if not target.is_absolute():
-            target = base_dir / target
 
         if not target.exists():
             return f"Error: File '{target}' does not exist"

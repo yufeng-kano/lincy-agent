@@ -6,7 +6,6 @@ structured agenda during heartbeats and dedicated [TASK DUE] turns.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import asdict, dataclass
@@ -14,6 +13,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..json_store import format_source_tag, load_json, parse_datetime, save_json
 from ..timezone_utils import get_tz, now as tz_now
 
 logger = logging.getLogger(__name__)
@@ -310,10 +310,8 @@ class TaskStore:
     # -- Persistence --------------------------------------------------------
 
     def _load(self) -> None:
-        if not self._path.exists():
-            return
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = load_json(self._path, default={})
             self._next_id = raw.get("next_id", 1)
             tz = get_tz()
             for item in raw.get("tasks", []):
@@ -322,13 +320,13 @@ class TaskStore:
                     title=item["title"],
                     description=item.get("description"),
                     status=item.get("status", "pending"),
-                    due=_parse_dt(item.get("due"), tz),
+                    due=parse_datetime(item.get("due"), tz),
                     recurrence=item.get("recurrence"),
                     source_app=item.get("source_app"),
                     source_id=item.get("source_id"),
                     source_label=item.get("source_label"),
-                    created_at=_parse_dt(item.get("created_at"), tz) or tz_now(),
-                    completed_at=_parse_dt(item.get("completed_at"), tz),
+                    created_at=parse_datetime(item.get("created_at"), tz) or tz_now(),
+                    completed_at=parse_datetime(item.get("completed_at"), tz),
                 )
                 self._tasks[task.id] = task
             logger.info("Loaded %d tasks from %s", len(self._tasks), self._path)
@@ -340,24 +338,10 @@ class TaskStore:
             "tasks": [_task_to_dict(t) for t in self._tasks.values()],
             "next_id": self._next_id,
         }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        tmp.replace(self._path)
+        save_json(self._path, data)
 
 
 # -- Helpers ----------------------------------------------------------------
-
-def _parse_dt(value: str | None, tz) -> datetime | None:
-    if not value:
-        return None
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=tz)
-    return dt
 
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
@@ -369,8 +353,4 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
 
 
 def _format_task_source(task: Task) -> str | None:
-    if not task.source_app:
-        return None
-    if task.source_label:
-        return f"{task.source_app}:{task.source_label}"
-    return task.source_app
+    return format_source_tag(task.source_app, task.source_label)

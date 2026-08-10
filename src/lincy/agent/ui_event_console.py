@@ -17,6 +17,7 @@ from ..cli.formatter import (
     format_tool_call,
     format_tool_result,
 )
+from ..context.conversation import split_turns
 from ..llm.content import content_to_text
 from ..llm.schema import ContentPart, ToolCall
 from ..session.schema import SessionEntry
@@ -42,8 +43,6 @@ class AgentUiPort(Protocol):
 
     debug: bool
     show_tool_use: bool
-    gui_intent_max_chars: int | None
-
     def print_tool_call(self, tool_call: ToolCall) -> None: ...
     def print_tool_result(self, tool_call: ToolCall, result: str | list[ContentPart]) -> None: ...
     def print_assistant(self, content: str | None) -> None: ...
@@ -80,13 +79,12 @@ CtxStatusProvider = Callable[[], str | None]
 
 
 class UiEventConsole:
-    """ChatConsole-like runtime adapter backed by a typed ``UiSink``."""
+    """Runtime UI adapter backed by a typed ``UiSink``."""
 
     def __init__(self, ui_sink: UiSink, *, debug: bool = False, show_tool_use: bool = False) -> None:
         self._ui = ui_sink
         self.debug = debug
         self.show_tool_use = show_tool_use
-        self.gui_intent_max_chars: int | None = None
         self._current_user: str | None = None
         self._timezone: str | None = None
         self._ctx_status_provider = None
@@ -132,7 +130,7 @@ class UiEventConsole:
     def print_tool_call(self, tool_call: ToolCall) -> None:
         if not self.show_tool_use:
             return
-        text = format_tool_call(tool_call, gui_intent_max_chars=self.gui_intent_max_chars)
+        text = format_tool_call(tool_call)
         self._ui.emit(ToolCallEvent(name=tool_call.name, summary=text))
 
     def print_tool_result(self, tool_call: ToolCall, result: str | list[ContentPart]) -> None:
@@ -158,7 +156,7 @@ class UiEventConsole:
         """Show a subagent's tool call under its own label (e.g. worker-3)."""
         if not self.show_tool_use:
             return
-        text = format_tool_call(tool_call, gui_intent_max_chars=self.gui_intent_max_chars)
+        text = format_tool_call(tool_call)
         self._ui.emit(
             ToolCallEvent(name=f"{label} {tool_call.name}", summary=text)
         )
@@ -202,18 +200,10 @@ class UiEventConsole:
         total_elapsed_sec: float = 0.0,
         *,
         worker_timing: dict[str, float] | None = None,
-        instruction_max_chars: int | None = None,
-        text_max_chars: int | None = None,
-        worker_result_max_chars: int | None = None,
-        result_max_chars: int | None = None,
     ) -> None:
         if not self.show_tool_use:
             return
-        call_text = format_gui_tool_call(
-            tool_call,
-            instruction_max_chars=instruction_max_chars,
-            text_max_chars=text_max_chars,
-        )
+        call_text = format_gui_tool_call(tool_call)
         timing = ""
         if elapsed_sec > 0:
             timing += f" {elapsed_sec:.1f}s"
@@ -230,12 +220,7 @@ class UiEventConsole:
                 summary=f"[{step}/{max_steps}{timing}] {call_text}",
             )
         )
-        result_text = format_gui_tool_result(
-            tool_call,
-            result,
-            worker_result_max_chars=worker_result_max_chars,
-            result_max_chars=result_max_chars,
-        )
+        result_text = format_gui_tool_result(tool_call, result)
         if result_text:
             self._ui.emit(
                 ToolResultEvent(
@@ -340,12 +325,7 @@ class UiEventConsole:
                 summary=f"Resuming session: {len(entries)} messages"
             )
         )
-        turns: list[list[SessionEntry]] = []
-        for entry in entries:
-            if entry.role == "user":
-                turns.append([entry])
-            elif turns:
-                turns[-1].append(entry)
+        turns = split_turns(entries)
         if replay_turns is not None:
             turns = turns[-replay_turns:]
         for turn in turns:
