@@ -483,7 +483,13 @@ class TestDiscordReviewNoopEviction:
             content="[#general @ Guild]\nAlice <@1>: hello",
             priority=1,
             sender="#general @ Guild",
-            metadata={"source": "guild_review", "channel_id": "c1", "guild_id": "g1"},
+            metadata={
+                "source": "guild_review",
+                "review_turn": True,
+                "evict_if_noop": True,
+                "channel_id": "c1",
+                "guild_id": "g1",
+            },
         )
         q.put(msg)
         _, receipt = q.get()

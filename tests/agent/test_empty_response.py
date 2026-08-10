@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from lincy.agent.core import _run_empty_response_fallback
+from lincy.agent.turn_runtime import _run_empty_response_fallback
 
 
 def _make_deps(chat_response="fallback text"):

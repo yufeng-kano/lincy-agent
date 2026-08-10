@@ -117,11 +117,11 @@ def test_repo_agent_config_enables_shell_handoff_rules():
     ]
 
 
-def test_repo_agent_config_brain_uses_heyroute_with_expected_fallbacks():
+def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
     config = config_module.load_config("agent.yaml")
 
     brain_llm = config.agents["brain"].llm
-    assert brain_llm.provider == "heyroute"
+    assert brain_llm.provider == "claude_code"
     assert brain_llm.model == "claude-opus-5"
     assert brain_llm.thinking is not None
     assert brain_llm.thinking.type == "adaptive"
@@ -130,24 +130,25 @@ def test_repo_agent_config_brain_uses_heyroute_with_expected_fallbacks():
     assert brain_llm.temperature == 1.0
 
     fallbacks = config.agents["brain"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["claude_code", "deepseek"]
-    assert [cfg.model for cfg in fallbacks] == ["claude-opus-5", "deepseek-v4-pro"]
+    assert [cfg.provider for cfg in fallbacks] == ["heyroute"]
+    assert [cfg.model for cfg in fallbacks] == ["claude-opus-5"]
     assert fallbacks[0].thinking.type == "adaptive"
-    assert fallbacks[1].thinking.enabled is True
 
 
-def test_repo_agent_config_worker_uses_heyroute_with_expected_fallbacks():
+def test_repo_agent_config_worker_uses_claude_code_with_expected_fallbacks():
     config = config_module.load_config("agent.yaml")
 
     worker_llm = config.agents["worker"].llm
-    assert worker_llm.provider == "heyroute"
+    assert worker_llm.provider == "claude_code"
     assert worker_llm.model == "claude-opus-5"
     assert worker_llm.thinking is not None
     assert worker_llm.thinking.type == "adaptive"
 
     fallbacks = config.agents["worker"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["claude_code", "deepseek"]
+    assert [cfg.provider for cfg in fallbacks] == ["heyroute", "deepseek"]
     assert [cfg.model for cfg in fallbacks] == ["claude-opus-5", "deepseek-v4-pro"]
+    assert fallbacks[0].thinking.type == "adaptive"
+    assert fallbacks[1].thinking.enabled is True
 
 
 def test_repo_agent_config_memory_editor_uses_deepseek_v4_flash_no_thinking():

@@ -1,6 +1,6 @@
 """Tests for content resolution helpers in agent core."""
 
-from lincy.agent.core import (
+from lincy.agent.run_helpers import (
     _latest_nonempty_assistant_content,
     _latest_intermediate_text,
     _resolve_final_content,

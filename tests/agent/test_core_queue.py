@@ -148,7 +148,7 @@ class TestTurnMetadata:
 
 class TestTurnFailureClassification:
     def test_classify_http_529_as_transport(self):
-        from lincy.agent.core import _classify_turn_failure
+        from lincy.agent.requeue import classify_turn_failure
 
         request = httpx.Request("POST", "http://localhost:4142/v1/messages")
         error = httpx.HTTPStatusError(
@@ -161,7 +161,7 @@ class TestTurnFailureClassification:
             ),
         )
 
-        assert _classify_turn_failure(error) == "transport"
+        assert classify_turn_failure(error) == "transport"
 
 
 class TestRun:

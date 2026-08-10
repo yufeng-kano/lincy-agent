@@ -18,7 +18,8 @@ def _seed_turns(conv: Conversation, count: int) -> None:
 
 
 def _make_core(tmp_path, *, provider: str, preserve_turns: int = 2, soft_limit: int = 128_000):
-    from lincy.agent.core import AgentCore, _LatestTokenStatus, _TurnTokenUsage
+    from lincy.agent.core import AgentCore
+    from lincy.agent.turn_runtime import LatestTokenStatus, TurnTokenUsage
     from lincy.agent.turn_context import TurnContext
 
     core = AgentCore.__new__(AgentCore)
@@ -64,8 +65,8 @@ def _make_core(tmp_path, *, provider: str, preserve_turns: int = 2, soft_limit: 
     core.adapters = {}
     core._brain_provider = provider
     core._soft_max_prompt_tokens = soft_limit
-    core._latest_token_status = _LatestTokenStatus()
-    core._turn_token_usage = _TurnTokenUsage()
+    core._latest_token_status = LatestTokenStatus()
+    core._turn_token_usage = TurnTokenUsage()
     return core
 
 
@@ -414,7 +415,7 @@ def test_prepare_turn_attempt_reuses_common_ground_rev_for_turn_debug(tmp_path):
 
 
 def test_memory_sync_reminder_uses_rollup_instruction():
-    from lincy.agent.core import _build_memory_sync_reminder
+    from lincy.agent.turn_runtime import _build_memory_sync_reminder
 
     text = _build_memory_sync_reminder(
         ["memory/agent/recent.md"],

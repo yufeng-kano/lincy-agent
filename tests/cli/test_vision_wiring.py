@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock
 
-from lincy.agent.core import setup_tools
+from lincy.agent.tool_setup import setup_tools
 from lincy.core.schema import ToolsConfig
 from lincy.gui.manager import GUIManager
 from lincy.gui.worker import GUIWorker

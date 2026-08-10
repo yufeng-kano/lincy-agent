@@ -3,6 +3,25 @@
 from datetime import datetime
 
 from lincy.context import Conversation
+from lincy.context.conversation import split_turns
+from lincy.llm.schema import Message
+
+
+def test_split_turns_groups_non_user_messages():
+    messages = [
+        Message(role="user", content="u1"),
+        Message(role="assistant", content="a1"),
+        Message(role="tool", content="t1"),
+        Message(role="user", content="u2"),
+        Message(role="assistant", content="a2"),
+    ]
+
+    turns = split_turns(messages)
+
+    assert [[message.role for message in turn] for turn in turns] == [
+        ["user", "assistant", "tool"],
+        ["user", "assistant"],
+    ]
 
 
 def test_replace_messages_restores_history_without_callback():

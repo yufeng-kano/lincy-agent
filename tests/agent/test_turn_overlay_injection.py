@@ -15,7 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from lincy.agent.core import AgentCore, _LatestTokenStatus, _TurnTokenUsage, _run_responder
+from lincy.agent.core import AgentCore, _run_responder
+from lincy.agent.turn_runtime import LatestTokenStatus, TurnTokenUsage
 from lincy.agent.note_store import NoteStore
 from lincy.agent.turn_context import TurnContext
 from lincy.context.builder import ContextBuilder
@@ -89,8 +90,8 @@ def _make_core(tmp_path: Path) -> tuple[AgentCore, NoteStore, _FakeClient]:
     core.shared_state_store = None
     core.note_store = note_store
     core.memory_edit_allow_failure = False
-    core._latest_token_status = _LatestTokenStatus()
-    core._turn_token_usage = _TurnTokenUsage()
+    core._latest_token_status = LatestTokenStatus()
+    core._turn_token_usage = TurnTokenUsage()
     return core, note_store, client
 
 
