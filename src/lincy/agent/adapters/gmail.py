@@ -620,7 +620,7 @@ class GmailAdapter:
             content = body
 
         if attachment_lines:
-            content += "\n\n[Attachments]\n" + "\n".join(attachment_lines)
+            content += "\n\n" + "\n".join(attachment_lines)
 
         # Reply metadata for send()
         reply_subject = subject
