@@ -357,7 +357,7 @@ class TestCreateShellTask:
         manager.shutdown()
 
     def test_repo_config_detects_interactive_menu_prompt(self, tmp_path: Path):
-        config = load_config("agent.yaml")
+        config = load_config("agent.yaml", apply_override=False)
         queue = _QueueStub()
         ui_sink = _UiSinkStub()
         manager = ShellTaskManager(max_concurrent=1, ui_sink=ui_sink)
@@ -406,7 +406,7 @@ class TestCreateShellTask:
         assert "osascript" in msg.content
 
     def test_send_down_reaches_waiting_menu_session(self, tmp_path: Path):
-        config = load_config("agent.yaml")
+        config = load_config("agent.yaml", apply_override=False)
         queue = _QueueStub()
         ui_sink = _UiSinkStub()
         manager = ShellTaskManager(max_concurrent=1, ui_sink=ui_sink)
@@ -449,7 +449,7 @@ class TestCreateShellTask:
         manager.shutdown()
 
     def test_send_tab_reaches_waiting_menu_session(self, tmp_path: Path):
-        config = load_config("agent.yaml")
+        config = load_config("agent.yaml", apply_override=False)
         queue = _QueueStub()
         ui_sink = _UiSinkStub()
         manager = ShellTaskManager(max_concurrent=1, ui_sink=ui_sink)
@@ -495,7 +495,7 @@ class TestCreateShellTask:
         self,
         tmp_path: Path,
     ):
-        config = load_config("agent.yaml")
+        config = load_config("agent.yaml", apply_override=False)
         queue = _QueueStub()
         ui_sink = _UiSinkStub()
         manager = ShellTaskManager(max_concurrent=1, ui_sink=ui_sink)

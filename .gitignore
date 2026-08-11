@@ -219,3 +219,6 @@ logs
 src/chat_web_ui/node_modules/
 src/chat_web_ui/dist/
 src/chat_web_ui/.vite/
+
+# Local config overrides (see cfgs/*.override.yaml.example)
+cfgs/*.override.yaml

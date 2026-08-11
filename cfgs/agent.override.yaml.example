@@ -1,0 +1,29 @@
+# Local overrides for cfgs/agent.yaml (not tracked by git).
+#
+# Usage:
+#   cp cfgs/agent.override.yaml.example cfgs/agent.override.yaml
+#
+# Merge rules:
+#   - dict   : merged recursively, keys you omit keep the agent.yaml value
+#   - list   : replaced wholesale (write the full list, or [] to clear)
+#   - scalar : replaced
+#
+# Unknown keys fail at startup, same as agent.yaml.
+# Never put API keys here -- those belong in .env.
+
+# agents:
+#   brain:
+#     llm: cfgs/llm/codex/gpt-5.5/thinking.yaml
+#     llm_fallbacks:
+#       - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
+#   worker:
+#     llm: cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
+
+# channels:
+#   discord:
+#     enabled: false
+#   gmail:
+#     enabled: false
+
+# heartbeat:
+#   enabled: false
