@@ -299,6 +299,12 @@ def _write_base_agent_config(tmp_path: Path) -> None:
     )
 
 
+def test_override_path_preserves_dotted_stem():
+    path = config_module._override_path_for(Path("cfgs/agent.dev.yaml"))
+
+    assert path.name == "agent.dev.override.yaml"
+
+
 def test_override_merges_into_agent_config(monkeypatch, tmp_path: Path):
     _write_base_agent_config(tmp_path)
     _write_yaml(

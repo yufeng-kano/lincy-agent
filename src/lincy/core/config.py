@@ -95,7 +95,7 @@ def _resolve_cfg_relative_path(config_path: str) -> Path:
 
 def _override_path_for(config_path: Path) -> Path:
     """Return the sibling ``<name>.override.yaml`` for a config file."""
-    return config_path.with_suffix("").with_suffix(".override.yaml")
+    return config_path.with_name(f"{config_path.stem}.override.yaml")
 
 
 def _merge_override(base: dict, override: dict, *, prefix: str = "") -> list[str]:
