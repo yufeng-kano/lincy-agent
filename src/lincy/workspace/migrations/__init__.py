@@ -176,6 +176,8 @@ from .m0165_worker_async_dispatch import M0165WorkerAsyncDispatch
 from .m0166_worker_memory_file_access import M0166WorkerMemoryFileAccess
 from .m0167_temp_memory_delta_write import M0167TempMemoryDeltaWrite
 from .m0168_remove_gui_display_limits import M0168RemoveGuiDisplayLimits
+from .m0169_memory_curation_warnings import M0169MemoryCurationWarnings
+from .m0170_memory_curation import M0170MemoryCuration
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -344,4 +346,6 @@ ALL_MIGRATIONS = [
     M0166WorkerMemoryFileAccess(),
     M0167TempMemoryDeltaWrite(),
     M0168RemoveGuiDisplayLimits(),
+    M0169MemoryCurationWarnings(),
+    M0170MemoryCuration(),
 ]

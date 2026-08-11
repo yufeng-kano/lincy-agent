@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import logging
@@ -174,17 +174,22 @@ class MemoryEditor:
                 continue
             try:
                 target = resolve_memory_path(
-                    item.path, allowed_paths=allowed_paths, base_dir=base_dir,
+                    item.path,
+                    allowed_paths=allowed_paths,
+                    base_dir=base_dir,
                 )
             except ValueError:
                 continue
             # Find what operations were planned for this target
             target_reqs = requests_by_target.get(target, [])
-            had_append = any(
-                req.request.instruction for req in target_reqs
-            )
+            had_append = any(req.request.instruction for req in target_reqs)
             if had_append:
-                ws = _check_file_warnings(target, item.path, self.warnings_config)
+                ws = _check_file_warnings(
+                    target,
+                    item.path,
+                    self.warnings_config,
+                    agent_os_dir=base_dir,
+                )
                 all_warnings.extend(ws)
                 warned_paths.add(item.path)
 
@@ -264,8 +269,12 @@ class MemoryEditor:
             outcomes.append(
                 _IndexedOutcome(
                     index=indexed.index,
-                    applied=request_outcome if isinstance(request_outcome, AppliedItem) else None,
-                    error=request_outcome if isinstance(request_outcome, ErrorItem) else None,
+                    applied=request_outcome
+                    if isinstance(request_outcome, AppliedItem)
+                    else None,
+                    error=request_outcome
+                    if isinstance(request_outcome, ErrorItem)
+                    else None,
                 )
             )
         return outcomes
@@ -291,7 +300,9 @@ class MemoryEditor:
         file_content = (
             ""
             if is_temp_memory
-            else target.read_text(encoding="utf-8") if file_exists else ""
+            else target.read_text(encoding="utf-8")
+            if file_exists
+            else ""
         )
         plan = self.planner.plan(
             request=req,
@@ -497,7 +508,9 @@ def _sync_people_registry_after_batch(
         try:
             sync_people_index_entry(memory_dir, user_id, seen_date=seen_date)
         except Exception:
-            logger.warning("Failed to sync people index for user_id=%s", user_id, exc_info=True)
+            logger.warning(
+                "Failed to sync people index for user_id=%s", user_id, exc_info=True
+            )
 
 
 def _people_user_id_from_memory_path(path: str) -> str | None:
@@ -554,7 +567,9 @@ def _validate_long_term_file(target: Path) -> ApplyOutcome | None:
                 detail=f"missing required section: {header}",
             )
 
-    header_positions = [content.index(header) for header in _LONG_TERM_REQUIRED_SECTIONS]
+    header_positions = [
+        content.index(header) for header in _LONG_TERM_REQUIRED_SECTIONS
+    ]
     if header_positions != sorted(header_positions):
         return ApplyOutcome(
             status="error",
@@ -602,7 +617,9 @@ def _validate_long_term_file(target: Path) -> ApplyOutcome | None:
                 code="long_term_structure_invalid",
                 detail=f"line {lineno} is not a valid 清單 item",
             )
-        if current_section == "## 重要記錄" and not _LONG_TERM_RECORD_LINE.match(stripped):
+        if current_section == "## 重要記錄" and not _LONG_TERM_RECORD_LINE.match(
+            stripped
+        ):
             return ApplyOutcome(
                 status="error",
                 code="long_term_structure_invalid",
@@ -621,6 +638,7 @@ def _validate_long_term_file(target: Path) -> ApplyOutcome | None:
 
 # -- Index auto-maintenance ----------------------------------------------------
 
+
 def _auto_maintain_index(
     *,
     target: Path,
@@ -633,7 +651,10 @@ def _auto_maintain_index(
 
     parent_index = target.parent / "index.md"
     parent_rel = _to_memory_rel_path(parent_index, base_dir=base_dir)
-    if parent_rel is not None and classify_memory_index_path(parent_rel) == IndexKind.REGISTRY:
+    if (
+        parent_rel is not None
+        and classify_memory_index_path(parent_rel) == IndexKind.REGISTRY
+    ):
         # Registry indexes are domain-owned (e.g. people/index.md table).
         return
 
@@ -682,7 +703,10 @@ def _propagate_new_directory_upward(directory: Path, base_dir: Path) -> None:
 
         parent_index = parent / "index.md"
         parent_rel = _to_memory_rel_path(parent_index, base_dir=base_dir)
-        if parent_rel is not None and classify_memory_index_path(parent_rel) == IndexKind.REGISTRY:
+        if (
+            parent_rel is not None
+            and classify_memory_index_path(parent_rel) == IndexKind.REGISTRY
+        ):
             break
 
         dir_name = current.name
@@ -704,10 +728,7 @@ def _cleanup_empty_directory(directory: Path) -> None:
     if not directory.is_dir():
         return
 
-    remaining_entries = [
-        f for f in directory.iterdir()
-        if f.name != "index.md"
-    ]
+    remaining_entries = [f for f in directory.iterdir() if f.name != "index.md"]
     if remaining_entries:
         return
 
@@ -731,50 +752,137 @@ def _cleanup_empty_directory(directory: Path) -> None:
 
 # -- File health warnings ------------------------------------------------------
 
+
 def _check_file_warnings(
     target: Path,
     rel_path: str,
     config: MemoryEditWarningsConfig,
+    *,
+    agent_os_dir: Path | None = None,
 ) -> list[WarningItem]:
     """Check file state and return non-blocking warnings."""
-    if not target.is_file():
+    if not target.is_file() or _matches_warning_patterns(
+        target, rel_path, config.ignore
+    ):
         return []
-
-    # Check ignore list: match filename or directory pattern
-    for pattern in config.ignore:
-        if pattern.endswith("/"):
-            if f"/{pattern}" in f"/{rel_path}" or rel_path.startswith(pattern):
-                return []
-        elif target.name == pattern:
-            return []
 
     content = target.read_text(encoding="utf-8")
     lines = content.splitlines()
     warnings: list[WarningItem] = []
+    budget = _resolve_warning_budget(target, rel_path, config)
+    chars = len(content)
 
-    if len(lines) > config.max_lines:
-        warnings.append(WarningItem(
-            path=rel_path,
-            code="file_too_long",
-            detail=(
-                f"{len(lines)} lines (threshold: {config.max_lines}), "
-                "see kernel/builtin-skills/memory-maintenance/"
-            ),
-        ))
+    if chars > budget:
+        if agent_os_dir is not None:
+            _upsert_curation_queue(
+                agent_os_dir=agent_os_dir,
+                rel_path=rel_path,
+                chars=chars,
+                budget=budget,
+            )
+        warnings.append(
+            WarningItem(
+                path=rel_path,
+                code="file_too_long",
+                detail=(
+                    f"{chars} chars (budget: {budget}); queued for curation. "
+                    "see kernel/builtin-skills/memory-maintenance/"
+                ),
+            )
+        )
 
     dupes = _find_duplicate_lines(lines)
     if dupes:
         near = ", ".join(str(n) for n in dupes[:3])
-        warnings.append(WarningItem(
-            path=rel_path,
-            code="possible_duplicates",
-            detail=(
-                f"similar lines near lines {near}, "
-                "see kernel/builtin-skills/memory-maintenance/"
-            ),
-        ))
+        warnings.append(
+            WarningItem(
+                path=rel_path,
+                code="possible_duplicates",
+                detail=(
+                    f"similar lines near lines {near}, "
+                    "see kernel/builtin-skills/memory-maintenance/"
+                ),
+            )
+        )
 
     return warnings
+
+
+def _matches_warning_patterns(
+    target: Path,
+    rel_path: str,
+    patterns: list[str],
+) -> bool:
+    """Match warning patterns against workspace-relative paths."""
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            if f"/{pattern}" in f"/{rel_path}" or rel_path.startswith(pattern):
+                return True
+        elif target.name == pattern:
+            return True
+    return False
+
+
+def _resolve_warning_budget(
+    target: Path,
+    rel_path: str,
+    config: MemoryEditWarningsConfig,
+) -> int:
+    """Return the first matching budget override or the default budget."""
+    for override in config.budgets:
+        if _matches_warning_patterns(target, rel_path, [override.pattern]):
+            return override.max_chars
+    return config.max_chars
+
+
+def _upsert_curation_queue(
+    *,
+    agent_os_dir: Path,
+    rel_path: str,
+    chars: int,
+    budget: int,
+) -> None:
+    """Record an oversized file for the deterministic curation consumer."""
+    queue_path = agent_os_dir / "state" / "memory-curation-queue.json"
+    now = datetime.now(timezone.utc).isoformat()
+    entries: list[dict[str, object]] = []
+    try:
+        data = json.loads(queue_path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            entries = [entry for entry in data if isinstance(entry, dict)]
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Failed to load memory curation queue: %s", queue_path)
+
+    for entry in entries:
+        if entry.get("path") != rel_path:
+            continue
+        entry["chars"] = chars
+        entry["last_seen"] = now
+        break
+    else:
+        entries.append(
+            {
+                "path": rel_path,
+                "chars": chars,
+                "budget": budget,
+                "first_seen": now,
+                "last_seen": now,
+            }
+        )
+
+    temporary = queue_path.with_name(f".{queue_path.name}.tmp")
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        temporary.write_text(
+            json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(queue_path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _find_duplicate_lines(lines: list[str]) -> list[int]:
@@ -806,13 +914,11 @@ def _find_duplicate_lines(lines: list[str]) -> list[int]:
 
 # -- Helpers -------------------------------------------------------------------
 
+
 def _operations_hash(operations: list[MemoryEditOperation]) -> str:
     """Build stable hash from planner-produced operations."""
     payload = json.dumps(
-        [
-            op.model_dump(mode="json", exclude_none=True)
-            for op in operations
-        ],
+        [op.model_dump(mode="json", exclude_none=True) for op in operations],
         ensure_ascii=False,
         sort_keys=True,
     )

@@ -54,6 +54,10 @@ maintenance:
   # Steps in execution order: archive → context_refresh → backup → session_file_cleanup
   archive:
     retain_days: 3
+  curate:
+    enabled: true
+    digest_retain_days: 14
+    digest_max_chars: 1200
   context_refresh:
     preserve_turns: 4
   backup:
@@ -212,7 +216,7 @@ tools:
     allow_failure: true
     turn_retry_limit: 3 # responder turn-level retry when memory_edit tool result is failed
     warnings:
-      max_lines: 150
+      max_chars: 10000
       ignore:
         - "temp-memory.md"
         - "index.md"
@@ -357,6 +361,17 @@ agents:
     llm_rate_limit_retries: 5 # 429 retry with Retry-After/backoff
     warn_on_failure: true
     post_parse_retries: 2 # planner JSON/schema parse retry (different layer from transport retry)
+
+  memory_curator:
+    enabled: true
+    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
+    llm_fallbacks:
+      - cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml
+      - cfgs/llm/codex/gpt-5.5/low-thinking.yaml
+    llm_request_timeout: 600
+    llm_transient_retries: 2
+    llm_rate_limit_retries: 5
+    warn_on_failure: true
 
   gui_manager:
     enabled: true

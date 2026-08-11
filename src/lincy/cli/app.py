@@ -31,6 +31,7 @@ from ..core.schema import CodexConfig, CopilotConfig, GrokConfig, OpenAIConfig
 from ..llm import create_agent_client
 from ..memory import (
     BM25MemorySearch,
+    MemoryCurator,
     MemoryEditor,
     MemoryEditPlanner,
     SessionCommitLog,
@@ -449,6 +450,27 @@ def main(user: str, resume: str | None = None) -> None:
         planner=memory_planner,
         warnings_config=config.tools.memory_edit.warnings,
     )
+
+    memory_curator = None
+    memory_curator_config = config.agents.get("memory_curator")
+    if config.maintenance.curate.enabled and memory_curator_config is not None:
+        if not memory_curator_config.enabled:
+            _emit_pre_tui_message(
+                console,
+                "warning",
+                "agents.memory_curator is disabled; memory curation will be skipped.",
+            )
+        else:
+            memory_curator_prompt = _load_agent_prompt("memory_curator")
+            if memory_curator_prompt is None:
+                _emit_pre_tui_message(console, "error", "Failed to load memory_curator prompt")
+                return
+            memory_curator = MemoryCurator(
+                _build_subagent_client("memory_curator", memory_curator_config),
+                memory_curator_prompt,
+            )
+    elif config.maintenance.curate.enabled:
+        logger.warning("agents.memory_curator is missing; memory curation will be skipped")
 
     timezone = config.app.timezone
     console.set_timezone(timezone)
@@ -896,6 +918,7 @@ def main(user: str, resume: str | None = None) -> None:
         shared_state_store=shared_state_store,
         scope_resolver=DEFAULT_SCOPE_RESOLVER,
         memory_sync_client=memory_sync_client,
+        memory_curator=memory_curator,
         conversation_compaction_client=conversation_compaction_client,
         brain_prompt_policy=brain_prompt_policy,
         copilot_runtime=copilot_runtime if brain_agent_config.llm.provider == "copilot" else None,

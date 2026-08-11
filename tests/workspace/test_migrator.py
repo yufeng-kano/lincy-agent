@@ -117,7 +117,9 @@ class TestMigrator:
             info = yaml.safe_load(f)
         assert info["version"] == "9.9.9"
 
-    def test_run_migrations_removes_timezone_from_info_yaml(self, kernel_dir, templates_dir):
+    def test_run_migrations_removes_timezone_from_info_yaml(
+        self, kernel_dir, templates_dir
+    ):
         with open(kernel_dir / "info.yaml", "w") as f:
             yaml.dump(
                 {
@@ -182,7 +184,9 @@ class TestMigrator:
         assert not (tmp_path / "memory" / "agent" / "skills").exists()
         assert (tmp_path / "personal-skills" / "demo-skill" / "SKILL.md").exists()
         assert not (tmp_path / "personal-skills" / "memory-maintenance").exists()
-        assert (kernel_dir / "builtin-skills" / "memory-maintenance" / "SKILL.md").exists()
+        assert (
+            kernel_dir / "builtin-skills" / "memory-maintenance" / "SKILL.md"
+        ).exists()
 
         personal_index = (tmp_path / "personal-skills" / "index.md").read_text(
             encoding="utf-8"
@@ -214,7 +218,9 @@ class TestM0002AgentsStructure:
         init = WorkspaceInitializer(manager)
         templates_dir = init._get_templates_dir() / "kernel"
 
-        from lincy.workspace.migrations.m0002_agents_structure import M0002AgentsStructure
+        from lincy.workspace.migrations.m0002_agents_structure import (
+            M0002AgentsStructure,
+        )
 
         m = M0002AgentsStructure()
         m.upgrade(kernel_dir, templates_dir)
@@ -234,7 +240,9 @@ class TestM0002AgentsStructure:
         init = WorkspaceInitializer(manager)
         templates_dir = init._get_templates_dir() / "kernel"
 
-        from lincy.workspace.migrations.m0002_agents_structure import M0002AgentsStructure
+        from lincy.workspace.migrations.m0002_agents_structure import (
+            M0002AgentsStructure,
+        )
 
         m = M0002AgentsStructure()
         m.upgrade(kernel_dir, templates_dir)
@@ -363,18 +371,22 @@ class TestM0030StrictTargetAnomalySignals:
         (templates_dir / "agents" / "brain" / "prompts" / "shutdown.md").write_text(
             "brain shutdown strict v0.9.0"
         )
-        (templates_dir / "agents" / "post_reviewer" / "prompts" / "system.md").write_text(
-            "post reviewer strict v0.9.0"
-        )
-        (templates_dir / "agents" / "post_reviewer" / "prompts" / "parse-retry.md").write_text(
-            "parse retry strict v0.9.0"
-        )
-        (templates_dir / "agents" / "shutdown_reviewer" / "prompts" / "system.md").write_text(
-            "shutdown reviewer strict v0.9.0"
-        )
-        (templates_dir / "agents" / "shutdown_reviewer" / "prompts" / "parse-retry.md").write_text(
-            "shutdown parse retry strict v0.9.0"
-        )
+        (
+            templates_dir / "agents" / "post_reviewer" / "prompts" / "system.md"
+        ).write_text("post reviewer strict v0.9.0")
+        (
+            templates_dir / "agents" / "post_reviewer" / "prompts" / "parse-retry.md"
+        ).write_text("parse retry strict v0.9.0")
+        (
+            templates_dir / "agents" / "shutdown_reviewer" / "prompts" / "system.md"
+        ).write_text("shutdown reviewer strict v0.9.0")
+        (
+            templates_dir
+            / "agents"
+            / "shutdown_reviewer"
+            / "prompts"
+            / "parse-retry.md"
+        ).write_text("shutdown parse retry strict v0.9.0")
 
         from lincy.workspace.migrations.m0030_strict_target_anomaly_signals import (
             M0030StrictTargetAnomalySignals,
@@ -383,9 +395,9 @@ class TestM0030StrictTargetAnomalySignals:
         migration = M0030StrictTargetAnomalySignals()
         migration.upgrade(kernel_dir, templates_dir)
 
-        assert (kernel_dir / "agents" / "brain" / "prompts" / "system.md").read_text() == (
-            "brain strict v0.9.0"
-        )
+        assert (
+            kernel_dir / "agents" / "brain" / "prompts" / "system.md"
+        ).read_text() == ("brain strict v0.9.0")
         assert (
             kernel_dir / "agents" / "brain" / "prompts" / "shutdown.md"
         ).read_text() == "brain shutdown strict v0.9.0"
@@ -412,12 +424,12 @@ class TestM0031MemorySearchTwoStageConfigurableLimits:
         (kernel_dir / "agents" / "memory_searcher" / "prompts").mkdir(parents=True)
         (templates_dir / "agents" / "memory_searcher" / "prompts").mkdir(parents=True)
 
-        (templates_dir / "agents" / "memory_searcher" / "prompts" / "system.md").write_text(
-            "memory searcher two-stage v0.9.1"
-        )
-        (templates_dir / "agents" / "memory_searcher" / "prompts" / "parse-retry.md").write_text(
-            "memory searcher parse retry v0.9.1"
-        )
+        (
+            templates_dir / "agents" / "memory_searcher" / "prompts" / "system.md"
+        ).write_text("memory searcher two-stage v0.9.1")
+        (
+            templates_dir / "agents" / "memory_searcher" / "prompts" / "parse-retry.md"
+        ).write_text("memory searcher parse retry v0.9.1")
 
         from lincy.workspace.migrations.m0031_memory_search_two_stage_configurable_limits import (
             M0031MemorySearchTwoStageConfigurableLimits,
@@ -529,7 +541,9 @@ class TestM0010ReviewerParseRetryPrompts:
 
         assert (pre_dst / "parse-retry.md").read_text() == "pre parse retry prompt"
         assert (post_dst / "parse-retry.md").read_text() == "post parse retry prompt"
-        assert (shutdown_dst / "parse-retry.md").read_text() == "shutdown parse retry prompt"
+        assert (
+            shutdown_dst / "parse-retry.md"
+        ).read_text() == "shutdown parse retry prompt"
 
 
 class TestM0011SystemPromptFormatting:
@@ -603,7 +617,10 @@ class TestM0013MemoryWriterPipeline:
             ("agents/post_reviewer/prompts/system.md", "post reviewer"),
             ("agents/shutdown_reviewer/prompts/system.md", "shutdown reviewer"),
             ("agents/memory_writer/prompts/system.md", "memory writer system"),
-            ("agents/memory_writer/prompts/parse-retry.md", "memory writer parse retry"),
+            (
+                "agents/memory_writer/prompts/parse-retry.md",
+                "memory writer parse retry",
+            ),
         ]
 
         for relative_path, content in mappings:
@@ -634,8 +651,14 @@ class TestM0014RecentContextPriority:
 
         mappings = [
             ("agents/brain/prompts/system.md", "brain recent-context prompt"),
-            ("agents/pre_reviewer/prompts/system.md", "pre reviewer recent-context prompt"),
-            ("agents/post_reviewer/prompts/system.md", "post reviewer recent-context prompt"),
+            (
+                "agents/pre_reviewer/prompts/system.md",
+                "pre reviewer recent-context prompt",
+            ),
+            (
+                "agents/post_reviewer/prompts/system.md",
+                "post reviewer recent-context prompt",
+            ),
         ]
 
         for relative_path, content in mappings:
@@ -666,7 +689,10 @@ class TestM0066ProgressReviewer:
 
         mappings = [
             ("agents/progress_reviewer/prompts/system.md", "progress reviewer system"),
-            ("agents/progress_reviewer/prompts/parse-retry.md", "progress reviewer parse retry"),
+            (
+                "agents/progress_reviewer/prompts/parse-retry.md",
+                "progress reviewer parse retry",
+            ),
         ]
 
         for relative_path, content in mappings:
@@ -696,12 +722,30 @@ class TestM0067CompletionReviewerPrompts:
         templates_dir = tmp_path / "templates"
 
         mappings = [
-            ("agents/post_reviewer/prompts/system.md", "post reviewer completion system"),
-            ("agents/post_reviewer/prompts/parse-retry.md", "post reviewer completion parse"),
-            ("agents/shutdown_reviewer/prompts/system.md", "shutdown reviewer completion system"),
-            ("agents/shutdown_reviewer/prompts/parse-retry.md", "shutdown reviewer completion parse"),
-            ("agents/progress_reviewer/prompts/system.md", "progress reviewer advisory system"),
-            ("agents/progress_reviewer/prompts/parse-retry.md", "progress reviewer parse retry"),
+            (
+                "agents/post_reviewer/prompts/system.md",
+                "post reviewer completion system",
+            ),
+            (
+                "agents/post_reviewer/prompts/parse-retry.md",
+                "post reviewer completion parse",
+            ),
+            (
+                "agents/shutdown_reviewer/prompts/system.md",
+                "shutdown reviewer completion system",
+            ),
+            (
+                "agents/shutdown_reviewer/prompts/parse-retry.md",
+                "shutdown reviewer completion parse",
+            ),
+            (
+                "agents/progress_reviewer/prompts/system.md",
+                "progress reviewer advisory system",
+            ),
+            (
+                "agents/progress_reviewer/prompts/parse-retry.md",
+                "progress reviewer parse retry",
+            ),
         ]
 
         for relative_path, content in mappings:
@@ -800,7 +844,9 @@ class TestM0114DiscordBuiltinSkill:
         migration = M0114DiscordBuiltinSkill()
         migration.upgrade(kernel_dir, templates_dir)
 
-        assert (kernel_dir / "builtin-skills" / "index.md").read_text() == "builtin index"
+        assert (
+            kernel_dir / "builtin-skills" / "index.md"
+        ).read_text() == "builtin index"
         assert (
             kernel_dir / "builtin-skills" / "discord-messaging" / "guide.md"
         ).read_text() == "discord skill guide"
@@ -823,8 +869,12 @@ class TestM0115DiscordPresentationStrategy:
         prompt_dst.mkdir(parents=True)
 
         (skill_src / "index.md").write_text("updated builtin index")
-        (skill_src / "discord-messaging" / "guide.md").write_text("semantic presentation guide")
-        (prompt_src / "system.md").write_text("brain prompt points to presentation strategy")
+        (skill_src / "discord-messaging" / "guide.md").write_text(
+            "semantic presentation guide"
+        )
+        (prompt_src / "system.md").write_text(
+            "brain prompt points to presentation strategy"
+        )
         (prompt_dst / "system.md").write_text("legacy discord routing")
 
         from lincy.workspace.migrations.m0115_discord_presentation_strategy import (
@@ -834,11 +884,15 @@ class TestM0115DiscordPresentationStrategy:
         migration = M0115DiscordPresentationStrategy()
         migration.upgrade(kernel_dir, templates_dir)
 
-        assert (kernel_dir / "builtin-skills" / "index.md").read_text() == "updated builtin index"
+        assert (
+            kernel_dir / "builtin-skills" / "index.md"
+        ).read_text() == "updated builtin index"
         assert (
             kernel_dir / "builtin-skills" / "discord-messaging" / "guide.md"
         ).read_text() == "semantic presentation guide"
-        assert (prompt_dst / "system.md").read_text() == "brain prompt points to presentation strategy"
+        assert (
+            prompt_dst / "system.md"
+        ).read_text() == "brain prompt points to presentation strategy"
 
 
 class TestM0116DiscordNaturalLists:
@@ -861,7 +915,9 @@ class TestM0116DiscordNaturalLists:
         migration = M0116DiscordNaturalLists()
         migration.upgrade(kernel_dir, templates_dir)
 
-        assert (kernel_dir / "builtin-skills" / "index.md").read_text() == "natural list index"
+        assert (
+            kernel_dir / "builtin-skills" / "index.md"
+        ).read_text() == "natural list index"
         assert (
             kernel_dir / "builtin-skills" / "discord-messaging" / "guide.md"
         ).read_text() == "natural list guide"
@@ -944,7 +1000,9 @@ class TestM0120ShellNonInteractive:
         migration = M0120ShellNonInteractive()
         migration.upgrade(kernel_dir, templates_dir)
 
-        assert (prompt_dst / "system.md").read_text() == "non-interactive execute_shell prompt"
+        assert (
+            prompt_dst / "system.md"
+        ).read_text() == "non-interactive execute_shell prompt"
 
 
 class TestM0121ShellTask:
@@ -1133,6 +1191,73 @@ class TestM0137SkillInstallerRepoAtSkill:
         migration.upgrade(kernel_dir, templates_dir)
 
         assert dst.read_text() == "new::repo-at-skill"
+
+
+class TestM0170MemoryCuration:
+    def test_adds_curator_config_and_prompt(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0170_memory_curation import M0170MemoryCuration
+
+        kernel_dir = tmp_path / "kernel"
+        prompt = tmp_path / "templates/agents/memory_curator/prompts/system.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("curator prompt")
+        config_path = tmp_path / "cfgs/agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text("agents: {}\nmaintenance: {}\n")
+
+        M0170MemoryCuration().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config["maintenance"]["curate"]["enabled"] is True
+        assert config["agents"]["memory_curator"]["enabled"] is True
+        assert (kernel_dir / "agents/memory_curator/prompts/system.md").read_text() == "curator prompt"
+
+
+class TestM0169MemoryCurationWarnings:
+    """Tests for the memory warning config migration."""
+
+    def test_replaces_max_lines_in_workspace_config(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "tools:\n  memory_edit:\n    warnings:\n      max_lines: 150\n",
+            encoding="utf-8",
+        )
+
+        from lincy.workspace.migrations.m0169_memory_curation_warnings import (
+            M0169MemoryCurationWarnings,
+        )
+
+        M0169MemoryCurationWarnings().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        warnings = config["tools"]["memory_edit"]["warnings"]
+        assert warnings == {"max_chars": 10000}
+
+    def test_preserves_existing_max_chars(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "agent.yaml"
+        config_path.write_text(
+            "tools:\n"
+            "  memory_edit:\n"
+            "    warnings:\n"
+            "      max_lines: 150\n"
+            "      max_chars: 20000\n",
+            encoding="utf-8",
+        )
+
+        from lincy.workspace.migrations.m0169_memory_curation_warnings import (
+            M0169MemoryCurationWarnings,
+        )
+
+        M0169MemoryCurationWarnings().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        warnings = config["tools"]["memory_edit"]["warnings"]
+        assert warnings == {"max_chars": 20000}
 
 
 class TestM0163BrainShellDelegation:

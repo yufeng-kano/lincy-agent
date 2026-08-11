@@ -74,9 +74,7 @@ class ShellHandoffRuleConfig(StrictConfigModel):
             and self.process_alive is None
             and self.idle_seconds_ge is None
         ):
-            raise ValueError(
-                "handoff rule must define at least one matcher condition"
-            )
+            raise ValueError("handoff rule must define at least one matcher condition")
         return self
 
 
@@ -89,15 +87,25 @@ class ShellHandoffConfig(StrictConfigModel):
     rules: list[ShellHandoffRuleConfig] = Field(default_factory=list)
 
 
+class MemoryEditWarningBudgetConfig(StrictConfigModel):
+    """Per-pattern character budget override for memory_edit warnings."""
+
+    pattern: str
+    max_chars: int = Field(ge=1000)
+
+
 class MemoryEditWarningsConfig(StrictConfigModel):
     """File health warning configuration for memory_edit."""
 
-    max_lines: int = Field(default=75, ge=10)
-    ignore: list[str] = Field(default_factory=lambda: [
-        "temp-memory.md",
-        "index.md",
-        "archive/",
-    ])
+    max_chars: int = Field(default=10000, ge=1000)
+    budgets: list[MemoryEditWarningBudgetConfig] = Field(default_factory=list)
+    ignore: list[str] = Field(
+        default_factory=lambda: [
+            "temp-memory.md",
+            "index.md",
+            "archive/",
+        ]
+    )
 
 
 class MemoryEditToolConfig(StrictConfigModel):
@@ -105,9 +113,7 @@ class MemoryEditToolConfig(StrictConfigModel):
 
     allow_failure: bool = False
     turn_retry_limit: int = Field(default=3, ge=1)
-    warnings: MemoryEditWarningsConfig = Field(
-        default_factory=MemoryEditWarningsConfig
-    )
+    warnings: MemoryEditWarningsConfig = Field(default_factory=MemoryEditWarningsConfig)
 
 
 class BM25SearchConfig(StrictConfigModel):
@@ -232,7 +238,9 @@ class ToolsConfig(StrictConfigModel):
     allowed_paths: list[str] = []
     shell: ShellConfig = Field(default_factory=ShellConfig)
     memory_edit: MemoryEditToolConfig = Field(default_factory=MemoryEditToolConfig)
-    memory_search: MemorySearchToolConfig = Field(default_factory=MemorySearchToolConfig)
+    memory_search: MemorySearchToolConfig = Field(
+        default_factory=MemorySearchToolConfig
+    )
     apple_apps: AppleAppsToolConfig = Field(default_factory=AppleAppsToolConfig)
     web_fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
@@ -270,8 +278,14 @@ class LLMProviderConfig(StrictConfigModel):
             reasoning = reasoning.model_copy(update={"enabled": True})
             enabled = True
         if enabled is False and reasoning.effort is not None:
-            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
-        if reasoning.effort is not None and supported_efforts is not None and reasoning.effort not in supported_efforts:
+            raise ValueError(
+                "reasoning.effort cannot be set when enabled is false " + ctx
+            )
+        if (
+            reasoning.effort is not None
+            and supported_efforts is not None
+            and reasoning.effort not in supported_efforts
+        ):
             allowed = ", ".join(supported_efforts) or "(none)"
             raise ValueError(
                 f"reasoning.effort={reasoning.effort!r} is not supported "
@@ -350,6 +364,7 @@ class OllamaNativeConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.ollama_native import OllamaNativeClient
+
         return OllamaNativeClient(self)
 
 
@@ -418,6 +433,7 @@ class CopilotConfig(LLMProviderConfig):
         dispatch_mode: str = "first_user_then_agent",
     ) -> Any:
         from ..llm.providers.copilot import CopilotClient
+
         return CopilotClient(
             self,
             runtime=runtime,
@@ -485,6 +501,7 @@ class CodexConfig(LLMProviderConfig):
 
     def create_client(self, **kwargs: Any) -> Any:
         from ..llm.providers.codex import CodexClient
+
         return CodexClient(self, **kwargs)
 
 
@@ -615,6 +632,7 @@ class ClaudeCodeConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.claude_code import ClaudeCodeClient
+
         return ClaudeCodeClient(self)
 
 
@@ -679,6 +697,7 @@ class GrokConfig(LLMProviderConfig):
 
     def create_client(self, **kwargs: Any) -> Any:
         from ..llm.providers.grok import GrokClient
+
         return GrokClient(self, **kwargs)
 
 
@@ -743,7 +762,10 @@ class OpenAIConfig(LLMProviderConfig):
             )
         # OpenAI adapter constraints
         overrides = self.provider_overrides or {}
-        if reasoning.enabled is False and overrides.get("openai_reasoning_effort") is None:
+        if (
+            reasoning.enabled is False
+            and overrides.get("openai_reasoning_effort") is None
+        ):
             raise ValueError(
                 "OpenAI Chat Completions does not support reasoning.enabled=false "
                 "without provider_overrides.openai_reasoning_effort " + ctx
@@ -758,6 +780,7 @@ class OpenAIConfig(LLMProviderConfig):
 
     def create_client(self, **kwargs: Any) -> Any:
         from ..llm.providers.openai import OpenAIClient
+
         return OpenAIClient(self, **kwargs)
 
 
@@ -830,6 +853,7 @@ class DeepSeekConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.deepseek import DeepSeekClient
+
         return DeepSeekClient(self)
 
 
@@ -872,7 +896,6 @@ class AnthropicOutputConfig(StrictConfigModel):
         return self
 
 
-
 class AnthropicConfig(LLMProviderConfig):
     """Anthropic provider configuration using native Messages API fields."""
 
@@ -909,11 +932,7 @@ class AnthropicConfig(LLMProviderConfig):
         thinking_disabled = (
             self.thinking is not None and self.thinking.type == "disabled"
         )
-        if (
-            thinking_disabled
-            and effort in ("xhigh", "max")
-            and "opus-5" in model
-        ):
+        if thinking_disabled and effort in ("xhigh", "max") and "opus-5" in model:
             raise ValueError(
                 f"thinking.type=disabled only works at effort high or below on this "
                 f"model, got effort={effort} " + ctx
@@ -925,6 +944,7 @@ class AnthropicConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.anthropic import AnthropicClient
+
         return AnthropicClient(self)
 
 
@@ -953,6 +973,7 @@ class HeyrouteConfig(AnthropicConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.heyroute import HeyrouteClient
+
         return HeyrouteClient(self)
 
 
@@ -1013,7 +1034,9 @@ class GeminiConfig(LLMProviderConfig):
             supported_efforts=caps.supported_efforts,
         )
         if reasoning.enabled is False and reasoning.max_tokens is not None:
-            raise ValueError("reasoning.max_tokens cannot be set when enabled is false " + ctx)
+            raise ValueError(
+                "reasoning.max_tokens cannot be set when enabled is false " + ctx
+            )
         if reasoning.enabled is not None and not caps.supports_toggle:
             raise ValueError(
                 "reasoning.enabled is set, but supports_toggle=false " + ctx
@@ -1027,7 +1050,9 @@ class GeminiConfig(LLMProviderConfig):
                 "reasoning.effort=minimal is not supported by the Gemini adapter " + ctx
             )
         if reasoning.enabled is False and "gemini-3-pro" in self.model.lower():
-            raise ValueError("Gemini 3 Pro does not support reasoning.enabled=false " + ctx)
+            raise ValueError(
+                "Gemini 3 Pro does not support reasoning.enabled=false " + ctx
+            )
         return self.model_copy(update={"reasoning": reasoning})
 
     def get_vision(self) -> bool:
@@ -1038,6 +1063,7 @@ class GeminiConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.gemini import GeminiClient
+
         return GeminiClient(self)
 
 
@@ -1071,6 +1097,7 @@ class LiteLLMConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.litellm import LiteLLMClient
+
         return LiteLLMClient(self)
 
 
@@ -1134,9 +1161,7 @@ class OpenRouterProviderRoutingConfig(StrictConfigModel):
             and self.ignore is None
             and self.require_parameters is None
         ):
-            raise ValueError(
-                "provider_routing must set at least one routing field"
-            )
+            raise ValueError("provider_routing must set at least one routing field")
         return self
 
 
@@ -1173,11 +1198,14 @@ class OpenRouterConfig(LLMProviderConfig):
             supported_efforts=reasoning.supported_efforts,
         )
         if reasoning.enabled is False and reasoning.max_tokens is not None:
-            raise ValueError("reasoning.max_tokens cannot be set when enabled is false " + ctx)
+            raise ValueError(
+                "reasoning.max_tokens cannot be set when enabled is false " + ctx
+            )
         # Mutual exclusivity: effort and max_tokens cannot both be set
         if reasoning.effort is not None and reasoning.max_tokens is not None:
             raise ValueError(
-                "reasoning.effort and reasoning.max_tokens are mutually exclusive " + ctx
+                "reasoning.effort and reasoning.max_tokens are mutually exclusive "
+                + ctx
             )
         return self.model_copy(update={"reasoning": reasoning})
 
@@ -1189,6 +1217,7 @@ class OpenRouterConfig(LLMProviderConfig):
 
     def create_client(self) -> Any:
         from ..llm.providers.openrouter import OpenRouterClient
+
         return OpenRouterClient(self)
 
 
@@ -1234,9 +1263,7 @@ class CacheConfig(StrictConfigModel):
     # Supported project-wide TTL tokens. Provider adapters may clamp further
     # (e.g. Anthropic-style breakpoints max out at 1h).
     ttl: Literal["ephemeral", "1h", "24h"] = "ephemeral"
-    fingerprint: CacheFingerprintConfig = Field(
-        default_factory=CacheFingerprintConfig
-    )
+    fingerprint: CacheFingerprintConfig = Field(default_factory=CacheFingerprintConfig)
 
 
 class AXServerConfig(StrictConfigModel):
@@ -1295,9 +1322,7 @@ class AgentConfig(StrictConfigModel):
     # validated against the registry at startup.
     excluded_tools: list[str] = Field(default_factory=list)
     # Brain staged planning
-    staged_planning: StagedPlanningConfig = Field(
-        default_factory=StagedPlanningConfig
-    )
+    staged_planning: StagedPlanningConfig = Field(default_factory=StagedPlanningConfig)
     # Prompt caching for cost optimization
     cache: CacheConfig = Field(default_factory=CacheConfig)
 
@@ -1306,6 +1331,14 @@ class MemoryArchiveConfig(StrictConfigModel):
     """Auto-archive rolling buffers older than retain_days."""
 
     retain_days: int = Field(default=3, ge=0)
+
+
+class MaintenanceCurateConfig(StrictConfigModel):
+    """Memory distillation settings during daily maintenance."""
+
+    enabled: bool = True
+    digest_retain_days: int = Field(default=14, ge=0)
+    digest_max_chars: int = Field(default=1200, ge=1)
 
 
 class MemoryBackupConfig(StrictConfigModel):
@@ -1342,6 +1375,7 @@ class MaintenanceConfig(StrictConfigModel):
     retry_interval_minutes: int = Field(default=10, ge=1)
     # Steps in execution order:
     archive: MemoryArchiveConfig = Field(default_factory=MemoryArchiveConfig)
+    curate: MaintenanceCurateConfig = Field(default_factory=MaintenanceCurateConfig)
     context_refresh: MaintenanceContextRefreshConfig = Field(
         default_factory=MaintenanceContextRefreshConfig,
     )
@@ -1374,16 +1408,20 @@ class ContextConfig(StrictConfigModel):
 
     soft_max_prompt_tokens: int = Field(default=128_000, ge=1_024)
     preserve_turns: int = Field(default=6, ge=1)
-    boot_files: list[str] = Field(default_factory=lambda: [
-        "memory/agent/persona.md",
-        "memory/agent/long-term.md",
-        "kernel/builtin-skills/index.md",
-        "personal-skills/index.md",
-    ])
-    boot_files_as_tool: list[str] = Field(default_factory=lambda: [
-        "memory/agent/index.md",
-        "memory/agent/temp-memory.md",
-    ])
+    boot_files: list[str] = Field(
+        default_factory=lambda: [
+            "memory/agent/persona.md",
+            "memory/agent/long-term.md",
+            "kernel/builtin-skills/index.md",
+            "personal-skills/index.md",
+        ]
+    )
+    boot_files_as_tool: list[str] = Field(
+        default_factory=lambda: [
+            "memory/agent/index.md",
+            "memory/agent/temp-memory.md",
+        ]
+    )
     skill_rescan: bool = False
     common_ground: CommonGroundConfig = Field(default_factory=CommonGroundConfig)
 
@@ -1417,9 +1455,11 @@ class DecisionReminderConfig(StrictConfigModel):
 
     enabled: bool = False
     inline_section: DecisionReminderInlineSectionConfig | None = None
-    files: list[str] = Field(default_factory=lambda: [
-        "memory/agent/long-term.md",
-    ])
+    files: list[str] = Field(
+        default_factory=lambda: [
+            "memory/agent/long-term.md",
+        ]
+    )
 
 
 class SendMessageBatchGuidanceConfig(StrictConfigModel):
@@ -1538,8 +1578,13 @@ class DiscordChannelConfig(StrictConfigModel):
     def _migrate_legacy_fields(cls, data: Any) -> Any:
         if isinstance(data, dict):
             # Renamed: thinking_typing_refresh_seconds -> send_typing_refresh_seconds
-            if "thinking_typing_refresh_seconds" in data and "send_typing_refresh_seconds" not in data:
-                data["send_typing_refresh_seconds"] = data.pop("thinking_typing_refresh_seconds")
+            if (
+                "thinking_typing_refresh_seconds" in data
+                and "send_typing_refresh_seconds" not in data
+            ):
+                data["send_typing_refresh_seconds"] = data.pop(
+                    "thinking_typing_refresh_seconds"
+                )
             else:
                 data.pop("thinking_typing_refresh_seconds", None)
             # Removed: thinking_typing (no-op, silently drop)
@@ -1630,7 +1675,9 @@ def next_quiet_end(
         if not _time_in_window(local_time, start, end):
             continue
         # Build the end datetime in local timezone
-        end_dt = local_dt.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+        end_dt = local_dt.replace(
+            hour=end.hour, minute=end.minute, second=0, microsecond=0
+        )
         if end <= start:
             # Cross-midnight: end is on the next day (or today if we're before midnight)
             if local_time >= start:
@@ -1652,9 +1699,7 @@ class HeartbeatConfig(StrictConfigModel):
     # Whether to enqueue kernel upgrade summaries as one-shot system notices.
     enqueue_upgrade_notice: bool = True
     # Supports hours (h) or minutes (m), e.g. "2h-5h", "30m-90m"
-    interval: str = Field(
-        default="2h-5h", pattern=r"^\d+[hm]-\d+[hm]$"
-    )
+    interval: str = Field(default="2h-5h", pattern=r"^\d+[hm]-\d+[hm]$")
     # Time windows where heartbeat is suppressed, e.g. ["00:00-06:00"]
     quiet_hours: list[str] = Field(default_factory=list)
 

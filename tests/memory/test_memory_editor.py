@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
 
+from lincy.core.schema import MemoryEditWarningsConfig
 from lincy.memory.editor.apply import apply_operation
 from lincy.memory.editor.schema import (
     MemoryEditBatch,
@@ -83,14 +85,20 @@ class _SameFileOrderPlanner:
             assert file_exists is False
             return MemoryEditPlan(
                 status="ok",
-                operations=[MemoryEditOperation(kind="create_if_missing", payload_text="# notes")],
+                operations=[
+                    MemoryEditOperation(
+                        kind="create_if_missing", payload_text="# notes"
+                    )
+                ],
             )
         if request.request_id == "r2":
             assert file_exists is True
             assert "# notes" in file_content
             return MemoryEditPlan(
                 status="ok",
-                operations=[MemoryEditOperation(kind="append_entry", payload_text="- second")],
+                operations=[
+                    MemoryEditOperation(kind="append_entry", payload_text="- second")
+                ],
             )
         raise AssertionError(f"unexpected request_id: {request.request_id}")
 
@@ -250,7 +258,9 @@ def test_memory_editor_applies_instruction_plan(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -295,7 +305,9 @@ def test_temp_memory_append_does_not_read_existing_file(tmp_path: Path, monkeypa
     planner = _RecordingPlanner({"r1": plan})
 
     editor = MemoryEditor(commit_log=SessionCommitLog(), planner=planner)
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -315,7 +327,9 @@ def test_temp_memory_append_does_not_read_existing_file(tmp_path: Path, monkeypa
     )
 
 
-def test_temp_memory_rejects_non_append_plan_without_reading_file(tmp_path: Path, monkeypatch):
+def test_temp_memory_rejects_non_append_plan_without_reading_file(
+    tmp_path: Path, monkeypatch
+):
     target = tmp_path / "memory" / "agent" / "temp-memory.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     original = "- [2026-05-17 10:00] 毓峰 existing entry。\n"
@@ -325,7 +339,9 @@ def test_temp_memory_rejects_non_append_plan_without_reading_file(tmp_path: Path
 
     def guarded_read_text(self, *args, **kwargs):  # noqa: ANN001
         if self == target:
-            raise AssertionError("temp-memory.md must not be read for append-only rejection")
+            raise AssertionError(
+                "temp-memory.md must not be read for append-only rejection"
+            )
         return original_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", guarded_read_text)
@@ -355,7 +371,9 @@ def test_temp_memory_rejects_non_append_plan_without_reading_file(tmp_path: Path
         commit_log=SessionCommitLog(),
         planner=_RecordingPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     assert result.errors[0].code == "temp_memory_append_only"
@@ -392,8 +410,12 @@ def test_memory_editor_idempotent_replay_with_same_planned_ops(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    first = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
-    second = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    first = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
+    second = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert first.status == "ok"
     assert first.applied[0].status == "applied"
@@ -435,7 +457,9 @@ def test_memory_editor_rolls_back_request_on_operation_failure(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": failing_plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     assert result.errors[0].code == "block_not_found"
@@ -464,7 +488,9 @@ def test_memory_editor_returns_instruction_not_actionable_error(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     assert result.errors[0].code == "instruction_not_actionable"
@@ -484,11 +510,15 @@ def test_memory_editor_parallelizes_different_target_files(tmp_path: Path):
     plans = {
         "r1": MemoryEditPlan(
             status="ok",
-            operations=[MemoryEditOperation(kind="create_if_missing", payload_text="# a")],
+            operations=[
+                MemoryEditOperation(kind="create_if_missing", payload_text="# a")
+            ],
         ),
         "r2": MemoryEditPlan(
             status="ok",
-            operations=[MemoryEditOperation(kind="create_if_missing", payload_text="# b")],
+            operations=[
+                MemoryEditOperation(kind="create_if_missing", payload_text="# b")
+            ],
         ),
     }
     batch = MemoryEditBatch(
@@ -501,7 +531,9 @@ def test_memory_editor_parallelizes_different_target_files(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_BarrierPlanner(plans, parties=2),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert [item.request_id for item in result.applied] == ["r1", "r2"]
@@ -530,7 +562,9 @@ def test_memory_editor_same_file_requests_stay_sequential(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_SameFileOrderPlanner(),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert [item.request_id for item in result.applied] == ["r1", "r2"]
@@ -539,7 +573,9 @@ def test_memory_editor_same_file_requests_stay_sequential(tmp_path: Path):
     assert "- second" in content
 
 
-def test_memory_editor_rejects_appending_checkbox_rule_to_long_term_tail(tmp_path: Path):
+def test_memory_editor_rejects_appending_checkbox_rule_to_long_term_tail(
+    tmp_path: Path,
+):
     target = tmp_path / "memory" / "agent" / "long-term.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     original = (
@@ -579,14 +615,18 @@ def test_memory_editor_rejects_appending_checkbox_rule_to_long_term_tail(tmp_pat
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     assert result.errors[0].code == "long_term_structure_invalid"
     assert target.read_text(encoding="utf-8") == original
 
 
-def test_memory_editor_allows_replace_block_to_insert_long_term_agreement(tmp_path: Path):
+def test_memory_editor_allows_replace_block_to_insert_long_term_agreement(
+    tmp_path: Path,
+):
     target = tmp_path / "memory" / "agent" / "long-term.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     original = (
@@ -630,7 +670,9 @@ def test_memory_editor_allows_replace_block_to_insert_long_term_agreement(tmp_pa
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -638,7 +680,9 @@ def test_memory_editor_allows_replace_block_to_insert_long_term_agreement(tmp_pa
     assert "- [ ] [2026-03-21] 毓峰: 新規則要插入正確 section。" in content
 
 
-def test_memory_editor_allows_replace_block_to_insert_long_term_list_item(tmp_path: Path):
+def test_memory_editor_allows_replace_block_to_insert_long_term_list_item(
+    tmp_path: Path,
+):
     target = tmp_path / "memory" / "agent" / "long-term.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     original = (
@@ -682,7 +726,9 @@ def test_memory_editor_allows_replace_block_to_insert_long_term_list_item(tmp_pa
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -714,7 +760,9 @@ def test_memory_editor_delete_file_via_service(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -755,7 +803,9 @@ def test_memory_editor_delete_file_removes_now_empty_directory(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -797,7 +847,9 @@ def test_memory_editor_delete_file_rollback(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     # Rollback should restore the file with original content.
@@ -830,8 +882,12 @@ def test_memory_editor_delete_file_idempotent_replay(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    first = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
-    second = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    first = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
+    second = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert first.status == "ok"
     assert first.applied[0].status == "applied"
@@ -857,7 +913,9 @@ def test_apply_overwrite_replaces_existing(tmp_path: Path):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("# Old Content\nold line\n", encoding="utf-8")
 
-    operation = MemoryEditOperation(kind="overwrite", payload_text="# New Content\nnew line\n")
+    operation = MemoryEditOperation(
+        kind="overwrite", payload_text="# New Content\nnew line\n"
+    )
     result = apply_operation(target, operation, base_dir=tmp_path)
     assert result.status == "applied"
     assert target.read_text(encoding="utf-8") == "# New Content\nnew line\n"
@@ -897,7 +955,11 @@ def test_memory_editor_overwrite_via_service(tmp_path: Path):
     )
     plan = MemoryEditPlan(
         status="ok",
-        operations=[MemoryEditOperation(kind="overwrite", payload_text="# Replaced\nnew content\n")],
+        operations=[
+            MemoryEditOperation(
+                kind="overwrite", payload_text="# Replaced\nnew content\n"
+            )
+        ],
     )
     batch = MemoryEditBatch(
         as_of="2026-02-14T12:00:00+08:00",
@@ -909,7 +971,9 @@ def test_memory_editor_overwrite_via_service(tmp_path: Path):
         commit_log=SessionCommitLog(),
         planner=_StaticPlanner({"r1": plan}),
     )
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -933,11 +997,19 @@ def test_create_auto_adds_index_link(tmp_path: Path):
     plan = MemoryEditPlan(
         status="ok",
         index_description="Cooking recipes and tips",
-        operations=[MemoryEditOperation(kind="create_if_missing", payload_text="# Cooking\n")],
+        operations=[
+            MemoryEditOperation(kind="create_if_missing", payload_text="# Cooking\n")
+        ],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     index_content = (parent / "index.md").read_text(encoding="utf-8")
@@ -968,9 +1040,15 @@ def test_delete_auto_removes_index_link(tmp_path: Path):
         status="ok",
         operations=[MemoryEditOperation(kind="delete_file")],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     index_content = (parent / "index.md").read_text(encoding="utf-8")
@@ -981,11 +1059,15 @@ def test_delete_last_file_cleans_directory(tmp_path: Path):
     """Deleting the last non-index file should clean up the directory's index."""
     parent = tmp_path / "memory" / "people" / "someone"
     parent.mkdir(parents=True)
-    (parent / "index.md").write_text("# someone\n\n- [info.md](info.md)\n", encoding="utf-8")
+    (parent / "index.md").write_text(
+        "# someone\n\n- [info.md](info.md)\n", encoding="utf-8"
+    )
     (parent / "info.md").write_text("# Info\n", encoding="utf-8")
 
     grandparent_index = tmp_path / "memory" / "people" / "index.md"
-    grandparent_index.write_text("# People\n\n- [someone/](someone/)\n", encoding="utf-8")
+    grandparent_index.write_text(
+        "# People\n\n- [someone/](someone/)\n", encoding="utf-8"
+    )
 
     request = MemoryEditRequest(
         request_id="r1",
@@ -996,9 +1078,15 @@ def test_delete_last_file_cleans_directory(tmp_path: Path):
         status="ok",
         operations=[MemoryEditOperation(kind="delete_file")],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     # Directory index should be cleaned up
@@ -1022,11 +1110,19 @@ def test_create_in_new_subdir_propagates_to_grandparent_index(tmp_path: Path):
     )
     plan = MemoryEditPlan(
         status="ok",
-        operations=[MemoryEditOperation(kind="create_if_missing", payload_text="# Guide\n")],
+        operations=[
+            MemoryEditOperation(kind="create_if_missing", payload_text="# Guide\n")
+        ],
     )
-    batch = MemoryEditBatch(as_of="2026-02-27T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-27T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
 
@@ -1053,11 +1149,19 @@ def test_create_people_file_upserts_people_registry(tmp_path: Path):
     )
     plan = MemoryEditPlan(
         status="ok",
-        operations=[MemoryEditOperation(kind="create_if_missing", payload_text="# Alice\n")],
+        operations=[
+            MemoryEditOperation(kind="create_if_missing", payload_text="# Alice\n")
+        ],
     )
-    batch = MemoryEditBatch(as_of="2026-02-24T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-24T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     entries, legacy = load_people_index(people_root / "index.md")
@@ -1070,11 +1174,17 @@ def test_create_people_file_upserts_people_registry(tmp_path: Path):
 def test_delete_last_people_file_removes_people_registry_row(tmp_path: Path):
     user_dir = tmp_path / "memory" / "people" / "someone"
     user_dir.mkdir(parents=True)
-    (user_dir / "index.md").write_text("# someone\n\n- [info.md](info.md)\n", encoding="utf-8")
+    (user_dir / "index.md").write_text(
+        "# someone\n\n- [info.md](info.md)\n", encoding="utf-8"
+    )
     (user_dir / "info.md").write_text("# Info\n", encoding="utf-8")
     save_people_index(
         tmp_path / "memory" / "people" / "index.md",
-        entries=[PersonEntry(user_id="someone", display_name="Someone", last_seen="2026-02-24")],
+        entries=[
+            PersonEntry(
+                user_id="someone", display_name="Someone", last_seen="2026-02-24"
+            )
+        ],
         legacy=None,
     )
 
@@ -1087,9 +1197,15 @@ def test_delete_last_people_file_removes_people_registry_row(tmp_path: Path):
         status="ok",
         operations=[MemoryEditOperation(kind="delete_file")],
     )
-    batch = MemoryEditBatch(as_of="2026-02-24T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-24T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     entries, _legacy = load_people_index(tmp_path / "memory" / "people" / "index.md")
@@ -1099,12 +1215,11 @@ def test_delete_last_people_file_removes_people_registry_row(tmp_path: Path):
 # --- warnings tests ---
 
 
-def test_warnings_file_too_long(tmp_path: Path):
-    """Files exceeding max_lines threshold should trigger a warning."""
+def test_warnings_file_too_large_uses_default_budget_and_queues(tmp_path: Path):
+    """Files above the default character budget are queued for curation."""
     target = tmp_path / "memory" / "agent" / "recent.md"
     target.parent.mkdir(parents=True)
-    lines = ["- line %d\n" % i for i in range(80)]
-    target.write_text("".join(lines), encoding="utf-8")
+    target.write_text("a" * 1000, encoding="utf-8")
 
     request = MemoryEditRequest(
         request_id="r1",
@@ -1113,14 +1228,148 @@ def test_warnings_file_too_long(tmp_path: Path):
     )
     plan = MemoryEditPlan(
         status="ok",
-        operations=[MemoryEditOperation(kind="append_entry", payload_text="- new line\n")],
+        operations=[MemoryEditOperation(kind="append_entry", payload_text="b")],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(),
+        planner=_StaticPlanner({"r1": plan}),
+        warnings_config=MemoryEditWarningsConfig(max_chars=1000),
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
-    assert any(w.code == "file_too_long" for w in result.warnings)
+    warning = next(w for w in result.warnings if w.code == "file_too_long")
+    assert "1002 chars" in warning.detail
+    assert "budget: 1000" in warning.detail
+    assert "queued for curation" in warning.detail
+    queue = json.loads(
+        (tmp_path / "state" / "memory-curation-queue.json").read_text(encoding="utf-8")
+    )
+    assert len(queue) == 1
+    assert queue[0]["path"] == "memory/agent/recent.md"
+    assert queue[0]["chars"] == 1002
+    assert queue[0]["budget"] == 1000
+    assert queue[0]["first_seen"] == queue[0]["last_seen"]
+
+
+def test_warnings_file_too_large_uses_first_matching_budget(tmp_path: Path):
+    target = tmp_path / "memory" / "people" / "alice" / "profile.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("a" * 1500, encoding="utf-8")
+
+    request = MemoryEditRequest(
+        request_id="r1",
+        target_path="memory/people/alice/profile.md",
+        instruction="append new entry",
+    )
+    plan = MemoryEditPlan(
+        status="ok",
+        operations=[MemoryEditOperation(kind="append_entry", payload_text="b")],
+    )
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(),
+        planner=_StaticPlanner({"r1": plan}),
+        warnings_config=MemoryEditWarningsConfig(
+            max_chars=3000,
+            budgets=[
+                {"pattern": "people/", "max_chars": 1000},
+                {"pattern": "profile.md", "max_chars": 2000},
+            ],
+        ),
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
+
+    warning = next(w for w in result.warnings if w.code == "file_too_long")
+    assert "budget: 1000" in warning.detail
+    queue = json.loads(
+        (tmp_path / "state" / "memory-curation-queue.json").read_text(encoding="utf-8")
+    )
+    assert queue[0]["budget"] == 1000
+
+
+def test_warnings_ignore_skips_measurement_and_queue(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("a" * 2000, encoding="utf-8")
+
+    request = MemoryEditRequest(
+        request_id="r1",
+        target_path="memory/agent/temp-memory.md",
+        instruction="append new entry",
+    )
+    plan = MemoryEditPlan(
+        status="ok",
+        operations=[
+            MemoryEditOperation(
+                kind="append_entry",
+                payload_text="- [2026-02-22 12:00] new entry",
+            )
+        ],
+    )
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(),
+        planner=_StaticPlanner({"r1": plan}),
+        warnings_config=MemoryEditWarningsConfig(max_chars=1000),
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
+
+    assert result.warnings == []
+    assert not (tmp_path / "state" / "memory-curation-queue.json").exists()
+
+
+def test_curation_queue_upsert_deduplicates_by_path(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "recent.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("a" * 1000, encoding="utf-8")
+
+    request = MemoryEditRequest(
+        request_id="r1",
+        target_path="memory/agent/recent.md",
+        instruction="append new entry",
+    )
+    plan = MemoryEditPlan(
+        status="ok",
+        operations=[MemoryEditOperation(kind="append_entry", payload_text="b")],
+    )
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(),
+        planner=_StaticPlanner({"r1": plan}),
+        warnings_config=MemoryEditWarningsConfig(max_chars=1000),
+    )
+
+    editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    queue_path = tmp_path / "state" / "memory-curation-queue.json"
+    first = json.loads(queue_path.read_text(encoding="utf-8"))[0]
+
+    target.write_text("a" * 2000, encoding="utf-8")
+    next_batch = batch.model_copy(update={"turn_id": "t2"})
+    editor.apply_batch(next_batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+
+    assert len(queue) == 1
+    assert queue[0]["path"] == "memory/agent/recent.md"
+    assert queue[0]["chars"] == 2002
+    assert queue[0]["budget"] == first["budget"]
+    assert queue[0]["first_seen"] == first["first_seen"]
+    assert queue[0]["last_seen"] >= first["last_seen"]
 
 
 def test_warnings_possible_duplicates(tmp_path: Path):
@@ -1143,9 +1392,15 @@ def test_warnings_possible_duplicates(tmp_path: Path):
         status="ok",
         operations=[MemoryEditOperation(kind="append_entry", payload_text="- new\n")],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert any(w.code == "possible_duplicates" for w in result.warnings)
 
@@ -1164,11 +1419,21 @@ def test_warnings_not_triggered_on_overwrite(tmp_path: Path):
     )
     plan = MemoryEditPlan(
         status="ok",
-        operations=[MemoryEditOperation(kind="overwrite", payload_text="# Cleaned\n- only one line\n")],
+        operations=[
+            MemoryEditOperation(
+                kind="overwrite", payload_text="# Cleaned\n- only one line\n"
+            )
+        ],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.warnings == []
 
@@ -1188,9 +1453,15 @@ def test_result_has_warnings_field(tmp_path: Path):
         status="ok",
         operations=[MemoryEditOperation(kind="append_entry", payload_text="- entry\n")],
     )
-    batch = MemoryEditBatch(as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert isinstance(result.warnings, list)
 
@@ -1218,10 +1489,12 @@ def test_long_term_core_values_accepted(tmp_path: Path):
     """Core values section with up to 5 free-text bullets is valid."""
     target = tmp_path / "memory" / "agent" / "long-term.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    original = _make_long_term_content(core_values=[
-        "- 主動想著老公這個人",
-        "- 回覆前先想他現在怎麼了",
-    ])
+    original = _make_long_term_content(
+        core_values=[
+            "- 主動想著老公這個人",
+            "- 回覆前先想他現在怎麼了",
+        ]
+    )
     target.write_text(original, encoding="utf-8")
 
     request = MemoryEditRequest(
@@ -1235,16 +1508,19 @@ def test_long_term_core_values_accepted(tmp_path: Path):
             MemoryEditOperation(
                 kind="replace_block",
                 old_block="- 回覆前先想他現在怎麼了\n",
-                new_block=(
-                    "- 回覆前先想他現在怎麼了\n"
-                    "- 不確定的事不當事實講\n"
-                ),
+                new_block=("- 回覆前先想他現在怎麼了\n- 不確定的事不當事實講\n"),
             )
         ],
     )
-    batch = MemoryEditBatch(as_of="2026-03-27T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-03-27T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "ok"
     content = target.read_text(encoding="utf-8")
@@ -1255,9 +1531,7 @@ def test_long_term_core_values_max_exceeded(tmp_path: Path):
     """More than 5 core value items should be rejected."""
     target = tmp_path / "memory" / "agent" / "long-term.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    original = _make_long_term_content(core_values=[
-        f"- value {i}" for i in range(5)
-    ])
+    original = _make_long_term_content(core_values=[f"- value {i}" for i in range(5)])
     target.write_text(original, encoding="utf-8")
 
     request = MemoryEditRequest(
@@ -1275,9 +1549,15 @@ def test_long_term_core_values_max_exceeded(tmp_path: Path):
             )
         ],
     )
-    batch = MemoryEditBatch(as_of="2026-03-27T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-03-27T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     assert result.errors[0].code == "long_term_structure_invalid"
@@ -1314,9 +1594,15 @@ def test_long_term_missing_core_values_section_rejected(tmp_path: Path):
             )
         ],
     )
-    batch = MemoryEditBatch(as_of="2026-03-27T12:00:00+08:00", turn_id="t1", requests=[request])
-    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
-    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+    batch = MemoryEditBatch(
+        as_of="2026-03-27T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan})
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
 
     assert result.status == "failed"
     assert "核心價值" in result.errors[0].detail

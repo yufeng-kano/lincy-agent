@@ -36,6 +36,8 @@ from ..llm.schema import (
 )
 from ..memory import (
     ARTIFACT_REGISTRY_TARGET,
+    MemoryCurator,
+    check_and_archive_buffers,
     find_missing_artifact_registry_paths,
     find_missing_memory_sync_targets,
 )
@@ -226,6 +228,7 @@ class AgentCore:
         shared_state_store: SharedStateStore | None = None,
         scope_resolver: ScopeResolver | None = None,
         memory_sync_client: LLMClient | None = None,
+        memory_curator: MemoryCurator | None = None,
         conversation_compaction_client: ConversationCompactionClient | None = None,
         brain_prompt_policy: "BrainPromptPolicy | None" = None,
         copilot_runtime: "CopilotRuntime | None" = None,
@@ -240,6 +243,7 @@ class AgentCore:
     ):
         self.client = client
         self.memory_sync_client = memory_sync_client
+        self.memory_curator = memory_curator
         self.conversation = conversation
         self.builder = builder
         # Excluded tools stay hidden from both the schema and execution, so a
@@ -1391,33 +1395,53 @@ class AgentCore:
             logger.warning("Context refresh failed: %s", e)
 
     def _perform_maintenance(self) -> None:
-        """Run daily maintenance: archive -> context_refresh -> backup -> session_file_cleanup."""
+        """Run daily maintenance: archive -> curate -> context refresh -> backup -> cleanup."""
         cfg = self.config.maintenance if self.config else None
         if cfg is None or not cfg.enabled:
             return
 
         logger.info("Daily maintenance started")
         try:
-            # 1. Archive
-            _run_memory_archive(
-                self.agent_os_dir,
-                cfg.archive,
-                self.console,
-            )
+            # Curation owns temp-memory archival so a full day only leaves with
+            # its digest committed in the same maintenance run.
+            if cfg.curate.enabled and self.memory_curator is not None:
+                try:
+                    result = check_and_archive_buffers(
+                        self.agent_os_dir,
+                        cfg.archive,
+                        curate_config=cfg.curate,
+                        digest_day=self.memory_curator.digest_day,
+                    )
+                    if result.archived:
+                        self.console.print_info(f"Memory archived: {result.summary}")
+                except Exception as e:
+                    logger.warning("Maintenance temp-memory curation failed: %s", e)
+                try:
+                    self.memory_curator.curate_queue(self.agent_os_dir)
+                except Exception as e:
+                    logger.warning("Maintenance queued file curation failed: %s", e)
+            elif cfg.curate.enabled:
+                logger.warning("Memory curation is enabled but no curator is available")
+            else:
+                _run_memory_archive(
+                    self.agent_os_dir,
+                    cfg.archive,
+                    self.console,
+                )
 
-            # 2. Context refresh (compact + reload + session rotate)
+            # Context refresh (compact + reload + session rotate)
             self._perform_context_refresh(
                 preserve_turns=cfg.context_refresh.preserve_turns,
             )
 
-            # 3. Backup (force=True: maintenance always backs up regardless of interval)
+            # Backup (force=True: maintenance always backs up regardless of interval)
             if cfg.backup.enabled and self.memory_backup_mgr:
                 try:
                     self.memory_backup_mgr.check_and_backup(force=True)
                 except Exception as e:
                     logger.warning("Maintenance backup failed: %s", e)
 
-            # 4. Session file cleanup
+            # Session file cleanup
             if cfg.session_file_cleanup.enabled and self.agent_os_dir:
                 try:
                     from ..session.cleanup import cleanup_sessions

@@ -166,7 +166,7 @@ def test_context_config_boot_files_as_tool_use_live_memory_only():
     ]
 
 
-def test_memory_edit_warning_ignore_defaults_match_live_structure():
+def test_memory_edit_warning_defaults_match_live_structure():
     config = AppConfig.model_validate(
         {
             "agents": {
@@ -176,11 +176,85 @@ def test_memory_edit_warning_ignore_defaults_match_live_structure():
             }
         }
     )
-    assert config.tools.memory_edit.warnings.ignore == [
+    warnings = config.tools.memory_edit.warnings
+    assert warnings.max_chars == 10000
+    assert warnings.budgets == []
+    assert warnings.ignore == [
         "temp-memory.md",
         "index.md",
         "archive/",
     ]
+
+
+def test_maintenance_curation_defaults_and_strict_validation():
+    config = AppConfig.model_validate(
+        {
+            "agents": {
+                "brain": {
+                    "llm": _ollama_llm(),
+                }
+            }
+        }
+    )
+    curate = config.maintenance.curate
+    assert curate.enabled is True
+    assert curate.digest_retain_days == 14
+    assert curate.digest_max_chars == 1200
+
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {
+                "maintenance": {"curate": {"unknown": True}},
+                "agents": {"brain": {"llm": _ollama_llm()}},
+            }
+        )
+
+
+def test_memory_edit_warning_budget_overrides_are_strict():
+    config = AppConfig.model_validate(
+        {
+            "tools": {
+                "memory_edit": {
+                    "warnings": {
+                        "max_chars": 12000,
+                        "budgets": [
+                            {
+                                "pattern": "people/",
+                                "max_chars": 2000,
+                            }
+                        ],
+                    }
+                }
+            },
+            "agents": {
+                "brain": {
+                    "llm": _ollama_llm(),
+                }
+            },
+        }
+    )
+    warnings = config.tools.memory_edit.warnings
+    assert warnings.max_chars == 12000
+    assert warnings.budgets[0].pattern == "people/"
+    assert warnings.budgets[0].max_chars == 2000
+
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {
+                "tools": {
+                    "memory_edit": {
+                        "warnings": {
+                            "max_lines": 150,
+                        }
+                    }
+                },
+                "agents": {
+                    "brain": {
+                        "llm": _ollama_llm(),
+                    }
+                },
+            }
+        )
 
 
 def test_tools_config_defaults():
