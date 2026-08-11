@@ -329,6 +329,8 @@ class UiEventConsole:
         if replay_turns is not None:
             turns = turns[-replay_turns:]
         for turn in turns:
+            if turn[0].role != "user":
+                continue
             user_entry = turn[0]
             user_content = (
                 content_to_text(user_entry.content)

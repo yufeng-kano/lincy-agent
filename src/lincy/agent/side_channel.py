@@ -47,13 +47,17 @@ def run_side_channel_tool_loop(
             console.print_tool_call(tool_call)
             result = execute_fn(tool_call)
             if result is None:
-                continue
-            console.print_tool_result(tool_call, result.content)
+                result_content = (
+                    f"Error: Tool '{tool_call.name}' is unavailable in this side channel"
+                )
+            else:
+                result_content = result.content
+            console.print_tool_result(tool_call, result_content)
             messages.append(
                 make_tool_result_message(
                     tool_call_id=tool_call.id,
                     name=tool_call.name,
-                    content=result.content,
+                    content=result_content,
                 )
             )
     return response

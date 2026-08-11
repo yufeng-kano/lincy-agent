@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -25,12 +27,20 @@ def load_json(path: Path, *, default: Any) -> Any:
 def save_json(path: Path, data: Any) -> None:
     """Atomically replace a JSON store so interruption cannot corrupt it."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
     )
-    temporary.replace(path)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def parse_datetime(value: str | None, timezone) -> datetime | None:

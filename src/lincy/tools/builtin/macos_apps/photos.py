@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from .notes_template import _applescript_utf8_file_read
 from .runtime import *
 
 PHOTOS_TOOL_DEFINITION = ToolDefinition(
