@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from lincy.core import config as config_module
@@ -359,3 +360,24 @@ def test_missing_override_is_a_no_op(monkeypatch, tmp_path: Path):
 
     config = config_module.load_config("agent.yaml")
     assert config.agents["brain"].llm.model == "gpt-4o"
+
+
+def test_empty_override_is_a_silent_no_op(monkeypatch, tmp_path: Path, caplog):
+    _write_base_agent_config(tmp_path)
+    (tmp_path / "agent.override.yaml").write_text("")
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.model == "gpt-4o"
+    assert "Applied agent.override.yaml" not in caplog.text
+
+
+@pytest.mark.parametrize("payload", [[], False])
+def test_falsey_non_mapping_override_raises(monkeypatch, tmp_path: Path, payload):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(tmp_path / "agent.override.yaml", payload)
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit, match="must contain a YAML mapping"):
+        config_module.load_config("agent.yaml")

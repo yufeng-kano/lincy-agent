@@ -138,7 +138,7 @@ def load_raw_agent_config(
         return raw
 
     override = _load_yaml(override_path)
-    if not override:
+    if override is None:
         return raw
     if not isinstance(override, dict):
         raise SystemExit(f"Config error: {override_path} must contain a YAML mapping")
