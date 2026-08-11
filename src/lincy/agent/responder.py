@@ -19,12 +19,13 @@ from .turn_context import ProactiveTurnYield
 
 from ..context import ContextBuilder, Conversation
 from ..context.cache_breakpoints import advance_cache_breakpoint
-from ..core.schema import AppConfig, ToolsConfig
+from ..core.schema import AppConfig
 from ..llm import LLMResponse
 from ..llm.base import LLMClient
 from ..llm.schema import ContentPart, Message, ToolCall, ToolDefinition
 from ..memory import is_failed_memory_edit_result, summarize_memory_edit_failure
-from ..tools import ToolRegistry, is_claude_code_stream_json_command
+from ..tools import ToolRegistry
+from .tool_setup import should_skip_tool_spinner
 from .run_helpers import (
     _debug_print_responder_output,
     _emit_reasoning_block_if_needed,
@@ -504,27 +505,30 @@ def _run_responder(
     on_model_response: Callable[[LLMResponse], None] | None = None,
     thinking_channel: str | None = None,
     thinking_sender: str | None = None,
-    tools_config: ToolsConfig | None = None,
     skill_registry: "SkillGovernanceRegistry | None" = None,
     turn_context: "TurnContext | None" = None,
     check_preempt: Callable[[], bool] | None = None,
     max_preempts: int = 2,
 ) -> LLMResponse:
     """Run responder with the tool-call loop and return the final response."""
+    def _call_model(call_messages: list[Message]) -> LLMResponse:
+        _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
+        with console.spinner():
+            model_response = client.chat_with_tools(call_messages, tools)
+        if on_model_response is not None:
+            on_model_response(model_response)
+        _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
+        _debug_print_responder_output(console, model_response, label="responder")
+        _emit_reasoning_block_if_needed(
+            console,
+            model_response,
+            channel=thinking_channel,
+            sender=thinking_sender,
+        )
+        return model_response
+
     messages = _prepare_turn_call_messages(messages, message_overlay)
-    _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
-    with console.spinner():
-        response = client.chat_with_tools(messages, tools)
-    if on_model_response is not None:
-        on_model_response(response)
-    _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
-    _debug_print_responder_output(console, response, label="responder")
-    _emit_reasoning_block_if_needed(
-        console,
-        response,
-        channel=thinking_channel,
-        sender=thinking_sender,
-    )
+    response = _call_model(messages)
 
     memory_edit_turn_fail_streak = 0
     preempt_count = 0
@@ -569,25 +573,7 @@ def _run_responder(
             tool_results_this_round = deferred_results
             messages = builder.build(conversation)
             messages = _prepare_turn_call_messages(messages, message_overlay)
-            _raise_if_cancel_requested(
-                is_cancel_requested,
-                on_pending=on_cancel_pending,
-            )
-            with console.spinner():
-                response = client.chat_with_tools(messages, tools)
-            if on_model_response is not None:
-                on_model_response(response)
-            _raise_if_cancel_requested(
-                is_cancel_requested,
-                on_pending=on_cancel_pending,
-            )
-            _debug_print_responder_output(console, response, label="responder")
-            _emit_reasoning_block_if_needed(
-                console,
-                response,
-                channel=thinking_channel,
-                sender=thinking_sender,
-            )
+            response = _call_model(messages)
             continue
 
         # Split tool calls into concurrent-safe and sequential.
@@ -728,15 +714,10 @@ def _run_responder(
                 tool_results_this_round[tool_call.id] = result
                 continue
 
-            shell_command = tool_call.arguments.get("command")
-            skip_spinner = (
-                tool_call.name == "gui_task"
-                or (
-                    tool_call.name == "execute_shell"
-                    and console.show_tool_use
-                    and isinstance(shell_command, str)
-                    and is_claude_code_stream_json_command(shell_command)
-                )
+            skip_spinner = should_skip_tool_spinner(
+                tool_call.name,
+                tool_call.arguments,
+                show_tool_use=console.show_tool_use,
             )
             if skip_spinner:
                 result = registry.execute(tool_call)
@@ -832,19 +813,7 @@ def _run_responder(
         messages = _advance_responder_cache_breakpoint(messages)
         if message_overlay is not None:
             messages = message_overlay(messages)
-        _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
-        with console.spinner():
-            response = client.chat_with_tools(messages, tools)
-        if on_model_response is not None:
-            on_model_response(response)
-        _raise_if_cancel_requested(is_cancel_requested, on_pending=on_cancel_pending)
-        _debug_print_responder_output(console, response, label="responder")
-        _emit_reasoning_block_if_needed(
-            console,
-            response,
-            channel=thinking_channel,
-            sender=thinking_sender,
-        )
+        response = _call_model(messages)
 
     return response
 
@@ -879,11 +848,6 @@ def _run_brain_responder(
     max_preempts: int = 2,
 ) -> LLMResponse:
     """Run the brain responder, optionally using staged planning."""
-    tools_cfg = (
-        config.tools
-        if isinstance(getattr(config, "tools", None), ToolsConfig)
-        else None
-    )
     if run_responder_fn is None:
         run_responder_fn = _run_responder
     messages = _maybe_inject_proactive_skill_guides(
@@ -895,12 +859,25 @@ def _run_brain_responder(
         skill_check_agent=skill_check_agent,
     )
 
-    brain_cfg = config.agents.get("brain")
-    staged = getattr(brain_cfg, "staged_planning", None)
-    batch_guidance_enabled = bool(
-        getattr(config.features.send_message_batch_guidance, "enabled", False)
+    responder_kwargs = dict(
+        on_before_tool_call=on_before_tool_call,
+        memory_edit_allow_failure=memory_edit_allow_failure,
+        max_iterations=max_iterations,
+        memory_edit_turn_retry_limit=memory_edit_turn_retry_limit,
+        is_cancel_requested=is_cancel_requested,
+        on_cancel_pending=on_cancel_pending,
+        on_model_response=on_model_response,
+        thinking_channel=channel,
+        thinking_sender=sender,
+        skill_registry=skill_registry,
+        turn_context=turn_context,
+        check_preempt=check_preempt,
+        max_preempts=max_preempts,
     )
-    if staged is None or not staged.enabled:
+
+    def run_responder_with_overlay(
+        overlay: Callable[[list[Message]], list[Message]] | None,
+    ) -> LLMResponse:
         return run_responder_fn(
             client,
             messages,
@@ -909,22 +886,17 @@ def _run_brain_responder(
             builder,
             registry,
             console,
-            on_before_tool_call=on_before_tool_call,
-            memory_edit_allow_failure=memory_edit_allow_failure,
-            max_iterations=max_iterations,
-            memory_edit_turn_retry_limit=memory_edit_turn_retry_limit,
-            is_cancel_requested=is_cancel_requested,
-            on_cancel_pending=on_cancel_pending,
-            message_overlay=message_overlay,
-            on_model_response=on_model_response,
-            thinking_channel=channel,
-            thinking_sender=sender,
-            tools_config=tools_cfg,
-            skill_registry=skill_registry,
-            turn_context=turn_context,
-            check_preempt=check_preempt,
-            max_preempts=max_preempts,
+            message_overlay=overlay,
+            **responder_kwargs,
         )
+
+    brain_cfg = config.agents.get("brain")
+    staged = getattr(brain_cfg, "staged_planning", None)
+    batch_guidance_enabled = bool(
+        getattr(config.features.send_message_batch_guidance, "enabled", False)
+    )
+    if staged is None or not staged.enabled:
+        return run_responder_with_overlay(message_overlay)
 
     def raise_cancel() -> None:
         _raise_if_cancel_requested(
@@ -998,30 +970,7 @@ def _run_brain_responder(
                 "Stage 2 planning failed; falling back to legacy responder loop.",
                 indent=2,
             )
-            return run_responder_fn(
-                client,
-                messages,
-                tools,
-                conversation,
-                builder,
-                registry,
-                console,
-                on_before_tool_call=on_before_tool_call,
-                memory_edit_allow_failure=memory_edit_allow_failure,
-                max_iterations=max_iterations,
-                memory_edit_turn_retry_limit=memory_edit_turn_retry_limit,
-                is_cancel_requested=is_cancel_requested,
-                on_cancel_pending=on_cancel_pending,
-                message_overlay=message_overlay,
-                on_model_response=on_model_response,
-                thinking_channel=channel,
-                thinking_sender=sender,
-                tools_config=tools_cfg,
-                skill_registry=skill_registry,
-                turn_context=turn_context,
-                check_preempt=check_preempt,
-                max_preempts=max_preempts,
-            )
+            return run_responder_with_overlay(message_overlay)
     except KeyboardInterrupt:
         raise
     except Exception as error:
@@ -1031,30 +980,7 @@ def _run_brain_responder(
             f"{_surface_error_message(error)}",
             indent=2,
         )
-        return run_responder_fn(
-            client,
-            messages,
-            tools,
-            conversation,
-            builder,
-            registry,
-            console,
-            on_before_tool_call=on_before_tool_call,
-            memory_edit_allow_failure=memory_edit_allow_failure,
-            max_iterations=max_iterations,
-            memory_edit_turn_retry_limit=memory_edit_turn_retry_limit,
-            is_cancel_requested=is_cancel_requested,
-            on_cancel_pending=on_cancel_pending,
-            message_overlay=message_overlay,
-            on_model_response=on_model_response,
-            thinking_channel=channel,
-            thinking_sender=sender,
-            tools_config=tools_cfg,
-            skill_registry=skill_registry,
-            turn_context=turn_context,
-            check_preempt=check_preempt,
-            max_preempts=max_preempts,
-        )
+        return run_responder_with_overlay(message_overlay)
 
     plan_text = format_stage2_plan_for_tui(stage2.plan_text)
     console.print_inner_thoughts(channel, sender, f"[PLAN][Stage2]\n{plan_text}")
@@ -1069,30 +995,7 @@ def _run_brain_responder(
     stage3_overlay = _compose_message_overlays(message_overlay, stage3_extra)
 
     console.print_info("Stage 3/3: execute")
-    return run_responder_fn(
-        client,
-        messages,
-        tools,
-        conversation,
-        builder,
-        registry,
-        console,
-        on_before_tool_call=on_before_tool_call,
-        memory_edit_allow_failure=memory_edit_allow_failure,
-        max_iterations=max_iterations,
-        memory_edit_turn_retry_limit=memory_edit_turn_retry_limit,
-        is_cancel_requested=is_cancel_requested,
-        on_cancel_pending=on_cancel_pending,
-        message_overlay=stage3_overlay,
-        on_model_response=on_model_response,
-        thinking_channel=channel,
-        thinking_sender=sender,
-        tools_config=tools_cfg,
-        skill_registry=skill_registry,
-        turn_context=turn_context,
-        check_preempt=check_preempt,
-        max_preempts=max_preempts,
-    )
+    return run_responder_with_overlay(stage3_overlay)
 
 
 def _build_common_ground_overlay(

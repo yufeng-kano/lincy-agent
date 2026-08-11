@@ -19,6 +19,7 @@ import httpx
 from ..contact_map import ContactMap
 from ..discord_history import DiscordHistoryStore
 from ..schema import InboundMessage, OutboundMessage
+from .formatting import format_attachment_lines
 
 if TYPE_CHECKING:
     from ..core import AgentCore
@@ -1066,29 +1067,7 @@ class DiscordAdapter:
         *,
         indent: str = "",
     ) -> None:
-        if not attachments:
-            return
-        lines.append(f"{indent}[Attachments]")
-        detail_prefix = f"{indent}  "
-        for att in attachments:
-            name = att.get("filename") or "file"
-            ctype = att.get("content_type") or "unknown"
-            local_path = att.get("local_path")
-            url = att.get("url")
-            line = f"{indent}- {name} ({ctype})"
-            if local_path:
-                line += f" -> {local_path}"
-            elif att.get("download_note"):
-                line += f" [{att['download_note']}]"
-            lines.append(line)
-            if not local_path and url:
-                lines.append(f"{detail_prefix}url: {url}")
-            if att.get("image_summary"):
-                lines.append(f"{detail_prefix}image_summary: {att['image_summary']}")
-            elif att.get("needs_summary") and local_path:
-                lines.append(
-                    f"{detail_prefix}image_summary: [pending] Use read_image_by_subagent on {local_path}"
-                )
+        lines.extend(format_attachment_lines(attachments, indent=indent))
 
     async def _download_attachment(
         self,
@@ -1422,6 +1401,8 @@ class DiscordAdapter:
             "message_id": latest.get("message_id"),
             "author_id": latest.get("author_id"),
             "source": source,
+            "review_turn": True,
+            "evict_if_noop": True,
             "batch_seq_from": after_seq + 1,
             "batch_seq_to": max_seq,
         }
@@ -1441,12 +1422,6 @@ class DiscordAdapter:
         )
         self._agent.enqueue(inbound)
         self._history.mark_reviewed(channel_id, seq=max_seq, immediate=immediate)
-
-    def _append_media_hints(self, lines: list[str], snapshot: dict[str, Any], *, is_dm: bool) -> None:
-        atts = snapshot.get("attachments") or []
-        if atts:
-            self._append_attachment_lines(lines, atts)
-            self._append_image_hint_only(lines, snapshot, is_dm=is_dm)
 
     def _append_image_hint_only(self, lines: list[str], snapshot: dict[str, Any], *, is_dm: bool) -> None:
         atts = snapshot.get("attachments") or []

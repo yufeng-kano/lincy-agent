@@ -18,6 +18,7 @@ from ..agent.queue import PersistentPriorityQueue
 from ..agent.scope import DEFAULT_SCOPE_RESOLVER
 from ..agent.shared_state import load_or_init as load_shared_state_cache
 from ..agent.shared_state_replay import rebuild_shared_state_from_sessions
+from ..agent.ui_event_console import UiEventConsole
 from ..agent.ui_event_stream import FanoutUiSink, UiEventExportSink, UiEventStore
 from ..brain_prompt_policy import BrainPromptPolicy
 from ..context import ContextBuilder, Conversation
@@ -53,7 +54,6 @@ from ..tui import (
     ChatTextualApp,
     QueueUiSink,
     TextualController,
-    TextualUiConsole,
     TurnCancelController,
     UiSink,
 )
@@ -217,7 +217,7 @@ def main(user: str, resume: str | None = None) -> None:
 
     # Check workspace initialization
     workspace = WorkspaceManager(agent_os_dir)
-    console = TextualUiConsole(sink_for_agents)
+    console = UiEventConsole(sink_for_agents)
 
     if not workspace.is_initialized():
         _emit_pre_tui_message(
@@ -342,6 +342,43 @@ def main(user: str, resume: str | None = None) -> None:
 
         return _factory
 
+    def _build_subagent_client(
+        name: str,
+        agent_config,
+        *,
+        dispatch_mode: str = "always_agent",
+        cache_retention: str | None = None,
+        session_debug_label: str | None = None,
+    ):
+        """Build an agent client with its cache namespace and optional debug sink."""
+        client = create_agent_client(
+            agent_config,
+            retry_label=name,
+            provider_kwargs_factory=_provider_kwargs_factory(
+                dispatch_mode=dispatch_mode,
+                cache_retention=cache_retention,
+                cache_enabled=agent_config.cache.enabled,
+                cache_ttl=agent_config.cache.ttl,
+                cache_namespace=name,
+            ),
+        )
+        if session_debug_label is not None and session_mgr is not None:
+            client = wrap_llm_client_with_session_debug(
+                client,
+                sink=session_mgr,
+                client_label=session_debug_label,
+                provider=getattr(agent_config.llm, "provider", None),
+                model=getattr(agent_config.llm, "model", None),
+            )
+        return client
+
+    def _load_agent_prompt(name: str) -> str | None:
+        """Load an optional subagent prompt without disabling the main CLI."""
+        try:
+            return workspace.get_system_prompt(name)
+        except FileNotFoundError:
+            return None
+
     brain_agent_config = config.agents["brain"]
 
     # Compute OpenAI cache retention early so it can be passed to client creation.
@@ -353,28 +390,18 @@ def main(user: str, resume: str | None = None) -> None:
     ):
         _brain_cache_retention = "24h"
 
-    client = create_agent_client(
+    client = _build_subagent_client(
+        "brain",
         brain_agent_config,
-        retry_label="brain",
-        provider_kwargs_factory=_provider_kwargs_factory(
-            dispatch_mode="first_user_then_agent",
-            cache_retention=_brain_cache_retention,
-            cache_enabled=brain_agent_config.cache.enabled,
-            cache_ttl=brain_agent_config.cache.ttl,
-            cache_namespace="brain",
-        ),
+        dispatch_mode="first_user_then_agent",
+        cache_retention=_brain_cache_retention,
     )
     memory_sync_client = None
     if getattr(brain_agent_config.llm, "provider", "") == "openrouter":
-        memory_sync_client = create_agent_client(
+        memory_sync_client = _build_subagent_client(
+            "memory_sync",
             brain_agent_config,
-            retry_label="memory_sync",
-            provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode="first_user_then_agent",
-                cache_enabled=brain_agent_config.cache.enabled,
-                cache_ttl=brain_agent_config.cache.ttl,
-                cache_namespace="memory_sync",
-            ),
+            dispatch_mode="first_user_then_agent",
         )
 
     if "memory_editor" not in config.agents:
@@ -394,25 +421,10 @@ def main(user: str, resume: str | None = None) -> None:
         )
         return
 
-    memory_editor_client = create_agent_client(
-        memory_editor_config,
-        retry_label="memory_editor",
-        provider_kwargs_factory=_provider_kwargs_factory(
-            dispatch_mode="always_agent",
-            cache_enabled=memory_editor_config.cache.enabled,
-            cache_ttl=memory_editor_config.cache.ttl,
-            cache_namespace="memory_editor",
-        ),
-    )
-
-    try:
-        memory_editor_prompt = workspace.get_system_prompt("memory_editor")
-    except FileNotFoundError as e:
-        _emit_pre_tui_message(
-            console,
-            "error",
-            f"Failed to load memory_editor prompt: {e}",
-        )
+    memory_editor_client = _build_subagent_client("memory_editor", memory_editor_config)
+    memory_editor_prompt = _load_agent_prompt("memory_editor")
+    if memory_editor_prompt is None:
+        _emit_pre_tui_message(console, "error", "Failed to load memory_editor prompt")
         return
 
     memory_editor_parse_retry: str | None = None
@@ -614,18 +626,9 @@ def main(user: str, resume: str | None = None) -> None:
     )
     if _need_vision_agent and "vision" in config.agents and config.agents["vision"].enabled:
         vision_config = config.agents["vision"]
-        vision_client = create_agent_client(
-            vision_config,
-            retry_label="vision",
-            provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode="always_agent",
-                cache_enabled=vision_config.cache.enabled,
-                cache_ttl=vision_config.cache.ttl,
-                cache_namespace="vision",
-            ),
-        )
-        try:
-            vision_prompt = workspace.get_system_prompt("vision")
+        vision_client = _build_subagent_client("vision", vision_config)
+        vision_prompt = _load_agent_prompt("vision")
+        if vision_prompt is not None:
             model_fingerprint = json.dumps(
                 vision_config.llm.model_dump(mode="json"),
                 ensure_ascii=False,
@@ -637,37 +640,19 @@ def main(user: str, resume: str | None = None) -> None:
                 cache_dir=agent_os_dir / "cache" / "vision",
                 model_fingerprint=model_fingerprint,
             )
-        except FileNotFoundError:
-            pass
 
     skill_check_agent_instance: SkillCheckAgent | None = None
     skill_check_config = config.agents.get("skill_checker")
     if skill_check_config and skill_check_config.enabled:
-        skill_check_client = create_agent_client(
-            skill_check_config,
-            retry_label="skill_checker",
-            provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode="always_agent",
-                cache_enabled=skill_check_config.cache.enabled,
-                cache_ttl=skill_check_config.cache.ttl,
-                cache_namespace="skill_checker",
-            ),
+        skill_check_client = _build_subagent_client(
+            "skill_checker", skill_check_config, session_debug_label="skill_check"
         )
-        skill_check_client = wrap_llm_client_with_session_debug(
-            skill_check_client,
-            sink=session_mgr,
-            client_label="skill_check",
-            provider=getattr(skill_check_config.llm, "provider", None),
-            model=getattr(skill_check_config.llm, "model", None),
-        )
-        try:
-            skill_check_prompt = workspace.get_system_prompt("skill_checker")
+        skill_check_prompt = _load_agent_prompt("skill_checker")
+        if skill_check_prompt is not None:
             skill_check_agent_instance = SkillCheckAgent(
                 skill_check_client,
                 skill_check_prompt,
             )
-        except FileNotFoundError:
-            pass
 
     # Conscience agent initialization (post-turn tool-use auditor)
     from lincy.agent.conscience import ConscienceAgent
@@ -675,22 +660,8 @@ def main(user: str, resume: str | None = None) -> None:
     conscience_agent_instance: ConscienceAgent | None = None
     conscience_config = config.agents.get("conscience")
     if conscience_config and conscience_config.enabled:
-        conscience_client = create_agent_client(
-            conscience_config,
-            retry_label="conscience",
-            provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode="always_agent",
-                cache_enabled=conscience_config.cache.enabled,
-                cache_ttl=conscience_config.cache.ttl,
-                cache_namespace="conscience",
-            ),
-        )
-        conscience_client = wrap_llm_client_with_session_debug(
-            conscience_client,
-            sink=session_mgr,
-            client_label="conscience",
-            provider=getattr(conscience_config.llm, "provider", None),
-            model=getattr(conscience_config.llm, "model", None),
+        conscience_client = _build_subagent_client(
+            "conscience", conscience_config, session_debug_label="conscience"
         )
         conscience_agent_instance = ConscienceAgent(conscience_client)
 
@@ -699,23 +670,11 @@ def main(user: str, resume: str | None = None) -> None:
     gui_worker_instance: GUIWorker | None = None
     if "gui_manager" in config.agents and config.agents["gui_manager"].enabled:
         gm_config = config.agents["gui_manager"]
-        gm_client = create_agent_client(
-            gm_config,
-            retry_label="gui_manager",
-            provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode="always_agent",
-                cache_enabled=gm_config.cache.enabled,
-                cache_ttl=gm_config.cache.ttl,
-                cache_namespace="gui_manager",
-            ),
-        )
+        gm_client = _build_subagent_client("gui_manager", gm_config)
         from ..gui.ax_runtime import AXRuntimeError, ensure_binary
         from ..gui.mcp_client import MCPStdioClient
 
-        try:
-            gm_prompt = workspace.get_system_prompt("gui_manager")
-        except FileNotFoundError:
-            gm_prompt = ""
+        gm_prompt = _load_agent_prompt("gui_manager") or ""
         ax_binary: str | None = None
         if gm_prompt:
             try:
@@ -743,13 +702,7 @@ def main(user: str, resume: str | None = None) -> None:
                     tool_call, result, step, max_steps,
                     elapsed_sec, total_elapsed_sec,
                     worker_timing=worker_timing,
-                    instruction_max_chars=gm_config.gui_instruction_max_chars,
-                    text_max_chars=gm_config.gui_text_max_chars,
-                    worker_result_max_chars=gm_config.gui_worker_result_max_chars,
-                    result_max_chars=gm_config.gui_result_max_chars,
                 )
-
-            console.gui_intent_max_chars = gm_config.gui_intent_max_chars
             _ax_bin = ax_binary
             _ax_timeout = gm_config.ax.tool_timeout
             gui_manager_instance = GUIManager(
@@ -783,16 +736,7 @@ def main(user: str, resume: str | None = None) -> None:
         # screenshot_by_subagent; the manager loop no longer uses it.
         gw_config = config.agents.get("gui_worker")
         if gw_config and gw_config.enabled:
-            gw_client = create_agent_client(
-                gw_config,
-                retry_label="gui_worker",
-                provider_kwargs_factory=_provider_kwargs_factory(
-                    dispatch_mode="always_agent",
-                    cache_enabled=gw_config.cache.enabled,
-                    cache_ttl=gw_config.cache.ttl,
-                    cache_namespace="gui_worker",
-                ),
-            )
+            gw_client = _build_subagent_client("gui_worker", gw_config)
             try:
                 gw_prompt = workspace.get_system_prompt("gui_worker")
                 gw_layout_prompt = workspace.get_agent_prompt("gui_worker", "layout")
@@ -875,22 +819,10 @@ def main(user: str, resume: str | None = None) -> None:
         _wf_agent_key = "web_fetch_summarizer"
         _wf_agent_cfg = config.agents.get(_wf_agent_key)
         if _wf_agent_cfg is not None and _wf_agent_cfg.enabled:
-            _wf_summarizer = create_agent_client(
+            _wf_summarizer = _build_subagent_client(
+                "web_fetch_summarizer",
                 _wf_agent_cfg,
-                retry_label="web_fetch_summarizer",
-                provider_kwargs_factory=_provider_kwargs_factory(
-                    dispatch_mode="always_agent",
-                    cache_enabled=_wf_agent_cfg.cache.enabled,
-                    cache_ttl=_wf_agent_cfg.cache.ttl,
-                    cache_namespace="web_fetch_summarizer",
-                ),
-            )
-            _wf_summarizer = wrap_llm_client_with_session_debug(
-                _wf_summarizer,
-                sink=session_mgr,
-                client_label="web_fetch_summarizer",
-                provider=getattr(_wf_agent_cfg.llm, "provider", None),
-                model=getattr(_wf_agent_cfg.llm, "model", None),
+                session_debug_label="web_fetch_summarizer",
             )
 
     _on_shell_line = console.print_shell_stream_line
@@ -970,7 +902,6 @@ def main(user: str, resume: str | None = None) -> None:
         ui_debug=debug,
         ui_show_tool_use=config.tui.show_tool_use,
         ui_timezone=timezone,
-        ui_gui_intent_max_chars=getattr(console, "gui_intent_max_chars", None),
         task_store=task_store,
         note_store=note_store,
         skill_check_agent=skill_check_agent_instance,
@@ -1164,21 +1095,14 @@ def main(user: str, resume: str | None = None) -> None:
     worker_config = config.agents.get("worker")
     if worker_config is not None and worker_config.enabled:
         from ..agent.tool_setup import build_worker_file_tools
-        from ..llm.agent_factory import create_agent_client as _create_worker_client
         from ..worker import WORKER_TOOL_DEFINITION, WorkerRunner, create_worker_tool
         from ..worker.tool_adapter import WorkerCounter
 
-        _worker_client = _create_worker_client(
-            worker_config,
-            retry_label="worker",
-            provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode="always_agent",
-                cache_enabled=worker_config.cache.enabled,
-                cache_ttl=worker_config.cache.ttl,
-                cache_namespace="worker",
-            ),
-        )
-        _worker_prompt = workspace.get_system_prompt("worker")
+        _worker_client = _build_subagent_client("worker", worker_config)
+        _worker_prompt = _load_agent_prompt("worker")
+        if _worker_prompt is None:
+            _emit_pre_tui_message(console, "error", "Failed to load worker prompt")
+            return
         _worker_cache_ctrl = build_cache_control(
             resolve_breakpoint_cache_ttl(
                 provider=getattr(worker_config.llm, "provider", ""),

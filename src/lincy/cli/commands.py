@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import TYPE_CHECKING, Callable
 
-from .console import ChatConsole
+from ..agent.ui_event_console import AgentUiPort
 
 if TYPE_CHECKING:
     from ..tools.builtin.shell_task import ShellTaskManager
@@ -20,7 +20,7 @@ class CommandResult(Enum):
 class CommandHandler:
     """Handler for slash commands."""
 
-    def __init__(self, console: ChatConsole) -> None:
+    def __init__(self, console: AgentUiPort) -> None:
         self._console = console
         self._shell_task_manager: ShellTaskManager | None = None
         self._commands: dict[str, tuple[Callable[[str], CommandResult], str]] = {

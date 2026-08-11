@@ -98,30 +98,11 @@ class SkillGovernanceRegistry:
     def _snapshot_skill_mtimes(self) -> dict[str, float]:
         """Collect mtime of every SKILL.md across all roots."""
         mtimes: dict[str, float] = {}
-        roots = self._get_root_paths()
-        for root, is_external in roots:
-            if not root.exists():
-                continue
-            for child in root.iterdir():
-                if not child.is_dir():
-                    continue
-                skill_md = child / SKILL_ENTRY_FILE
-                if skill_md.exists():
-                    try:
-                        mtimes[str(skill_md)] = skill_md.stat().st_mtime
-                    except OSError:
-                        pass
-                # For external root, also check one level deeper
-                if is_external:
-                    for grandchild in child.iterdir():
-                        if not grandchild.is_dir():
-                            continue
-                        nested_md = grandchild / SKILL_ENTRY_FILE
-                        if nested_md.exists():
-                            try:
-                                mtimes[str(nested_md)] = nested_md.stat().st_mtime
-                            except OSError:
-                                pass
+        for skill_md in _iter_skill_entry_files(self._get_root_paths()):
+            try:
+                mtimes[str(skill_md)] = skill_md.stat().st_mtime
+            except OSError:
+                pass
         return mtimes
 
     def _get_root_paths(self) -> list[tuple[Path, bool]]:
@@ -397,6 +378,32 @@ def build_skill_deferral_text(
 # Internal: scanning and loading
 # ---------------------------------------------------------------------------
 
+def _iter_skill_entry_files(roots: list[tuple[Path, bool]]):
+    """Yield skill entry files, including one package level for external roots."""
+    for root, is_external in roots:
+        if not root.exists():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            skill_md = child / SKILL_ENTRY_FILE
+            meta_yaml = child / SKILL_METADATA_FILE
+            if skill_md.exists():
+                yield skill_md
+            elif meta_yaml.exists():
+                yield meta_yaml
+            if is_external:
+                for grandchild in sorted(child.iterdir()):
+                    if not grandchild.is_dir():
+                        continue
+                    nested_md = grandchild / SKILL_ENTRY_FILE
+                    nested_meta = grandchild / SKILL_METADATA_FILE
+                    if nested_md.exists():
+                        yield nested_md
+                    elif nested_meta.exists():
+                        yield nested_meta
+
+
 def _scan_skill_root(
     agent_os_dir: Path,
     root: Path,
@@ -404,24 +411,15 @@ def _scan_skill_root(
     *,
     is_external: bool = False,
 ) -> None:
-    """Scan a skill root for direct-child skill directories."""
-    for child in sorted(root.iterdir()):
-        if not child.is_dir():
-            continue
-        registered = _load_skill_from_dir(agent_os_dir, child, is_external=is_external)
-        if registered is None:
-            # For external root, also check one level deeper
-            if is_external:
-                for grandchild in sorted(child.iterdir()):
-                    if not grandchild.is_dir():
-                        continue
-                    nested = _load_skill_from_dir(
-                        agent_os_dir, grandchild, is_external=True,
-                    )
-                    if nested is not None:
-                        _register_skill(skills, nested)
-            continue
-        _register_skill(skills, registered)
+    """Scan one root using the same entry discovery as hot reload."""
+    for skill_md in _iter_skill_entry_files([(root, is_external)]):
+        registered = _load_skill_from_dir(
+            agent_os_dir,
+            skill_md.parent,
+            is_external=is_external,
+        )
+        if registered is not None:
+            _register_skill(skills, registered)
 
 
 def _register_skill(

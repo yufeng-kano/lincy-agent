@@ -1,9 +1,15 @@
 """Tests for macOS personal-app tool helpers."""
 
 import base64
+import builtins
+import dis
 from datetime import datetime
+import importlib
 import json
+import pkgutil
 from pathlib import Path
+import subprocess
+from types import CodeType
 from unittest.mock import MagicMock
 
 import pytest
@@ -518,6 +524,65 @@ def _make_bridge(tmp_path: Path) -> MacOSAppBridge:
         max_search_results=10,
         photos_export_dir="tmp/photos-exports",
     )
+
+
+def test_run_jxa_json_slow_path_keeps_successful_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bridge = _make_bridge(tmp_path)
+    calls = iter([0.0, 5.0])
+    monkeypatch.setattr(
+        "lincy.tools.builtin.macos_apps.bridge.time.monotonic",
+        lambda: next(calls),
+    )
+    monkeypatch.setattr(
+        "lincy.tools.builtin.macos_apps.bridge.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout='{"ok": true}',
+            stderr="",
+        ),
+    )
+
+    assert bridge._run_jxa_json("return { ok: true };", operation="test") == {"ok": True}
+
+
+def test_macos_app_modules_have_no_missing_global_references():
+    package_name = "lincy.tools.builtin.macos_apps"
+    package = importlib.import_module(package_name)
+
+    def global_loads(code: CodeType):
+        for instruction in dis.get_instructions(code):
+            if instruction.opname == "LOAD_GLOBAL":
+                yield instruction.argval
+        for value in code.co_consts:
+            if isinstance(value, CodeType):
+                yield from global_loads(value)
+
+    modules = [
+        package,
+        *(
+            importlib.import_module(module_info.name)
+            for module_info in pkgutil.iter_modules(package.__path__, f"{package_name}.")
+        ),
+    ]
+    missing_by_module: dict[str, list[str]] = {}
+    for module in modules:
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        code = compile(source, module.__file__, "exec")
+        missing = sorted(
+            {
+                name
+                for name in global_loads(code)
+                if name not in module.__dict__ and not hasattr(builtins, name)
+            }
+        )
+        if missing:
+            missing_by_module[module.__name__] = missing
+
+    assert missing_by_module == {}
 
 
 def test_reminders_output_localizes_utc_due():

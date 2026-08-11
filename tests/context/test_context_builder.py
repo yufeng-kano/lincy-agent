@@ -10,7 +10,7 @@ from lincy.context.builder import (
     _PINNED_TOOL_NAME,
 )
 from lincy.context.conversation import Conversation
-from lincy.llm.schema import Message, ToolCall
+from lincy.llm.schema import ToolCall
 
 
 def test_boot_files_injected_as_core_rules(tmp_path: Path):
@@ -33,20 +33,6 @@ def test_boot_files_injected_as_core_rules(tmp_path: Path):
     assert len(boot_msgs) == 1
     assert "I am a bot" in boot_msgs[0].content
     assert '<file path="memory/agent/persona.md">' in boot_msgs[0].content
-
-
-def test_split_into_turns_groups_non_user_messages():
-    msgs = [
-        Message(role="user", content="u1"),
-        Message(role="assistant", content="a1"),
-        Message(role="tool", content="t1"),
-        Message(role="user", content="u2"),
-        Message(role="assistant", content="a2"),
-    ]
-    turns = ContextBuilder._split_into_turns(msgs)
-    assert len(turns) == 2
-    assert [m.role for m in turns[0]] == ["user", "assistant", "tool"]
-    assert [m.role for m in turns[1]] == ["user", "assistant"]
 
 
 def test_timestamp_prefix_applies_to_user_and_assistant_only():

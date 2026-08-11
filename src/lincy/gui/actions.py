@@ -1,8 +1,4 @@
-"""Desktop action primitives: screenshot, click, type, key press.
-
-All coordinate conversion uses Gemini normalized coordinates (0-1000).
-PyAutoGUI is lazy-imported so this module can be imported without a GUI.
-"""
+"""Desktop action primitives retained for legacy screenshot tools."""
 
 import base64
 import io
@@ -12,26 +8,10 @@ import time
 
 from ..llm.schema import ContentPart
 
-# Gemini bounding box: [ymin, xmin, ymax, xmax], 0-1000 range.
-GeminiBBox = list[int]
+
 _CLIPBOARD_SETTLE_SECONDS = 0.05
 _PASTE_HOTKEY_INTERVAL_SECONDS = 0.05
 _PASTE_SETTLE_SECONDS = 0.15
-
-
-def bbox_to_center_pixels(
-    bbox: GeminiBBox,
-    screen_w: float,
-    screen_h: float,
-) -> tuple[float, float]:
-    """Convert Gemini normalized bbox to pixel center point.
-
-    Uses logical screen size (not Retina physical resolution).
-    """
-    ymin, xmin, ymax, xmax = bbox
-    cx = (xmin + xmax) / 2 / 1000 * screen_w
-    cy = (ymin + ymax) / 2 / 1000 * screen_h
-    return cx, cy
 
 
 def take_screenshot(
@@ -73,26 +53,6 @@ def take_screenshot(
     )
 
 
-def click_at_bbox(bbox: GeminiBBox) -> str:
-    """Click at the center of a Gemini bounding box."""
-    import pyautogui
-
-    screen_w, screen_h = pyautogui.size()
-    cx, cy = bbox_to_center_pixels(bbox, screen_w, screen_h)
-    pyautogui.click(cx, cy)
-    return f"Clicked at pixel ({cx:.0f}, {cy:.0f})"
-
-
-def right_click_at_bbox(bbox: GeminiBBox) -> str:
-    """Right-click at the center of a Gemini bounding box."""
-    import pyautogui
-
-    screen_w, screen_h = pyautogui.size()
-    cx, cy = bbox_to_center_pixels(bbox, screen_w, screen_h)
-    pyautogui.click(cx, cy, button="right")
-    return f"Right-clicked at pixel ({cx:.0f}, {cy:.0f})"
-
-
 def type_text(text: str) -> str:
     """Type text via clipboard paste. Supports Unicode."""
     import pyautogui
@@ -104,26 +64,6 @@ def type_text(text: str) -> str:
     )
     time.sleep(_PASTE_SETTLE_SECONDS)
     return f"Typed: {text!r}"
-
-
-def capture_screenshot_to_temp(temp_path: str) -> str:
-    """Capture the screen to a temporary file (does not touch clipboard)."""
-    subprocess.run(["screencapture", "-x", temp_path], check=True)
-    return "Screenshot captured to temp file."
-
-
-def paste_screenshot_from_temp(temp_path: str) -> str:
-    """Copy a previously captured screenshot from temp file to clipboard."""
-    import os
-
-    if not os.path.isfile(temp_path):
-        return "Error: No screenshot captured yet. Call capture_screenshot first."
-    subprocess.run([
-        "osascript", "-e",
-        f'set the clipboard to (read POSIX file "{temp_path}" as '
-        '\u00ABclass PNGf\u00BB)',
-    ], check=True)
-    return "Screenshot copied to clipboard. Use Cmd+V to paste."
 
 
 def activate_app(name: str) -> str:
@@ -205,69 +145,11 @@ def _activate_app_windows(name: str) -> str:
     return f"Multiple matches: {', '.join(names_list)}"
 
 
-def get_active_app() -> str:
-    """Return the name of the frontmost application.
-
-    macOS: AppleScript via osascript.
-    Windows: ctypes + tasklist to resolve foreground window PID.
-    """
-    if sys.platform == "darwin":
-        result = subprocess.run(
-            ["osascript", "-e",
-             'tell application "System Events" to get name of '
-             'first application process whose frontmost is true'],
-            capture_output=True, text=True, check=True,
-        )
-        return result.stdout.strip()
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
-        pid = wintypes.DWORD()
-        ctypes.windll.user32.GetWindowThreadProcessId(
-            hwnd, ctypes.byref(pid),
-        )
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid.value}",
-             "/FO", "CSV", "/NH"],
-            capture_output=True, text=True,
-        )
-        line = result.stdout.strip()
-        if line:
-            return line.split(",")[0].strip('"').removesuffix(".exe")
-        return f"unknown (PID:{pid.value})"
-    raise OSError(f"Unsupported platform: {sys.platform}")
-
-
 def wait(seconds: float) -> str:
     """Sleep for a given number of seconds."""
     seconds = min(max(seconds, 0.1), 10.0)
     time.sleep(seconds)
     return f"Waited {seconds:.1f}s"
-
-
-def _normalize_key(key: str) -> str:
-    """Normalize a key name for pyautogui (lowercase, no underscores)."""
-    return key.strip().lower().replace("_", "").replace(" ", "")
-
-
-def press_key(key: str) -> str:
-    """Press a key or key combo (e.g. 'enter', 'command+a', 'tab')."""
-    import pyautogui
-
-    if "+" in key:
-        keys = [_normalize_key(k) for k in key.split("+")]
-        invalid = [k for k in keys if k not in pyautogui.KEYBOARD_KEYS]
-        if invalid:
-            return f"Error: invalid key(s): {invalid}. Use pyautogui key names (all lowercase, no underscores)."
-        pyautogui.hotkey(*keys)
-    else:
-        normalized = _normalize_key(key)
-        if normalized not in pyautogui.KEYBOARD_KEYS:
-            return f"Error: invalid key '{key}'. Use pyautogui key names (all lowercase, no underscores)."
-        pyautogui.press(normalized)
-    return f"Pressed: {key}"
 
 
 def scroll_at_pixel(
@@ -302,84 +184,3 @@ def scroll_at_pixel(
         pyautogui.scroll(step)
         time.sleep(0.05)
     return f"Scrolled {direction} {amount} clicks at pixel ({cx:.0f}, {cy:.0f})"
-
-
-def scroll_at_bbox(
-    bbox: GeminiBBox,
-    direction: str = "down",
-    amount: int = 3,
-    *,
-    invert: bool = False,
-) -> str:
-    """Scroll the mouse wheel at the center of a Gemini bounding box.
-
-    Delegates to :func:`scroll_at_pixel` after converting bbox to pixel
-    coordinates.
-
-    Args:
-        bbox: Target position [ymin, xmin, ymax, xmax], 0-1000 range.
-        direction: "up" or "down".
-        amount: Number of scroll clicks (positive).
-        invert: Flip scroll direction (for macOS natural scrolling).
-    """
-    import pyautogui
-
-    screen_w, screen_h = pyautogui.size()
-    cx, cy = bbox_to_center_pixels(bbox, screen_w, screen_h)
-    return scroll_at_pixel(cx, cy, direction, amount, invert=invert)
-
-
-def drag_between_bboxes(
-    from_bbox: GeminiBBox,
-    to_bbox: GeminiBBox,
-    duration: float = 0.5,
-) -> str:
-    """Drag from one bounding box center to another.
-
-    Uses mouseDown/moveTo/mouseUp for reliable macOS Finder drag-and-drop.
-    """
-    import pyautogui
-
-    screen_w, screen_h = pyautogui.size()
-    fx, fy = bbox_to_center_pixels(from_bbox, screen_w, screen_h)
-    tx, ty = bbox_to_center_pixels(to_bbox, screen_w, screen_h)
-    pyautogui.moveTo(fx, fy)
-    pyautogui.dragTo(tx, ty, duration=duration, button="left")
-    return f"Dragged from ({fx:.0f}, {fy:.0f}) to ({tx:.0f}, {ty:.0f})"
-
-
-def maximize_window(app_name: str) -> str:
-    """Maximize the frontmost window of the given application (macOS only).
-
-    Uses System Events to avoid per-app Automation authorization prompts.
-    Position and size are set in separate steps with a delay to prevent
-    macOS from auto-adjusting the geometry.
-    """
-    import pyautogui
-
-    screen_w, screen_h = pyautogui.size()
-    safe = app_name.replace('"', '\\"')
-    # Activate via tell-app (no Automation permission needed), then
-    # resize via System Events (only needs one-time System Events access).
-    script = (
-        f'tell application "{safe}" to activate\n'
-        f"delay 0.3\n"
-        f'tell application "System Events"\n'
-        f'    tell process "{safe}"\n'
-        f"        set position of front window to {{0, 25}}\n"
-        f"    end tell\n"
-        f"end tell\n"
-        f"delay 0.2\n"
-        f'tell application "System Events"\n'
-        f'    tell process "{safe}"\n'
-        f"        set size of front window to {{{screen_w}, {screen_h - 25}}}\n"
-        f"    end tell\n"
-        f"end tell"
-    )
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return f"Error: {result.stderr.strip()}"
-    return f"Maximized {app_name} to {screen_w}x{screen_h}"

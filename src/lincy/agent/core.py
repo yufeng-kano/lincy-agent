@@ -8,14 +8,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 import logging
 from pathlib import Path
-import threading
 from typing import TYPE_CHECKING, Literal
 
-import httpx
-from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from .adapters.protocol import ChannelAdapter
@@ -25,16 +22,16 @@ if TYPE_CHECKING:
     from .shared_state import SharedStateStore
     from ..brain_prompt_policy import BrainPromptPolicy
     from ..llm.providers.copilot_runtime import CopilotRuntime
+    from ..session.schema import SessionEntry
 
 from ..context import ContextBuilder, Conversation
-from ..core.schema import AppConfig, MaintenanceConfig
-from ..llm.http_error import classify_http_status_error
+from ..core.schema import AppConfig
 from ..llm import LLMResponse
 from ..llm.base import ConversationCompactionClient, LLMClient
 from ..llm.schema import (
     ContextLengthExceededError,
-    MalformedFunctionCallError,
     Message,
+    ToolCall,
     ToolDefinition,
 )
 from ..memory import (
@@ -44,13 +41,23 @@ from ..memory import (
 )
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
-from ..session.schema import SessionEntry
 from ..skills import rebuild_personal_skills_index
 from ..timezone_utils import get_tz, now as tz_now
 from ..tools import FilteredToolRegistry, ToolRegistry
 from ..tui.sink import UiSink
 from ..workspace import WorkspaceManager
 from . import responder as _responder
+from .heartbeat import (
+    apply_quiet_hours,
+    make_heartbeat_message,
+    parse_interval,
+    random_delay,
+    schedule_pre_sleep_sync,
+)
+from .maintenance import MaintenanceScheduler
+from .compaction import ContextCompactionResult, ContextCompactor
+from .requeue import RequeuePolicy, TurnFailureCategory, classify_turn_failure, should_requeue_failed_turn
+from .token_telemetry import LatestTokenStatus, TokenTelemetry, TurnTokenUsage
 from .queue import PersistentPriorityQueue
 from .responder import (
     _CommonGroundTurnDebug,
@@ -59,8 +66,6 @@ from .responder import (
     _compose_message_overlays,
 )
 from .run_helpers import (
-    _latest_intermediate_text,  # noqa: F401
-    _latest_nonempty_assistant_content,  # noqa: F401
     _resolve_final_content,
     _surface_error_message,
     _strip_timestamp_prefix,
@@ -76,7 +81,6 @@ from .schema import (
 from .skill_governance import SkillGovernanceRegistry
 from .scope import DEFAULT_SCOPE_RESOLVER
 from .staged_planning import run_stage1_information_gathering, run_stage2_brain_planning
-from .tool_setup import setup_tools  # noqa: F401
 from .turn_context import ProactiveTurnYield, TurnContext
 from .turn_effects import analyze_turn_effects
 from ..turn_timing import TURN_PROCESSING_STARTED_AT_KEY, build_turn_timing_metadata
@@ -84,39 +88,18 @@ from ..turn_timing import TURN_PROCESSING_STARTED_AT_KEY, build_turn_timing_meta
 # Re-exported for backward compatibility with tests importing from
 # lincy.agent.core. AgentCore itself does not use every symbol here.
 from .turn_runtime import (
-    _EMPTY_RESPONSE_NUDGE,  # noqa: F401
-    _LatestTokenStatus,
     _TurnMemorySnapshot,
-    _TurnTokenUsage,
     _build_artifact_registry_sync_reminder,
-    _build_memory_sync_reminder,  # noqa: F401
     _inject_brain_failure_record,
     _patch_interrupted_tool_calls,
     _rollback_turn_memory_changes,
-    _run_empty_response_fallback,  # noqa: F401
     _run_memory_archive,
     _run_memory_sync_side_channel,
 )
 from .ui_event_console import AgentUiPort, UiEventConsole
 
 logger = logging.getLogger(__name__)
-_RENDERED_STATIC_METADATA_KEY = "rendered_static"
-_READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
-    {
-        "anthropic",
-        "claude_code",
-        "codex",
-        "copilot",
-        "deepseek",
-        "grok",
-        "heyroute",
-        "openai",
-        "openrouter",
-    }
-)
-
 TurnRunStatus = Literal["completed", "failed", "interrupted"]
-
 _HEARTBEAT_RELIABILITY_NOTICE = (
     "[Heartbeat Reliability Notice]\n"
     "Heartbeat is opportunistic background scanning, not a reliable follow-up "
@@ -126,7 +109,6 @@ _HEARTBEAT_RELIABILITY_NOTICE = (
     "user-care state must be checked later, create schedule_action now unless "
     "you explicitly decide not to follow up and persist the reason."
 )
-
 _HEARTBEAT_QUIET_HOURS_NOTICE = (
     "[Heartbeat Quiet-Hours Warning]\n"
     "The earliest next heartbeat would be deferred by quiet hours. This may be "
@@ -134,44 +116,6 @@ _HEARTBEAT_QUIET_HOURS_NOTICE = (
     "Do not leave user-care goals to heartbeat. Create schedule_action for "
     "every required later check now."
 )
-TurnFailureCategory = Literal[
-    "request-format",
-    "provider-api",
-    "transport",
-    "provider-response",
-    "context-length",
-    "other",
-]
-CompactionSource = Literal["codex_remote", "local", "local_fallback"]
-
-_TURN_FAILURE_REQUEUE_COUNT_KEY = "turn_failure_requeue_count"
-_TURN_FAILURE_FIRST_FAILED_AT_KEY = "turn_failure_first_failed_at"
-_PROACTIVE_YIELD_REEVALUATE_DELAY = timedelta(minutes=2)
-
-
-def _brain_read_cache_measurable(provider: str | None) -> bool:
-    return provider in _READ_CACHE_MEASURABLE_PROVIDERS
-
-
-@dataclass(frozen=True)
-class ContextCompactionResult:
-    """One compaction attempt outcome."""
-
-    changed: bool
-    removed_messages: int = 0
-    source: CompactionSource | None = None
-    trigger: str | None = None
-    fallback: bool = False
-
-    @property
-    def source_label(self) -> str | None:
-        if self.source == "codex_remote":
-            return "codex remote"
-        if self.source == "local_fallback":
-            return "local fallback"
-        if self.source == "local":
-            return "local"
-        return None
 
 
 def _ensure_turn_runtime_metadata(
@@ -216,49 +160,6 @@ def _run_brain_responder(**kwargs) -> LLMResponse:
     )
 
 
-def _classify_turn_failure(error: Exception) -> TurnFailureCategory:
-    """Classify a failed turn for queue-level retry decisions."""
-    if isinstance(error, ContextLengthExceededError):
-        return "context-length"
-    if isinstance(
-        error,
-        (
-            httpx.TimeoutException,
-            TimeoutError,
-            httpx.ConnectError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
-        ),
-    ):
-        return "transport"
-    if isinstance(error, (MalformedFunctionCallError, ValidationError)):
-        return "provider-response"
-    if isinstance(error, httpx.HTTPStatusError):
-        category = classify_http_status_error(error)
-        if category == "request-format":
-            return "request-format"
-        if category == "provider-api":
-            return "provider-api"
-        status = error.response.status_code if error.response is not None else None
-        if status in {429, 500, 502, 503, 504, 529}:
-            return "transport"
-        return "provider-api"
-    return "other"
-
-
-def _should_requeue_failed_turn(
-    category: TurnFailureCategory | None,
-    *,
-    requeue_non_retryable: bool = False,
-) -> bool:
-    """Return True when a failed inbound should be retried through the queue."""
-    if category in {None, "transport", "provider-response"}:
-        return True
-    if not requeue_non_retryable:
-        return False
-    return category in {"request-format", "provider-api", "context-length", "other"}
-
-
 def _classify_inbound_kind(
     *,
     channel: str,
@@ -275,75 +176,6 @@ def _classify_inbound_kind(
             return "heartbeat"
         return "system"
     return "user_message"
-
-
-class _MaintenanceScheduler:
-    """Background timer that enqueues MaintenanceSentinel at daily_hour.
-
-    Retries every retry_interval_minutes until latest_hour.
-    Skips the day if latest_hour is passed without a successful run.
-    """
-
-    def __init__(
-        self,
-        queue: PersistentPriorityQueue,
-        config: MaintenanceConfig,
-    ):
-        self._queue = queue
-        self._config = config
-        self._tz = get_tz()
-        self._ran_today = False
-        self._last_date: date | None = None
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def mark_done(self) -> None:
-        """Called after successful maintenance to prevent re-trigger today."""
-        self._ran_today = True
-
-    def _loop_once(self) -> bool:
-        """Check if maintenance is due. Returns True if sentinel enqueued."""
-        now = datetime.now(self._tz)
-        today = now.date()
-
-        # Reset flag on new day
-        if self._last_date != today:
-            self._ran_today = False
-            self._last_date = today
-
-        if self._ran_today:
-            return False
-
-        hour = now.hour
-        if hour < self._config.daily_hour:
-            return False
-        if hour >= self._config.latest_hour:
-            # Past window; skip today
-            self._ran_today = True
-            logger.info(
-                "Maintenance window passed (%02d:00-%02d:00), skipping today",
-                self._config.daily_hour,
-                self._config.latest_hour,
-            )
-            return False
-
-        self._queue.put(MaintenanceSentinel())
-        return True
-
-    def _loop(self) -> None:
-        while not self._stop.wait(timeout=60):
-            if self._loop_once():
-                # Wait retry interval before next attempt
-                self._stop.wait(timeout=self._config.retry_interval_minutes * 60)
 
 
 @dataclass
@@ -444,14 +276,17 @@ class AgentCore:
             agent_os_dir,
             governance_config=self.config.tools.skill_governance,
         )
-        self._maintenance_scheduler: _MaintenanceScheduler | None = None
+        self._maintenance_scheduler: MaintenanceScheduler | None = None
         self._turns_since_memory_sync: int = 0
         self.adapters: dict[str, ChannelAdapter] = {}
         brain_cfg = self.config.agents.get("brain")
         self._brain_provider = brain_cfg.llm.provider if brain_cfg is not None else ""
         self._soft_max_prompt_tokens = self.config.context.soft_max_prompt_tokens
-        self._latest_token_status = _LatestTokenStatus()
-        self._turn_token_usage = _TurnTokenUsage()
+        self._latest_token_status = LatestTokenStatus()
+        self._turn_token_usage = TurnTokenUsage()
+        self._token_telemetry = TokenTelemetry(self)
+        self._compactor = ContextCompactor(self)
+        self._requeue_policy = RequeuePolicy(self)
         self._last_proactive_yield: ProactiveTurnYield | None = None
         self._last_turn_failure_category: TurnFailureCategory | None = None
         self.task_store = task_store
@@ -476,263 +311,60 @@ class AgentCore:
             rebuild_personal_skills_index(self.agent_os_dir)
             self.builder.reload_boot_files()
 
+    def _telemetry(self) -> TokenTelemetry:
+        telemetry = getattr(self, "_token_telemetry", None)
+        if telemetry is None:
+            telemetry = TokenTelemetry(self)
+            self._token_telemetry = telemetry
+        return telemetry
+
+    def _compaction(self) -> ContextCompactor:
+        compactor = getattr(self, "_compactor", None)
+        if compactor is None:
+            compactor = ContextCompactor(self)
+            self._compactor = compactor
+        return compactor
+
+    def _requeue(self) -> RequeuePolicy:
+        policy = getattr(self, "_requeue_policy", None)
+        if policy is None:
+            policy = RequeuePolicy(self)
+            self._requeue_policy = policy
+        return policy
+
     def _reset_turn_token_usage(self) -> None:
-        """Reset per-turn token aggregation state."""
-        self._turn_token_usage = _TurnTokenUsage()
+        self._telemetry().reset()
 
     def _record_brain_response_usage(self, response: LLMResponse) -> None:
-        """Record usage from each brain model response in the current turn."""
-        self._turn_token_usage.record(response)
+        self._telemetry().record(response)
 
     def _finalize_turn_token_status(self) -> None:
-        """Publish per-turn aggregated usage to the status model."""
-        agg = self._turn_token_usage
-        if agg.usage_available:
-            self._latest_token_status = _LatestTokenStatus(
-                prompt_tokens=agg.max_prompt_tokens,
-                completion_tokens=agg.completion_tokens_for_max_prompt,
-                total_tokens=agg.total_tokens_for_max_prompt,
-                cache_prompt_tokens=agg.cache_prompt_tokens_for_display,
-                cache_read_tokens=agg.cache_read_tokens_for_display,
-                cache_write_tokens=agg.cache_write_tokens_for_display,
-                usage_available=True,
-                missing_usage=False,
-            )
-            self._warn_low_cache_rate(agg)
-            return
-
-        if self._brain_provider == "copilot" and agg.saw_missing_usage:
-            self._latest_token_status = _LatestTokenStatus(
-                usage_available=False,
-                missing_usage=True,
-            )
-
-    _low_cache_streak: int = 0
-
-    def _warn_low_cache_rate(self, agg: "_TurnTokenUsage") -> None:
-        """Emit a warning when cache hit rate is low for consecutive turns."""
-        prompt = agg.max_prompt_tokens
-        if prompt is None or prompt < 10000:
-            return
-        if not _brain_read_cache_measurable(self._brain_provider):
-            self._low_cache_streak = 0
-            return
-        brain_cfg = self.config.agents.get("brain")
-        if brain_cfg is None:
-            return
-        cache_cfg = getattr(brain_cfg, "cache", None)
-        if cache_cfg is None or not cache_cfg.enabled:
-            return
-        cache_read = agg.cache_read_tokens_for_display
-        rate = cache_read / prompt if prompt > 0 else 0
-        if rate < 0.3:
-            self._low_cache_streak += 1
-        else:
-            self._low_cache_streak = 0
-            return
-        if self._low_cache_streak >= 2:
-            self.console.print_warning(
-                f"Low cache hit rate for {self._low_cache_streak} consecutive turns: "
-                f"{rate:.0%} (read={cache_read:,} prompt={prompt:,})"
-            )
+        self._telemetry().finalize()
 
     def get_token_status_text(self) -> str:
-        """Return token status text for toolbar and processing headers."""
-        limit = self._soft_max_prompt_tokens
-        state = self._latest_token_status
-        if state.usage_available and state.prompt_tokens is not None:
-            pct = state.prompt_tokens / limit * 100 if limit else 0
-            suffix = " soft-over" if state.prompt_tokens > limit else ""
-            if not _brain_read_cache_measurable(self._brain_provider):
-                return (
-                    f"tok {state.prompt_tokens:,}/{limit:,} ({pct:.1f}%)"
-                    f" cache unavailable{suffix}"
-                )
-            cache_prompt_tokens = state.cache_prompt_tokens or state.prompt_tokens
-            read_rate = (
-                state.cache_read_tokens / cache_prompt_tokens * 100
-                if cache_prompt_tokens > 0
-                else 0.0
-            )
-            cache_suffix = (
-                f" cache r{state.cache_read_tokens:,}/{cache_prompt_tokens:,}"
-                f" ({read_rate:.1f}%)"
-            )
-            if state.cache_write_tokens > 0:
-                cache_suffix += f" w{state.cache_write_tokens:,}"
-            return (
-                f"tok {state.prompt_tokens:,}/{limit:,} ({pct:.1f}%)"
-                f"{cache_suffix}{suffix}"
-            )
-        if state.missing_usage:
-            return f"tok unavailable/{limit:,} (copilot no usage)"
-        return f"tok --/{limit:,} (--.-%)"
+        return self._telemetry().status_text()
 
     def _is_soft_limit_exceeded(self) -> bool:
-        """Check if current turn exceeded soft prompt token limit."""
         state = self._latest_token_status
-        if not state.usage_available or state.prompt_tokens is None:
-            return False
-        return state.prompt_tokens > self._soft_max_prompt_tokens
+        return bool(state.usage_available and state.prompt_tokens is not None and state.prompt_tokens > self._soft_max_prompt_tokens)
 
     def _record_compaction_result(self, result: ContextCompactionResult) -> None:
-        """Persist one successful compaction result for UI/debug inspection."""
-        if result.source is None or result.trigger is None:
-            return
-        logger.info(
-            "Context compacted via %s (trigger=%s, removed=%d, fallback=%s)",
-            result.source,
-            result.trigger,
-            result.removed_messages,
-            result.fallback,
-        )
-        if self.session_mgr is not None:
-            self.session_mgr.record_compaction(
-                source=result.source,
-                trigger=result.trigger,
-                removed_messages=result.removed_messages,
-                fallback=result.fallback,
-            )
+        self._compaction().record_result(result)
 
     def _apply_soft_prompt_compaction(self) -> None:
-        """Compact history after a turn when soft token budget is exceeded."""
-        state = self._latest_token_status
-        if not state.usage_available:
-            return
-        prompt_tokens = state.prompt_tokens
-        if prompt_tokens is None or prompt_tokens <= self._soft_max_prompt_tokens:
-            return
-        result = self._compact_context(
-            preserve_turns=self.config.context.preserve_turns,
-            trigger="soft_limit",
-        )
-        if not result.changed:
-            return
-        via = f" via {result.source_label}" if result.source_label else ""
-        details = (
-            f"compacted {result.removed_messages} messages"
-            if result.removed_messages > 0
-            else "compacted context"
-        )
-        self.console.print_warning(
-            "Soft token limit exceeded "
-            f"({prompt_tokens:,}/{self._soft_max_prompt_tokens:,}); "
-            f"{details}{via}.",
-            indent=2,
-        )
+        self._compaction().apply_soft_prompt_compaction()
 
-    def _compact_context_local(
-        self,
-        preserve_turns: int,
-        *,
-        trigger: str,
-        fallback: bool = False,
-    ) -> ContextCompactionResult:
-        removed = self.conversation.compact(preserve_turns)
-        if removed <= 0:
-            return ContextCompactionResult(
-                changed=False,
-                removed_messages=0,
-                source="local_fallback" if fallback else "local",
-                trigger=trigger,
-                fallback=fallback,
-            )
-        self.builder.clear_render_cache()
-        if self.session_mgr is not None:
-            self.session_mgr.rewrite_messages(self.conversation.get_messages())
-        return ContextCompactionResult(
-            changed=True,
-            removed_messages=removed,
-            source="local_fallback" if fallback else "local",
-            trigger=trigger,
-            fallback=fallback,
-        )
+    def _compact_context_local(self, preserve_turns: int, *, trigger: str, fallback: bool = False) -> ContextCompactionResult:
+        return self._compaction().compact_local(preserve_turns, trigger=trigger, fallback=fallback)
 
     def _compact_context_remote(self, *, trigger: str) -> ContextCompactionResult:
-        client = getattr(self, "conversation_compaction_client", None)
-        if client is None:
-            return ContextCompactionResult(changed=False)
+        return self._compaction().compact_remote(trigger=trigger)
 
-        rendered_messages = self.builder.build(self.conversation)
-        compacted_messages = client.compact_messages(
-            rendered_messages,
-            tools=self.registry.get_definitions(),
-        )
-        if not compacted_messages:
-            return ContextCompactionResult(
-                changed=False,
-                source="codex_remote",
-                trigger=trigger,
-            )
-
-        previous_entries = self.conversation.get_messages()
-        previous_count = len(self.conversation.get_messages())
-        entries = [
-            SessionEntry(
-                message=message,
-                metadata={_RENDERED_STATIC_METADATA_KEY: True},
-            )
-            for message in compacted_messages
-        ]
-        self.conversation.replace_messages(entries)
-        self.builder.clear_render_cache()
-        if self.session_mgr is not None:
-            self.session_mgr.rewrite_messages(entries)
-        removed = max(previous_count - len(entries), 0)
-        changed = entries != previous_entries
-        return ContextCompactionResult(
-            changed=changed,
-            removed_messages=removed,
-            source="codex_remote",
-            trigger=trigger,
-        )
-
-    def _compact_context(
-        self,
-        *,
-        preserve_turns: int,
-        trigger: str,
-    ) -> ContextCompactionResult:
-        client = getattr(self, "conversation_compaction_client", None)
-        if client is not None:
-            try:
-                result = self._compact_context_remote(trigger=trigger)
-                if result.changed:
-                    self._record_compaction_result(result)
-                return result
-            except Exception as exc:
-                logger.warning(
-                    "Codex remote compaction failed during %s; falling back to local compact: %s",
-                    trigger,
-                    exc,
-                )
-                result = self._compact_context_local(
-                    preserve_turns,
-                    trigger=trigger,
-                    fallback=True,
-                )
-                if result.changed:
-                    self._record_compaction_result(result)
-                return result
-        result = self._compact_context_local(
-            preserve_turns,
-            trigger=trigger,
-            fallback=False,
-        )
-        if result.changed:
-            self._record_compaction_result(result)
-        return result
+    def _compact_context(self, *, preserve_turns: int, trigger: str) -> ContextCompactionResult:
+        return self._compaction().compact(preserve_turns=preserve_turns, trigger=trigger)
 
     def run_manual_compact(self) -> ContextCompactionResult:
-        result = self._compact_context(
-            preserve_turns=self.builder.preserve_turns,
-            trigger="manual",
-        )
-        if result.changed and self.session_mgr is not None:
-            self.session_mgr.finalize("compacted")
-            self.session_mgr.create(self.user_id, self.display_name)
-            self.conversation.set_on_message(self.session_mgr.append_message)
-        return result
+        return self._compaction().run_manual_compact()
 
     def _make_turn_output(
         self,
@@ -741,12 +373,13 @@ class AgentCore:
         output_fn: Callable[[str | None], None] | None,
         channel: str,
         sender: str | None,
+        timestamp: datetime | None = None,
     ) -> Callable[[str | None], None]:
         """Return the per-turn output callback."""
         if output_fn is not None:
             return output_fn
 
-        self.console.print_inbound(channel, sender, user_input)
+        self.console.print_inbound(channel, sender, user_input, ts=timestamp)
         self.console.print_processing(channel, sender)
 
         def _output(content: str | None) -> None:
@@ -1146,6 +779,35 @@ class AgentCore:
         )
         return response
 
+    def _run_memory_sync(
+        self,
+        *,
+        tools: list[ToolDefinition],
+        missing_targets: list[str],
+        turns_accumulated: int = 1,
+        reminder_text: str | None = None,
+        on_before_tool_call: Callable[[ToolCall], None] | None = None,
+        is_cancel_requested: Callable[[], bool] | None = None,
+        on_cancel_pending: Callable[[], None] | None = None,
+    ) -> None:
+        """Run memory sync with the configured side-channel client."""
+        sync_client = getattr(self, "memory_sync_client", None) or self.client
+        _run_memory_sync_side_channel(
+            sync_client,
+            self.conversation,
+            self.builder,
+            tools,
+            self.registry,
+            self.console,
+            missing_targets=missing_targets,
+            turns_accumulated=turns_accumulated,
+            max_retries=self.config.tools.memory_sync.max_retries,
+            reminder_text=reminder_text,
+            on_before_tool_call=on_before_tool_call,
+            is_cancel_requested=is_cancel_requested,
+            on_cancel_pending=on_cancel_pending,
+        )
+
     def _maybe_run_turn_artifact_sync(
         self,
         *,
@@ -1169,16 +831,9 @@ class AgentCore:
             return
 
         try:
-            sync_client = getattr(self, "memory_sync_client", None) or self.client
-            _run_memory_sync_side_channel(
-                sync_client,
-                self.conversation,
-                self.builder,
-                tools,
-                self.registry,
-                self.console,
+            self._run_memory_sync(
+                tools=tools,
                 missing_targets=[ARTIFACT_REGISTRY_TARGET],
-                max_retries=self.config.tools.memory_sync.max_retries,
                 reminder_text=_build_artifact_registry_sync_reminder(
                     missing_artifact_paths,
                     registry_target=ARTIFACT_REGISTRY_TARGET,
@@ -1242,16 +897,10 @@ class AgentCore:
             if prepared.debug:
                 dispatch = "memory_sync" if sync_client is not self.client else "brain"
                 self.console.print_debug("memory-sync", f"dispatch client={dispatch}")
-            _run_memory_sync_side_channel(
-                sync_client,
-                self.conversation,
-                self.builder,
-                tools,
-                self.registry,
-                self.console,
+            self._run_memory_sync(
+                tools=tools,
                 missing_targets=missing,  # type: ignore[possibly-undefined]
                 turns_accumulated=self._turns_since_memory_sync,
-                max_retries=sync_cfg.max_retries,
                 on_before_tool_call=prepared.turn_memory_snapshot.capture_from_tool_call,
                 is_cancel_requested=is_cancel_requested,
                 on_cancel_pending=on_cancel_pending,
@@ -1300,17 +949,10 @@ class AgentCore:
             return
 
         try:
-            sync_client = getattr(self, "memory_sync_client", None) or self.client
-            _run_memory_sync_side_channel(
-                sync_client,
-                self.conversation,
-                self.builder,
-                tools,
-                self.registry,
-                self.console,
+            self._run_memory_sync(
+                tools=tools,
                 missing_targets=pre_compact_missing,
                 turns_accumulated=self._turns_since_memory_sync,
-                max_retries=self.config.tools.memory_sync.max_retries,
                 on_before_tool_call=prepared.turn_memory_snapshot.capture_from_tool_call,
                 is_cancel_requested=is_cancel_requested,
                 on_cancel_pending=on_cancel_pending,
@@ -1396,7 +1038,7 @@ class AgentCore:
             )
             return False, None
         except Exception as e:
-            self._last_turn_failure_category = _classify_turn_failure(e)
+            self._last_turn_failure_category = classify_turn_failure(e)
             _rollback_turn_memory_changes(
                 retry_prepared.turn_memory_snapshot,
                 console=self.console,
@@ -1509,6 +1151,7 @@ class AgentCore:
             output_fn=output_fn,
             channel=channel,
             sender=sender,
+            timestamp=timestamp,
         )
         if self.session_mgr is not None:
             self.session_mgr.start_turn(
@@ -1594,7 +1237,7 @@ class AgentCore:
                 console=self.console,
                 debug=prepared.debug,
             )
-            self._last_turn_failure_category = _classify_turn_failure(e)
+            self._last_turn_failure_category = classify_turn_failure(e)
             self.console.print_error(_surface_error_message(e))
             _inject_brain_failure_record(
                 self.conversation,
@@ -1611,130 +1254,14 @@ class AgentCore:
             )
             return "failed"
 
-    @staticmethod
-    def _coerce_non_negative_int(value: object, default: int) -> int:
-        """Best-effort int coercion for config values used in queue retry logic."""
-        if isinstance(value, int) and value >= 0:
-            return value
-        return default
-
     def _failed_inbound_retry_config(self) -> tuple[int, int, bool]:
-        """Return failed inbound requeue runtime config."""
-        app_cfg = getattr(self.config, "app", None)
-        if app_cfg is None:
-            return 0, 0, False
-        limit = self._coerce_non_negative_int(
-            getattr(app_cfg, "turn_failure_requeue_limit", 0),
-            0,
-        )
-        delay_seconds = self._coerce_non_negative_int(
-            getattr(app_cfg, "turn_failure_requeue_delay_seconds", 0),
-            0,
-        )
-        requeue_non_retryable = bool(
-            getattr(app_cfg, "requeue_non_retryable_turn_failures", False)
-        )
-        return limit, delay_seconds, requeue_non_retryable
+        return self._requeue().failed_inbound_retry_config()
 
-    def _requeue_failed_inbound(
-        self,
-        msg: InboundMessage,
-        receipt: Path | None,
-    ) -> bool:
-        """Re-enqueue a failed inbound turn with delay, bounded by config."""
-        if self._queue is None:
-            return False
+    def _requeue_failed_inbound(self, msg: InboundMessage, receipt: Path | None) -> bool:
+        return self._requeue().requeue_failed_inbound(msg, receipt)
 
-        limit, base_delay_seconds, _ = self._failed_inbound_retry_config()
-        retry_count = self._coerce_non_negative_int(
-            msg.metadata.get(_TURN_FAILURE_REQUEUE_COUNT_KEY),
-            0,
-        )
-        if retry_count >= limit:
-            return False
-
-        next_retry = retry_count + 1
-        delay_seconds = base_delay_seconds * next_retry
-        retry_msg = InboundMessage(
-            channel=msg.channel,
-            content=msg.content,
-            priority=msg.priority,
-            sender=msg.sender,
-            metadata=dict(msg.metadata),
-            timestamp=msg.timestamp,
-            not_before=tz_now() + timedelta(seconds=delay_seconds),
-        )
-        retry_msg.metadata[_TURN_FAILURE_REQUEUE_COUNT_KEY] = next_retry
-        retry_msg.metadata.setdefault(
-            _TURN_FAILURE_FIRST_FAILED_AT_KEY,
-            tz_now().isoformat(),
-        )
-        if receipt is None:
-            self._queue.put(retry_msg)
-        else:
-            self._queue.requeue_active(receipt, retry_msg)
-        retry_at = retry_msg.not_before.isoformat() if retry_msg.not_before else "now"
-        self.console.print_warning(
-            "Brain turn failed; re-enqueued inbound "
-            f"retry {next_retry}/{limit} at {retry_at}.",
-        )
-        logger.warning(
-            "Re-enqueued failed inbound %s retry %d/%d for %s",
-            msg.channel,
-            next_retry,
-            limit,
-            retry_at,
-        )
-        return True
-
-    def _requeue_yielded_scheduled_turn(
-        self,
-        msg: InboundMessage,
-        receipt: Path | None,
-        *,
-        scope_id: str,
-    ) -> bool:
-        """Requeue a yielded scheduled turn for short-delay reevaluation."""
-        if self._queue is None:
-            return False
-
-        reason = msg.metadata.get("scheduled_reason")
-        if not isinstance(reason, str) or not reason.strip():
-            return False
-
-        reeval_at = tz_now() + _PROACTIVE_YIELD_REEVALUATE_DELAY
-        display_time = reeval_at.astimezone(get_tz()).strftime("%Y-%m-%d %H:%M")
-        metadata = dict(msg.metadata)
-        metadata["yielded_scope_id"] = scope_id
-        retry_count = metadata.get("yield_reschedule_count", 0)
-        metadata["yield_reschedule_count"] = (
-            retry_count + 1 if isinstance(retry_count, int) and retry_count >= 0 else 1
-        )
-        retry_msg = InboundMessage(
-            channel="system",
-            content=(
-                "[SCHEDULED]\n"
-                f"Reason: {reason}\n"
-                f"Scheduled at: {display_time}\n\n"
-                "A newer inbound for the same conversation arrived before delivery. "
-                "Reevaluate whether action is still needed."
-            ),
-            priority=msg.priority,
-            sender="system",
-            metadata=metadata,
-            timestamp=reeval_at,
-            not_before=reeval_at,
-        )
-        if receipt is None:
-            self._queue.put(retry_msg)
-        else:
-            self._queue.requeue_active(receipt, retry_msg)
-        logger.info(
-            "Yielded scheduled turn requeued for reevaluation: scope=%s at=%s",
-            scope_id,
-            reeval_at.isoformat(),
-        )
-        return True
+    def _requeue_yielded_scheduled_turn(self, msg: InboundMessage, receipt: Path | None, *, scope_id: str) -> bool:
+        return self._requeue().requeue_yielded_scheduled_turn(msg, receipt, scope_id=scope_id)
 
     def graceful_exit(self) -> None:
         """Handle graceful exit.
@@ -1912,8 +1439,6 @@ class AgentCore:
 
     def _schedule_next_heartbeat(self, msg: InboundMessage) -> None:
         """Create the next recurring heartbeat after a successful turn."""
-        from .adapters.scheduler import make_heartbeat_message, random_delay
-
         recur_spec = msg.metadata.get("recur_spec", "2h-5h")
         try:
             delay = random_delay(recur_spec)
@@ -1988,8 +1513,6 @@ class AgentCore:
         if not isinstance(recur_spec, str) or not recur_spec.strip():
             return False
         try:
-            from .adapters.scheduler import parse_interval
-
             min_minutes, _ = parse_interval(recur_spec)
         except ValueError:
             return False
@@ -2033,8 +1556,6 @@ class AgentCore:
         Resets the heartbeat timer using the same interval spec so the
         agent does not wake up immediately after real activity.
         """
-        from .adapters.scheduler import make_heartbeat_message, random_delay
-
         was_deferred = False
         for filepath, msg in self._queue.scan_pending(channel="system"):
             if not msg.metadata.get("system") or not msg.metadata.get("recurring"):
@@ -2043,7 +1564,7 @@ class AgentCore:
             recur_spec = msg.metadata.get("recur_spec")
             if not recur_spec:
                 adapter = self.adapters.get("system")
-                recur_spec = getattr(adapter, "_interval", None) or "2h-5h"
+                recur_spec = getattr(adapter, "interval", None) or "2h-5h"
             self._queue.remove_pending(filepath)
             delay = random_delay(recur_spec)
             next_time_raw = tz_now() + delay
@@ -2064,18 +1585,7 @@ class AgentCore:
         self._maybe_schedule_pre_sleep_sync(was_deferred=was_deferred)
 
     def _apply_quiet_hours(self, dt: datetime) -> datetime:
-        """Push *dt* past quiet hours if it falls within a blackout window."""
-        from ..core.schema import is_in_quiet_hours, next_quiet_end
-
-        windows = self.config.heartbeat.parsed_quiet_windows()
-        if not windows:
-            return dt
-        tz = get_tz()
-        if is_in_quiet_hours(dt, windows, tz):
-            end = next_quiet_end(dt, windows, tz)
-            logger.info("Heartbeat deferred past quiet hours to %s", end)
-            return end
-        return dt
+        return apply_quiet_hours(dt, self.config.heartbeat.parsed_quiet_windows())
 
     def _maybe_schedule_pre_sleep_sync(self, *, was_deferred: bool) -> None:
         """Schedule (or replace) a pre-sleep memory sync when heartbeat was
@@ -2085,24 +1595,7 @@ class AgentCore:
         if self._queue is None:
             return
 
-        # Remove any existing pre-sleep sync message first (dedup)
-        for filepath, msg in self._queue.scan_pending(channel="system"):
-            if msg.metadata.get("pre_sleep_sync"):
-                self._queue.remove_pending(filepath)
-                break
-
-        if not was_deferred:
-            return
-
-        from .adapters.scheduler import make_pre_sleep_sync_message
-
-        sync_time = tz_now() + timedelta(minutes=30)
-        self._queue.put(
-            make_pre_sleep_sync_message(
-                not_before=sync_time,
-            )
-        )
-        logger.info("Scheduled pre-sleep sync at %s", sync_time.isoformat())
+        schedule_pre_sleep_sync(queue=self._queue, was_deferred=was_deferred)
 
     def _handle_pre_sleep_sync(self, receipt: Path | None) -> None:
         """Run memory sync side-channel only.  No brain turn."""
@@ -2114,19 +1607,12 @@ class AgentCore:
 
         from ..memory.tool_analysis import MEMORY_SYNC_TARGETS
 
-        sync_client = getattr(self, "memory_sync_client", None) or self.client
         tools = self.registry.get_definitions()
         try:
-            _run_memory_sync_side_channel(
-                sync_client,
-                self.conversation,
-                self.builder,
-                tools,
-                self.registry,
-                self.console,
+            self._run_memory_sync(
+                tools=tools,
                 missing_targets=list(MEMORY_SYNC_TARGETS),
                 turns_accumulated=self._turns_since_memory_sync,
-                max_retries=self.config.tools.memory_sync.max_retries,
             )
             self._turns_since_memory_sync = 0
             self.console.print_info("Pre-sleep memory sync completed")
@@ -2201,7 +1687,7 @@ class AgentCore:
         # Start daily maintenance scheduler
         maint_cfg = self.config.maintenance if self.config else None
         if maint_cfg and maint_cfg.enabled:
-            self._maintenance_scheduler = _MaintenanceScheduler(
+            self._maintenance_scheduler = MaintenanceScheduler(
                 self._queue,
                 maint_cfg,
             )
@@ -2277,18 +1763,13 @@ class AgentCore:
                 for a in self.adapters.values():
                     a.on_turn_start(msg.channel)
 
-                self.console.print_inbound(
-                    msg.channel,
-                    msg.sender,
+                _thoughts = self._make_turn_output(
                     msg.content,
-                    ts=msg.timestamp,
+                    output_fn=None,
+                    channel=msg.channel,
+                    sender=msg.sender,
+                    timestamp=msg.timestamp,
                 )
-                self.console.print_processing(msg.channel, msg.sender)
-
-                # Inner thoughts callback: display on console only, never sent.
-                # Actual message delivery happens via the send_message tool.
-                def _thoughts(content: str | None) -> None:
-                    self.console.print_inner_thoughts(msg.channel, msg.sender, content)
 
                 # Dynamic content injection before run_turn
                 turn_content = msg.content
@@ -2325,12 +1806,7 @@ class AgentCore:
                 is_task_due = msg.channel == "system" and bool(
                     msg.metadata.get("task_due")
                 )
-                is_discord_review = msg.channel == "discord" and msg.metadata.get(
-                    "source"
-                ) in {
-                    "guild_review",
-                    "guild_mention_review",
-                }
+                evict_if_noop = bool(msg.metadata.get("evict_if_noop"))
 
                 should_evict = False
                 evict_reason = ""
@@ -2350,14 +1826,14 @@ class AgentCore:
                                 if is_task_due
                                 else "noop scheduled turn"
                             )
-                    elif is_discord_review and not had_send_message:
+                    elif evict_if_noop and not had_send_message:
                         effects = analyze_turn_effects(
                             turn_messages,
                             had_send_message=had_send_message,
                         )
                         if effects.is_scheduled_noop:
                             should_evict = True
-                            evict_reason = "noop discord review turn"
+                            evict_reason = "noop review turn"
 
                 if should_evict:
                     evicted = self.conversation.truncate_to(pre_turn_len)
@@ -2387,12 +1863,12 @@ class AgentCore:
                         self._defer_pending_heartbeat()
                 elif self._queue is not None and turn_status == "failed":
                     _, _, requeue_non_retryable = self._failed_inbound_retry_config()
-                    should_requeue_failed_turn = _should_requeue_failed_turn(
+                    should_requeue = should_requeue_failed_turn(
                         self._last_turn_failure_category,
                         requeue_non_retryable=requeue_non_retryable,
                     )
                     requeued_failed_turn = (
-                        should_requeue_failed_turn
+                        should_requeue
                         and self._requeue_failed_inbound(msg, receipt)
                     )
                     if requeued_failed_turn:
@@ -2400,7 +1876,7 @@ class AgentCore:
                     else:
                         if msg.metadata.get("recurring"):
                             self._schedule_next_heartbeat(msg)
-                        if not should_requeue_failed_turn:
+                        if not should_requeue:
                             self.console.print_warning(
                                 "Brain turn failed with a non-retryable error; acknowledging inbound without queue replay."
                             )

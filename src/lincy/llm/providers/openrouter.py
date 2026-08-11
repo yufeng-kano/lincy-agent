@@ -13,7 +13,7 @@ from ...core.schema import (
     OpenRouterProviderRoutingConfig,
     OpenRouterReasoningConfig,
 )
-from .openai_compat import OpenAICompatibleClient
+from .openai_compat import OpenAICompatibleClient, merge_leading_system_messages
 
 
 def _routes_to_anthropic(config: OpenRouterConfig) -> bool:
@@ -26,6 +26,8 @@ def _routes_to_anthropic(config: OpenRouterConfig) -> bool:
 
 
 class OpenRouterRequest(OpenAIRequest):
+    reasoning: dict[str, Any] | None = None
+    provider: dict[str, Any] | None = None
     verbosity: str | None = None
 
 
@@ -82,10 +84,10 @@ class OpenRouterClient(OpenAICompatibleClient):
             base_url=config.base_url,
             max_tokens=config.max_tokens,
             request_timeout=config.request_timeout,
-            reasoning_payload=_map_reasoning(config.reasoning),
-            provider_payload=_map_provider_routing(config.provider_routing),
             temperature=config.temperature,
         )
+        self.reasoning_payload = _map_reasoning(config.reasoning)
+        self.provider_payload = _map_provider_routing(config.provider_routing)
 
     def _convert_messages(self, messages: list[Message]) -> list[OpenAIMessagePayload]:
         """Merge consecutive leading system messages into one.
@@ -97,28 +99,7 @@ class OpenRouterClient(OpenAICompatibleClient):
         converted = super()._convert_messages(messages)
         if self._pins_anthropic:
             return converted
-        if len(converted) < 2:
-            return converted
-        # Collect consecutive system messages from the start
-        sys_end = 0
-        while sys_end < len(converted) and converted[sys_end].role == "system":
-            sys_end += 1
-        if sys_end <= 1:
-            return converted
-        # Merge text content from all leading system messages
-        merged_parts: list[str] = []
-        for msg in converted[:sys_end]:
-            if isinstance(msg.content, str):
-                merged_parts.append(msg.content)
-            elif isinstance(msg.content, list):
-                for part in msg.content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        merged_parts.append(part["text"])
-        merged = OpenAIMessagePayload(
-            role="system",
-            content="\n\n".join(merged_parts),
-        )
-        return [merged] + converted[sys_end:]
+        return merge_leading_system_messages(converted)
 
     def _build_request(
         self,
@@ -135,6 +116,8 @@ class OpenRouterClient(OpenAICompatibleClient):
             temperature=temperature,
         )
         payload = request.model_dump()
+        payload["reasoning"] = self.reasoning_payload
+        payload["provider"] = self.provider_payload
         if self.verbosity is not None:
             payload["verbosity"] = self.verbosity
         return OpenRouterRequest.model_validate(payload)

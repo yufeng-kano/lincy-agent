@@ -10,6 +10,20 @@ from ..timezone_utils import now as tz_now
 Role = Literal["user", "assistant", "system", "tool"]
 
 
+def split_turns(entries: list[Any]) -> list[list[Any]]:
+    """Group entries into user-started turns, retaining preamble entries."""
+    turns: list[list[Any]] = []
+    current_turn: list[Any] = []
+    for entry in entries:
+        if entry.role == "user" and current_turn:
+            turns.append(current_turn)
+            current_turn = []
+        current_turn.append(entry)
+    if current_turn:
+        turns.append(current_turn)
+    return turns
+
+
 class Conversation:
     """Stores conversation history as SessionEntry objects."""
 
@@ -161,15 +175,7 @@ class Conversation:
         A turn = one user message + all subsequent non-user messages.
         Returns number of messages removed.
         """
-        turns: list[list[SessionEntry]] = []
-        current_turn: list[SessionEntry] = []
-        for entry in self._messages:
-            if entry.role == "user" and current_turn:
-                turns.append(current_turn)
-                current_turn = []
-            current_turn.append(entry)
-        if current_turn:
-            turns.append(current_turn)
+        turns = split_turns(self._messages)
 
         if len(turns) <= preserve_turns:
             return 0

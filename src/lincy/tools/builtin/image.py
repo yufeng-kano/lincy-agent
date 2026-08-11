@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...llm.schema import ContentPart, ToolDefinition, ToolParameter
-from ..security import is_path_allowed
+from ..security import resolve_allowed_path
+from markdownify import markdownify
 
 if TYPE_CHECKING:
     from .vision import VisionAgent
@@ -18,9 +19,7 @@ logger = logging.getLogger(__name__)
 MAX_LONG_EDGE = 1568  # Anthropic limit; safe for all providers
 RESIZE_JPEG_QUALITY = 85
 
-_SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-
-_MIME_TYPES = {
+IMAGE_MIME_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -28,6 +27,17 @@ _MIME_TYPES = {
     ".webp": "image/webp",
     ".bmp": "image/bmp",
 }
+IMAGE_EXTENSIONS_BY_MIME = {mime: ext for ext, mime in IMAGE_MIME_TYPES.items()}
+_SUPPORTED_EXTENSIONS = set(IMAGE_MIME_TYPES)
+
+
+def html_to_markdown(html: str) -> str:
+    """Convert HTML into readable Markdown without executable elements."""
+    return markdownify(
+        html,
+        strip=["script", "style", "noscript", "template"],
+        heading_style="ATX",
+    ).strip()
 
 READ_IMAGE_DEFINITION = ToolDefinition(
     name="read_image",
@@ -55,16 +65,9 @@ def _read_image_data(
 
     Raises ValueError on invalid path/format, FileNotFoundError if missing.
     """
-    # Expand ~ before any checks
-    path = str(Path(path).expanduser())
-
-    if not is_path_allowed(path, allowed_paths, base_dir):
+    target = resolve_allowed_path(path, allowed_paths, base_dir)
+    if target is None:
         raise ValueError(f"Path not allowed: {path}")
-
-    target = Path(path)
-    if not target.is_absolute():
-        target = base_dir / target
-    target = target.resolve()
 
     if not target.exists():
         raise FileNotFoundError(f"Image not found: {path}")
@@ -76,7 +79,7 @@ def _read_image_data(
             f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
         )
 
-    media_type = _MIME_TYPES[ext]
+    media_type = IMAGE_MIME_TYPES[ext]
     raw = target.read_bytes()
 
     # Get dimensions; resize if too large

@@ -256,6 +256,29 @@ class LLMProviderConfig(StrictConfigModel):
         """Whether this adapter exposes native structured outputs."""
         return False
 
+    def _validate_effort_reasoning(
+        self,
+        reasoning: Any,
+        *,
+        source_path: Path,
+        supported_efforts: list[str] | None,
+    ) -> Any:
+        """Normalize and validate common enabled/effort reasoning fields."""
+        ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
+        enabled = reasoning.enabled
+        if reasoning.effort is not None and enabled is None:
+            reasoning = reasoning.model_copy(update={"enabled": True})
+            enabled = True
+        if enabled is False and reasoning.effort is not None:
+            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
+        if reasoning.effort is not None and supported_efforts is not None and reasoning.effort not in supported_efforts:
+            allowed = ", ".join(supported_efforts) or "(none)"
+            raise ValueError(
+                f"reasoning.effort={reasoning.effort!r} is not supported "
+                f"(supported_efforts={allowed}) {ctx}"
+            )
+        return reasoning
+
 
 class OllamaNativeToggleThinkingConfig(StrictConfigModel):
     """Ollama native thinking toggle.
@@ -373,22 +396,13 @@ class CopilotConfig(LLMProviderConfig):
         return trimmed
 
     def validate_reasoning(self, *, source_path: Path) -> "CopilotConfig":
-        reasoning = self.reasoning
-        if reasoning is None:
+        if self.reasoning is None:
             return self
-        ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        enabled = reasoning.enabled
-        if reasoning.effort is not None and enabled is None:
-            enabled = True
-            reasoning = reasoning.model_copy(update={"enabled": enabled})
-        if enabled is False and reasoning.effort is not None:
-            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
-        if reasoning.effort is not None and reasoning.effort not in reasoning.supported_efforts:
-            allowed = ", ".join(reasoning.supported_efforts) or "(none)"
-            raise ValueError(
-                f"reasoning.effort={reasoning.effort!r} is not supported "
-                f"(supported_efforts={allowed}) {ctx}"
-            )
+        reasoning = self._validate_effort_reasoning(
+            self.reasoning,
+            source_path=source_path,
+            supported_efforts=self.reasoning.supported_efforts,
+        )
         return self.model_copy(update={"reasoning": reasoning})
 
     def get_vision(self) -> bool:
@@ -454,22 +468,13 @@ class CodexConfig(LLMProviderConfig):
         return trimmed
 
     def validate_reasoning(self, *, source_path: Path) -> "CodexConfig":
-        reasoning = self.reasoning
-        if reasoning is None:
+        if self.reasoning is None:
             return self
-        ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        enabled = reasoning.enabled
-        if reasoning.effort is not None and enabled is None:
-            enabled = True
-            reasoning = reasoning.model_copy(update={"enabled": enabled})
-        if enabled is False and reasoning.effort is not None:
-            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
-        if reasoning.effort is not None and reasoning.effort not in reasoning.supported_efforts:
-            allowed = ", ".join(reasoning.supported_efforts) or "(none)"
-            raise ValueError(
-                f"reasoning.effort={reasoning.effort!r} is not supported "
-                f"(supported_efforts={allowed}) {ctx}"
-            )
+        reasoning = self._validate_effort_reasoning(
+            self.reasoning,
+            source_path=source_path,
+            supported_efforts=self.reasoning.supported_efforts,
+        )
         return self.model_copy(update={"reasoning": reasoning})
 
     def get_vision(self) -> bool:
@@ -524,7 +529,7 @@ ClaudeCodeThinkingConfig = Annotated[
 # Upstream effort support per Claude model family. Only families that reject
 # part of the effort ladder are listed; anything unlisted passes through, so a
 # new model id is never blocked at load time. See docs/dev/provider-api-spec.md.
-_CLAUDE_CODE_MODEL_EFFORTS: tuple[tuple[str, frozenset[str]], ...] = (
+_CLAUDE_MODEL_EFFORTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("haiku-4-5", frozenset()),
     ("sonnet-4-5", frozenset()),
     ("opus-4-5", frozenset({"low", "medium", "high"})),
@@ -580,7 +585,7 @@ class ClaudeCodeConfig(LLMProviderConfig):
 
         ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
         model = self.model.lower()
-        for family, allowed in _CLAUDE_CODE_MODEL_EFFORTS:
+        for family, allowed in _CLAUDE_MODEL_EFFORTS:
             if family not in model:
                 continue
             if effort not in allowed:
@@ -657,28 +662,13 @@ class GrokConfig(LLMProviderConfig):
         return trimmed
 
     def validate_reasoning(self, *, source_path: Path) -> "GrokConfig":
-        reasoning = self.reasoning
-        if reasoning is None:
+        if self.reasoning is None:
             return self
-        ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        enabled = reasoning.enabled
-        if reasoning.effort is not None and enabled is None:
-            enabled = True
-            reasoning = reasoning.model_copy(update={"enabled": enabled})
-        if enabled is False and reasoning.effort is not None:
-            raise ValueError(
-                "reasoning.effort cannot be set when enabled is false " + ctx
-            )
-        if (
-            reasoning.effort is not None
-            and reasoning.supported_efforts
-            and reasoning.effort not in reasoning.supported_efforts
-        ):
-            allowed = ", ".join(reasoning.supported_efforts) or "(none)"
-            raise ValueError(
-                f"reasoning.effort={reasoning.effort!r} is not supported "
-                f"(supported_efforts={allowed}) {ctx}"
-            )
+        reasoning = self._validate_effort_reasoning(
+            self.reasoning,
+            source_path=source_path,
+            supported_efforts=self.reasoning.supported_efforts or None,
+        )
         return self.model_copy(update={"reasoning": reasoning})
 
     def get_vision(self) -> bool:
@@ -737,17 +727,16 @@ class OpenAIConfig(LLMProviderConfig):
         if reasoning is None:
             return self
         ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        enabled = reasoning.enabled
-        if reasoning.effort is not None and enabled is None:
-            enabled = True
-            reasoning = reasoning.model_copy(update={"enabled": enabled})
-        if enabled is False and reasoning.effort is not None:
-            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
         if self.capabilities is None:
             raise ValueError(
                 "reasoning is configured but capabilities.reasoning is missing " + ctx
             )
         caps = self.capabilities.reasoning
+        reasoning = self._validate_effort_reasoning(
+            reasoning,
+            source_path=source_path,
+            supported_efforts=None,
+        )
         if reasoning.enabled is not None and not caps.supports_toggle:
             raise ValueError(
                 "reasoning.enabled is set, but supports_toggle=false " + ctx
@@ -883,16 +872,6 @@ class AnthropicOutputConfig(StrictConfigModel):
         return self
 
 
-# Keep this list aligned with the Claude Code native provider. Only model
-# families with documented limits are listed; unknown and future ids pass through.
-_ANTHROPIC_MODEL_EFFORTS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("haiku-4-5", frozenset()),
-    ("sonnet-4-5", frozenset()),
-    ("opus-4-5", frozenset({"low", "medium", "high"})),
-    ("opus-4-6", frozenset({"low", "medium", "high", "max"})),
-    ("sonnet-4-6", frozenset({"low", "medium", "high", "max"})),
-)
-
 
 class AnthropicConfig(LLMProviderConfig):
     """Anthropic provider configuration using native Messages API fields."""
@@ -916,7 +895,7 @@ class AnthropicConfig(LLMProviderConfig):
 
         ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
         model = self.model.lower()
-        for family, allowed in _ANTHROPIC_MODEL_EFFORTS:
+        for family, allowed in _CLAUDE_MODEL_EFFORTS:
             if family not in model:
                 continue
             if effort not in allowed:
@@ -980,11 +959,8 @@ class HeyrouteConfig(AnthropicConfig):
 class GeminiThinkingConfig(StrictConfigModel):
     """Gemini thinking config.
 
-    Gemini 3: thinkingLevel (minimal/low/medium/high, model-dependent).
-    Gemini 2.5: thinkingBudget (token count, 0=off, -1=dynamic).
-    This adapter maps effort -> thinkingLevel and max_tokens -> thinkingBudget.
-    'minimal' is NOT yet mapped. enabled=False sets thinkingBudget=0, which is
-    invalid for Gemini 3 Pro. See docs/dev/provider-api-spec.md.
+    Gemini 3 uses thinkingLevel and Gemini 2.5 uses thinkingBudget. The
+    adapter currently maps low, medium, and high effort levels only.
     """
 
     enabled: bool | None = None
@@ -1026,33 +1002,32 @@ class GeminiConfig(LLMProviderConfig):
         if reasoning is None:
             return self
         ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        enabled = reasoning.enabled
-        if reasoning.effort is not None and enabled is None:
-            enabled = True
-            reasoning = reasoning.model_copy(update={"enabled": enabled})
-        if enabled is False and reasoning.effort is not None:
-            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
-        if enabled is False and reasoning.max_tokens is not None:
-            raise ValueError("reasoning.max_tokens cannot be set when enabled is false " + ctx)
         if self.capabilities is None:
             raise ValueError(
                 "reasoning is configured but capabilities.reasoning is missing " + ctx
             )
         caps = self.capabilities.reasoning
+        reasoning = self._validate_effort_reasoning(
+            reasoning,
+            source_path=source_path,
+            supported_efforts=caps.supported_efforts,
+        )
+        if reasoning.enabled is False and reasoning.max_tokens is not None:
+            raise ValueError("reasoning.max_tokens cannot be set when enabled is false " + ctx)
         if reasoning.enabled is not None and not caps.supports_toggle:
             raise ValueError(
                 "reasoning.enabled is set, but supports_toggle=false " + ctx
-            )
-        if reasoning.effort is not None and reasoning.effort not in caps.supported_efforts:
-            allowed = ", ".join(caps.supported_efforts) or "(none)"
-            raise ValueError(
-                f"reasoning.effort={reasoning.effort!r} is not supported "
-                f"(supported_efforts={allowed}) {ctx}"
             )
         if reasoning.max_tokens is not None and not caps.supports_max_tokens:
             raise ValueError(
                 "reasoning.max_tokens is set, but supports_max_tokens=false " + ctx
             )
+        if reasoning.effort == "minimal":
+            raise ValueError(
+                "reasoning.effort=minimal is not supported by the Gemini adapter " + ctx
+            )
+        if reasoning.enabled is False and "gemini-3-pro" in self.model.lower():
+            raise ValueError("Gemini 3 Pro does not support reasoning.enabled=false " + ctx)
         return self.model_copy(update={"reasoning": reasoning})
 
     def get_vision(self) -> bool:
@@ -1192,24 +1167,17 @@ class OpenRouterConfig(LLMProviderConfig):
         if reasoning is None:
             return self
         ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        enabled = reasoning.enabled
-        if reasoning.effort is not None and enabled is None:
-            enabled = True
-            reasoning = reasoning.model_copy(update={"enabled": enabled})
-        if enabled is False and reasoning.effort is not None:
-            raise ValueError("reasoning.effort cannot be set when enabled is false " + ctx)
-        if enabled is False and reasoning.max_tokens is not None:
+        reasoning = self._validate_effort_reasoning(
+            reasoning,
+            source_path=source_path,
+            supported_efforts=reasoning.supported_efforts,
+        )
+        if reasoning.enabled is False and reasoning.max_tokens is not None:
             raise ValueError("reasoning.max_tokens cannot be set when enabled is false " + ctx)
         # Mutual exclusivity: effort and max_tokens cannot both be set
         if reasoning.effort is not None and reasoning.max_tokens is not None:
             raise ValueError(
                 "reasoning.effort and reasoning.max_tokens are mutually exclusive " + ctx
-            )
-        if reasoning.effort is not None and reasoning.effort not in reasoning.supported_efforts:
-            allowed = ", ".join(reasoning.supported_efforts) or "(none)"
-            raise ValueError(
-                f"reasoning.effort={reasoning.effort!r} is not supported "
-                f"(supported_efforts={allowed}) {ctx}"
             )
         return self.model_copy(update={"reasoning": reasoning})
 
@@ -1310,11 +1278,6 @@ class AgentConfig(StrictConfigModel):
     allow_wait_tool: bool = True
     step_delay_min: float = Field(default=0.0, ge=0.0, le=10.0)
     step_delay_max: float = Field(default=0.0, ge=0.0, le=10.0)
-    gui_intent_max_chars: int | None = Field(default=None, ge=10)
-    gui_instruction_max_chars: int | None = Field(default=None, ge=10)
-    gui_text_max_chars: int | None = Field(default=None, ge=10)
-    gui_worker_result_max_chars: int | None = Field(default=None, ge=10)
-    gui_result_max_chars: int | None = Field(default=None, ge=10)
     # GUI screenshot optimization
     screenshot_max_width: int | None = Field(default=1280, ge=256)
     screenshot_quality: int = Field(default=80, ge=10, le=100)

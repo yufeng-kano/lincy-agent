@@ -1,9 +1,5 @@
 """Retry wrapper for transient LLM client failures."""
 
-from datetime import timezone
-
-from ..timezone_utils import now as tz_now
-from email.utils import parsedate_to_datetime
 from typing import Any, Callable, TypeVar
 import logging
 import random
@@ -13,8 +9,13 @@ import httpx
 from pydantic import ValidationError
 
 from .base import LLMClient
-from .http_error import classify_http_status_error
-from .schema import LLMResponse, MalformedFunctionCallError, Message, ToolDefinition
+from .http_error import (
+    classify_http_status_error,
+    is_rate_limit_error,
+    is_transient_error,
+    parse_retry_after_seconds,
+)
+from .schema import LLMResponse, Message, ToolDefinition
 
 T = TypeVar("T")
 _429_BACKOFF_SCHEDULE = (5.0, 10.0, 20.0, 30.0, 30.0)
@@ -121,35 +122,15 @@ def with_llm_retry(
 
 def _is_429_error(exc: Exception) -> bool:
     """Return True if the exception is an HTTP 429 rate limit error."""
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response is not None and exc.response.status_code == 429
-    return False
+    return is_rate_limit_error(exc)
 
 
 def _is_retryable_exception(exc: Exception) -> bool:
-    """Return True for transient exceptions that can succeed on retry.
+    """Return True for transient failures handled by retry policy."""
+    return is_transient_error(exc, include_parse_errors=True) or isinstance(exc, ValidationError)
 
-    Note: 429 is handled separately via _is_429_error.
-    """
-    if isinstance(
-        exc,
-        (
-            httpx.TimeoutException,
-            TimeoutError,
-            httpx.ConnectError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
-            MalformedFunctionCallError,
-            ValidationError,
-        ),
-    ):
-        return True
 
-    if isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code if exc.response is not None else None
-        return status_code in {500, 502, 503, 504, 529}
-
-    return False
+_parse_retry_after_seconds = parse_retry_after_seconds
 
 
 def _429_sleep_seconds(exc: Exception, attempt: int) -> float:
@@ -207,28 +188,3 @@ def _retry_log_prefix(label: str) -> str:
     if not label:
         return ""
     return f"[{label}] "
-
-
-def _parse_retry_after_seconds(raw: str | None) -> float | None:
-    """Parse Retry-After header value to seconds."""
-    if not raw:
-        return None
-    value = raw.strip()
-    if not value:
-        return None
-    try:
-        seconds = float(value)
-    except ValueError:
-        seconds = None
-    if seconds is not None:
-        return seconds
-
-    try:
-        retry_at = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-
-    if retry_at.tzinfo is None:
-        retry_at = retry_at.replace(tzinfo=timezone.utc)
-    delta = (retry_at - tz_now()).total_seconds()
-    return max(0.0, delta)

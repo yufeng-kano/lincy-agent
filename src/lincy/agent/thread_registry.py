@@ -7,12 +7,10 @@ proactive messages.  Each adapter decides what payload to store.
 Storage: .agent/state/thread_registry.json
 """
 
-import json
-import logging
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from ..json_store import load_json, save_json
 
 # {"gmail": {"email@addr": {"thread_id": "...", ...}}}
 ThreadRegistryData = dict[str, dict[str, dict[str, Any]]]
@@ -47,18 +45,9 @@ class ThreadRegistry:
         self._persist()
 
     def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw: Any = json.loads(self._path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                self._data = raw
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to load thread registry %s: %s", self._path, exc)
+        raw = load_json(self._path, default={})
+        if isinstance(raw, dict):
+            self._data = raw
 
     def _persist(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_json(self._path, self._data)

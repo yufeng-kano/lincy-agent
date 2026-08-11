@@ -2,6 +2,7 @@
 
 from rich.console import Console
 
+from ..agent.ui_event_console import UiEventConsole
 from ..context import ContextBuilder, Conversation
 from ..core import load_config
 from ..llm import create_agent_client
@@ -18,8 +19,42 @@ from ..tools import (
     create_edit_file,
     create_execute_shell,
 )
+from ..tui.events import (
+    AssistantTextEvent,
+    ErrorEvent,
+    ResumeHistoryEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    WarningEvent,
+)
+from ..worker.runner import run_simple_tool_loop
 from ..workspace import WorkspaceManager, WorkspaceInitializer
-from .console import ChatConsole
+
+
+class _RichUiSink:
+    """Minimal Rich renderer for the non-Textual initialization flow."""
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+
+    def emit(self, event: object) -> None:
+        match event:
+            case AssistantTextEvent(content=content):
+                self._console.print(content)
+            case ToolCallEvent(name=name, summary=summary):
+                self._console.print(f"  {name}: {summary}", style="blue", markup=False)
+            case ToolResultEvent(name=name, summary=summary, failed=failed):
+                self._console.print(
+                    f"    {name}: {summary}",
+                    style="red" if failed else "dim",
+                    markup=False,
+                )
+            case WarningEvent(message=message):
+                self._console.print(f"Warning: {message}", style="yellow", markup=False)
+            case ErrorEvent(message=message):
+                self._console.print(f"Error: {message}", style="red", markup=False)
+            case ResumeHistoryEvent(summary=summary):
+                self._console.print(summary, markup=False)
 
 
 def _setup_tools(config) -> ToolRegistry:
@@ -29,7 +64,6 @@ def _setup_tools(config) -> ToolRegistry:
     allowed_paths = [str(agent_os_dir)]
     tools_config = config.tools
 
-    # Shell
     executor = ShellExecutor(
         agent_os_dir=agent_os_dir,
         blacklist=tools_config.shell.blacklist,
@@ -40,8 +74,6 @@ def _setup_tools(config) -> ToolRegistry:
         create_execute_shell(executor),
         EXECUTE_SHELL_DEFINITION,
     )
-
-    # File tools
     registry.register(
         "read_file",
         create_read_file(allowed_paths, agent_os_dir),
@@ -57,7 +89,6 @@ def _setup_tools(config) -> ToolRegistry:
         create_edit_file(allowed_paths, agent_os_dir),
         EDIT_FILE_DEFINITION,
     )
-
     return registry
 
 
@@ -67,15 +98,11 @@ def _run_init_agent(config, workspace: WorkspaceManager) -> None:
         raise ValueError("agents.init not configured. Add it to config to use init agent.")
 
     init_agent_config = config.agents["init"]
-    client = create_agent_client(
-        init_agent_config,
-        retry_label="init",
-    )
-
+    client = create_agent_client(init_agent_config, retry_label="init")
     system_prompt = workspace.get_system_prompt("init")
 
-    console = ChatConsole()
     prompt_console = Console()
+    console = UiEventConsole(_RichUiSink(prompt_console), show_tool_use=True)
     conversation = Conversation()
     builder = ContextBuilder(system_prompt=system_prompt)
     registry = _setup_tools(config)
@@ -91,46 +118,34 @@ def _run_init_agent(config, workspace: WorkspaceManager) -> None:
         user_input = user_input.strip()
         if not user_input:
             continue
-
         if user_input.lower() in ("/exit", "/quit", "/q"):
             break
 
         conversation.add("user", user_input)
-        messages = builder.build(conversation)
-
         try:
-            tools = registry.get_definitions()
-
-            with console.spinner():
-                response = client.chat_with_tools(messages, tools)
-
-            while response.has_tool_calls():
+            def _handle_tool_calls(response) -> None:
                 conversation.add_assistant_with_tools(
                     response.content,
                     response.tool_calls,
                     reasoning_content=response.reasoning_content,
                     reasoning_details=response.reasoning_details,
                 )
-
                 for tool_call in response.tool_calls:
                     console.print_tool_call(tool_call)
-                    with console.spinner("Executing..."):
-                        result = registry.execute(tool_call)
+                    result = registry.execute(tool_call)
                     console.print_tool_result(tool_call, result.content)
-                    conversation.add_tool_result(tool_call.id, tool_call.name, result.content)
+                    conversation.add_tool_result(
+                        tool_call.id,
+                        tool_call.name,
+                        result.content,
+                    )
 
-                messages = builder.build(conversation)
-                with console.spinner():
-                    response = client.chat_with_tools(messages, tools)
-
-            final_content = response.content or ""
-            if not final_content.strip():
-                messages = builder.build(conversation)
-                with console.spinner():
-                    final_content = client.chat_with_tools(messages, []).content or ""
-
-            if not final_content.strip():
-                finalize_messages = [
+            final_content = run_simple_tool_loop(
+                client,
+                build_messages=lambda: builder.build(conversation),
+                tool_definitions=registry.get_definitions(),
+                handle_tool_calls=_handle_tool_calls,
+                finalization_messages=lambda: [
                     *builder.build(conversation),
                     Message(
                         role="user",
@@ -139,26 +154,16 @@ def _run_init_agent(config, workspace: WorkspaceManager) -> None:
                             "Do not call tools."
                         ),
                     ),
-                ]
-                with console.spinner():
-                    final_content = (
-                        client.chat_with_tools(finalize_messages, []).content or ""
-                    )
-
-            if not final_content.strip():
-                raise RuntimeError(
-                    "Model returned empty final response during init flow."
-                )
-
+                ],
+            )
             conversation.add("assistant", final_content)
             console.print_assistant(final_content)
-
         except Exception as e:
             console.print_error(str(e))
             conversation.truncate_to(max(len(conversation) - 1, 0))
-            continue
 
     console.print_info("Persona setup complete.")
+
 
 def init_command() -> None:
     """Initialize workspace directory and run init agent."""
@@ -185,16 +190,13 @@ def init_command() -> None:
                 initializer.upgrade_kernel()
                 console.print("[green]Kernel upgraded successfully[/green]")
 
-        # Offer to re-run init agent
         if "init" in config.agents and _confirm(console, "Re-run persona setup?"):
             _run_init_agent(config, manager)
         return
 
-    # Create workspace structure
     initializer.create_structure()
     console.print("[green]Workspace created successfully[/green]\n")
 
-    # Run init agent if configured
     if "init" in config.agents:
         _run_init_agent(config, manager)
     else:

@@ -361,7 +361,6 @@ def test_run_responder_injects_required_skill_before_discord_send(tmp_path: Path
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=turn_context,
     )
@@ -540,7 +539,6 @@ def test_read_file_of_skill_guide_marks_turn_as_loaded(tmp_path: Path):
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=turn_context,
     )
@@ -600,7 +598,6 @@ def test_second_turn_reuses_existing_injected_skill_guide(tmp_path: Path):
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=first_turn_context,
     )
@@ -639,7 +636,6 @@ def test_second_turn_reuses_existing_injected_skill_guide(tmp_path: Path):
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=second_turn_context,
     )
@@ -695,7 +691,6 @@ def test_second_turn_reuses_prior_read_file_guide_from_conversation(tmp_path: Pa
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=first_turn_context,
     )
@@ -728,7 +723,6 @@ def test_second_turn_reuses_prior_read_file_guide_from_conversation(tmp_path: Pa
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=second_turn_context,
     )
@@ -787,7 +781,6 @@ def test_compaction_drops_guide_and_next_turn_reinjects(tmp_path: Path):
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=first_turn_context,
     )
@@ -843,7 +836,6 @@ def test_compaction_drops_guide_and_next_turn_reinjects(tmp_path: Path):
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=_console(),  # type: ignore[arg-type]
-        tools_config=ToolsConfig(),
         skill_registry=skill_registry,
         turn_context=second_turn_context,
     )

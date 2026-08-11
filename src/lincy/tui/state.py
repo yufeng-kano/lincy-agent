@@ -23,6 +23,7 @@ from .events import (
     WarningEvent,
 )
 from ..timezone_utils import localise as tz_localise
+from .formatting import indent_lines
 
 
 @dataclass(slots=True)
@@ -54,12 +55,6 @@ class UiState:
                 return False
         self.log.append(candidate)
         return True
-
-    @staticmethod
-    def _indent(text: str, prefix: str = "  ") -> str:
-        """Indent multiline text for nested UI sections."""
-        lines = text.splitlines() or [""]
-        return "\n".join(f"{prefix}{line}" for line in lines)
 
     def _ts(self, ts: datetime) -> str:
         """Format event timestamp using local time for display."""
@@ -100,11 +95,11 @@ class UiState:
                 # Outbound display is redundant with send_message tool logs in the TUI.
                 return False
             case ToolCallEvent(timestamp=ts, name=name, summary=summary):
-                text = name if not summary.strip() else f"{name}\n{self._indent(summary)}"
+                text = name if not summary.strip() else f"{name}\n{indent_lines(summary)}"
                 return self._append_log("tool_call", text, timestamp=ts)
             case ToolResultEvent(timestamp=ts, name=name, summary=summary, failed=failed, warning=warning):
                 level = "tool_error" if failed else ("tool_warn" if warning else "tool_result")
-                text = name if not summary.strip() else f"{name}\n{self._indent(summary)}"
+                text = name if not summary.strip() else f"{name}\n{indent_lines(summary)}"
                 return self._append_log(level, text, timestamp=ts)
             case ToolStreamEvent(timestamp=ts, line=line):
                 return self._append_log("tool_stream", line, timestamp=ts)

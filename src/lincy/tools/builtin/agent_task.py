@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ...llm.schema import ToolDefinition, ToolParameter
+from .batch_helpers import format_source_result, validate_source_fields
 from ...timezone_utils import get_tz, now as tz_now
 
 if TYPE_CHECKING:
@@ -112,7 +113,7 @@ def create_agent_task(
         source_id: str | None = None,
         source_label: str | None = None,
     ) -> str:
-        source_error = _validate_source_fields(
+        source_error = validate_source_fields(
             source_app=source_app,
             source_id=source_id,
             source_label=source_label,
@@ -227,7 +228,7 @@ def create_agent_task(
             _enqueue_wakeup(task.id, task.title, due_dt, recurrence_str)
 
         parts = [f"OK: created [{task.id}] {task.title}"]
-        source = _format_source_result(task.source_app, task.source_label, task.source_id)
+        source = format_source_result(task.source_app, task.source_label, task.source_id)
         if source:
             parts.append(f"source: {source}")
         if due_dt:
@@ -317,7 +318,7 @@ def create_agent_task(
             if due_dt is not None:
                 _enqueue_wakeup(task.id, task.title, due_dt, task.recurrence)
 
-        source = _format_source_result(task.source_app, task.source_label, task.source_id)
+        source = format_source_result(task.source_app, task.source_label, task.source_id)
         if source:
             return f"OK: updated [{task.id}] | source: {source}"
         return f"OK: updated [{task.id}]"
@@ -333,29 +334,3 @@ def create_agent_task(
         return f"OK: removed [{task_id}]"
 
     return agent_task
-
-
-def _validate_source_fields(
-    *,
-    source_app: str | None,
-    source_id: str | None,
-    source_label: str | None,
-) -> str | None:
-    if (source_id or source_label) and not source_app:
-        return "Error: 'source_app' is required when source_id or source_label is set"
-    return None
-
-
-def _format_source_result(
-    source_app: str | None,
-    source_label: str | None,
-    source_id: str | None,
-) -> str | None:
-    if not source_app:
-        return None
-    text = source_app
-    if source_label:
-        text = f"{text}:{source_label}"
-    if source_id:
-        text = f"{text} ({source_id})"
-    return text

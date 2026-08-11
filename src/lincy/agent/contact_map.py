@@ -5,12 +5,10 @@ Two-layer sender resolution:
   Layer 2 (brain LLM):   memory_search + update_contact_mapping tool
 """
 
-import json
-import logging
 from pathlib import Path
-from typing import Any
 
-logger = logging.getLogger(__name__)
+from ..json_store import load_json, save_json
+
 
 # {"gmail": {"email@addr": "name"}, "line": {"display": "name"}}
 ContactMapData = dict[str, dict[str, str]]
@@ -31,14 +29,9 @@ class ContactMap:
         self._load()
 
     def _load(self) -> None:
-        if not self._path.exists():
-            return
-        try:
-            raw: Any = json.loads(self._path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                self._data = raw
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to load contact map %s: %s", self._path, exc)
+        raw = load_json(self._path, default={})
+        if isinstance(raw, dict):
+            self._data = raw
 
     def resolve(self, channel: str, sender_key: str) -> str | None:
         """Look up cached name for a sender. Returns None on miss."""
@@ -59,8 +52,4 @@ class ContactMap:
         self._persist()
 
     def _persist(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_json(self._path, self._data)

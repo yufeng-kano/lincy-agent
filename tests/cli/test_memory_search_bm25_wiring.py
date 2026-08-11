@@ -127,7 +127,7 @@ def test_main_wires_bm25_memory_search(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(app_module, "load_config", lambda: _make_app_config(tmp_path))
     monkeypatch.setattr(app_module, "WorkspaceManager", _DummyWorkspace)
     monkeypatch.setattr(app_module, "WorkspaceInitializer", _DummyInitializer)
-    monkeypatch.setattr(app_module, "TextualUiConsole", lambda *a, **kw: _DummyConsole())
+    monkeypatch.setattr(app_module, "UiEventConsole", lambda *a, **kw: _DummyConsole())
     monkeypatch.setattr(app_module, "ChatTextualApp", _DummyTextualApp)
     monkeypatch.setattr(
         app_module,

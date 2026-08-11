@@ -255,12 +255,6 @@ class TestFormatToolCallGUITask:
         text = format_tool_call(tc)
         assert f"GUI Task: {long_intent}" in text
 
-    def test_gui_task_custom_intent_max_chars_is_ignored_for_no_truncation(self):
-        tc = ToolCall(id="g3", name="gui_task", arguments={"intent": "A" * 50})
-        text = format_tool_call(tc, gui_intent_max_chars=30)
-        first_line = text.split("\n")[0]
-        assert first_line == f"GUI Task: {'A' * 50}"
-
     def test_gui_task_with_app_prompt(self):
         tc = ToolCall(id="g4", name="gui_task", arguments={
             "intent": "Open LINE",
@@ -291,46 +285,6 @@ class TestFormatToolCallWebSearch:
 
 
 class TestFormatGUIToolCall:
-    def test_ask_worker(self):
-        tc = ToolCall(id="1", name="ask_worker", arguments={"instruction": "Find Safari"})
-        assert format_gui_tool_call(tc) == "ask_worker: Find Safari"
-
-    def test_ask_worker_does_not_truncate(self):
-        tc = ToolCall(id="1", name="ask_worker", arguments={"instruction": "X" * 80})
-        text = format_gui_tool_call(tc)
-        assert text == f"ask_worker: {'X' * 80}"
-
-    def test_ask_worker_custom_instruction_max_chars_is_ignored(self):
-        tc = ToolCall(id="1", name="ask_worker", arguments={"instruction": "X" * 40})
-        text = format_gui_tool_call(tc, instruction_max_chars=20)
-        assert text == f"ask_worker: {'X' * 40}"
-
-    def test_click(self):
-        tc = ToolCall(id="2", name="click", arguments={"bbox": [10, 20, 30, 40]})
-        assert format_gui_tool_call(tc) == "click: bbox=[10, 20, 30, 40]"
-
-    def test_type_text(self):
-        tc = ToolCall(id="3", name="type_text", arguments={"text": "hello"})
-        assert format_gui_tool_call(tc) == 'type_text: "hello"'
-
-    def test_type_text_does_not_truncate(self):
-        tc = ToolCall(id="3", name="type_text", arguments={"text": "Z" * 50})
-        text = format_gui_tool_call(tc)
-        assert text == f'type_text: "{"Z" * 50}"'
-
-    def test_type_text_custom_text_max_chars_is_ignored(self):
-        tc = ToolCall(id="3", name="type_text", arguments={"text": "Z" * 30})
-        text = format_gui_tool_call(tc, text_max_chars=15)
-        assert text == f'type_text: "{"Z" * 30}"'
-
-    def test_key_press(self):
-        tc = ToolCall(id="4", name="key_press", arguments={"key": "enter"})
-        assert format_gui_tool_call(tc) == "key_press: enter"
-
-    def test_screenshot(self):
-        tc = ToolCall(id="5", name="screenshot", arguments={})
-        assert format_gui_tool_call(tc) == "screenshot"
-
     def test_done(self):
         tc = ToolCall(id="6", name="done", arguments={"summary": "Task done."})
         assert format_gui_tool_call(tc) == "done: Task done."
@@ -349,25 +303,6 @@ class TestFormatGUIToolCall:
 
 
 class TestFormatGUIToolResult:
-    def test_screenshot_result(self):
-        tc = ToolCall(id="1", name="screenshot", arguments={})
-        assert format_gui_tool_result(tc, "(screenshot)") == "(screenshot captured)"
-
-    def test_ask_worker_short(self):
-        tc = ToolCall(id="2", name="ask_worker", arguments={"instruction": "Look"})
-        assert format_gui_tool_result(tc, "Found button at top") == "Found button at top"
-
-    def test_ask_worker_result_does_not_truncate(self):
-        tc = ToolCall(id="2", name="ask_worker", arguments={"instruction": "Look"})
-        long_result = "A" * 120
-        text = format_gui_tool_result(tc, long_result)
-        assert text == long_result
-
-    def test_ask_worker_custom_worker_result_max_chars_is_ignored(self):
-        tc = ToolCall(id="2", name="ask_worker", arguments={"instruction": "Look"})
-        text = format_gui_tool_result(tc, "A" * 60, worker_result_max_chars=30)
-        assert text == "A" * 60
-
     def test_other_tool_short(self):
         tc = ToolCall(id="3", name="click", arguments={"bbox": [1, 2, 3, 4]})
         assert format_gui_tool_result(tc, "Clicked at (100, 200)") == "Clicked at (100, 200)"
@@ -377,8 +312,3 @@ class TestFormatGUIToolResult:
         long_result = "B" * 80
         text = format_gui_tool_result(tc, long_result)
         assert text == long_result
-
-    def test_other_tool_custom_result_max_chars_is_ignored(self):
-        tc = ToolCall(id="3", name="click", arguments={"bbox": [1, 2, 3, 4]})
-        text = format_gui_tool_result(tc, "B" * 40, result_max_chars=20)
-        assert text == "B" * 40

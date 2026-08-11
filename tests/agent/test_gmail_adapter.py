@@ -585,7 +585,8 @@ class TestProcessMessage:
         adapter._process_message("m1")
 
         msg = adapter._agent.enqueued[0]
-        assert "[Attachments]" in msg.content
+        assert msg.content.count("[Attachments]") == 1
+        assert "\n\n[Attachments]\n" in msg.content
         assert "photo.jpg" in msg.content
         assert "image/jpeg" in msg.content
         # Verify file was written

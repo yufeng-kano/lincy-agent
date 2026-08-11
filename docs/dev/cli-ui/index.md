@@ -28,4 +28,4 @@
 ## 注意事項
 
 - `chat-cli` 主介面已使用 `src/lincy/tui/`
-- `ChatConsole` 仍保留給非 Textual 互動（如 `init` 流程與一般 Rich 輸出）
+- 所有執行期輸出都透過 `agent.ui_event_console.UiEventConsole`；`init` 以極簡 Rich sink 渲染同一事件流

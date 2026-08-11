@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, call as mock_call, patch
 
 import pytest
 
-from lincy.gui.actions import bbox_to_center_pixels
 from lincy.llm.schema import ContentPart
 
 
@@ -15,33 +14,6 @@ def mock_pyautogui():
     mock = MagicMock()
     with patch.dict(sys.modules, {"pyautogui": mock}):
         yield mock
-
-
-class TestBboxToCenterPixels:
-    def test_origin(self):
-        cx, cy = bbox_to_center_pixels([0, 0, 0, 0], 1920, 1080)
-        assert cx == 0.0
-        assert cy == 0.0
-
-    def test_center_of_screen(self):
-        cx, cy = bbox_to_center_pixels([0, 0, 1000, 1000], 1920, 1080)
-        assert cx == 960.0
-        assert cy == 540.0
-
-    def test_bottom_right(self):
-        cx, cy = bbox_to_center_pixels([1000, 1000, 1000, 1000], 1920, 1080)
-        assert cx == 1920.0
-        assert cy == 1080.0
-
-    def test_quarter_box(self):
-        cx, cy = bbox_to_center_pixels([0, 0, 500, 500], 1000, 1000)
-        assert cx == 250.0
-        assert cy == 250.0
-
-    def test_asymmetric_screen(self):
-        cx, cy = bbox_to_center_pixels([100, 200, 300, 400], 2000, 1000)
-        assert cx == 600.0
-        assert cy == 200.0
 
 
 class TestTakeScreenshot:
@@ -87,17 +59,6 @@ class TestTakeScreenshot:
         assert result.height == 600
 
 
-class TestClickAtBbox:
-    def test_clicks_at_center(self, mock_pyautogui):
-        from lincy.gui.actions import click_at_bbox
-
-        mock_pyautogui.size.return_value = (1920, 1080)
-        result = click_at_bbox([0, 0, 1000, 1000])
-        mock_pyautogui.click.assert_called_once_with(960.0, 540.0)
-        assert "960" in result
-        assert "540" in result
-
-
 class TestTypeText:
     @patch("time.sleep")
     @patch("subprocess.run")
@@ -133,36 +94,6 @@ class TestTypeText:
             mock_call(actions._CLIPBOARD_SETTLE_SECONDS),
             mock_call(actions._PASTE_SETTLE_SECONDS),
         ]
-
-
-class TestCaptureScreenshot:
-    @patch("subprocess.run")
-    def test_captures_to_temp_file(self, mock_run, mock_pyautogui):
-        from lincy.gui.actions import capture_screenshot_to_temp
-
-        result = capture_screenshot_to_temp("/tmp/test.png")
-        mock_run.assert_called_once_with(
-            ["screencapture", "-x", "/tmp/test.png"], check=True,
-        )
-        assert "captured" in result.lower()
-
-
-class TestPasteScreenshot:
-    @patch("subprocess.run")
-    def test_copies_temp_to_clipboard(self, mock_run, mock_pyautogui, tmp_path):
-        from lincy.gui.actions import paste_screenshot_from_temp
-
-        temp_file = tmp_path / "screenshot.png"
-        temp_file.write_bytes(b"fake png")
-        result = paste_screenshot_from_temp(str(temp_file))
-        mock_run.assert_called_once()
-        assert "clipboard" in result.lower()
-
-    def test_error_when_no_file(self, mock_pyautogui):
-        from lincy.gui.actions import paste_screenshot_from_temp
-
-        result = paste_screenshot_from_temp("/tmp/nonexistent.png")
-        assert "error" in result.lower()
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only")
@@ -228,18 +159,6 @@ class TestActivateApp:
         assert "No application" in result
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only")
-class TestGetActiveApp:
-    @patch("subprocess.run")
-    def test_macos_returns_app_name(self, mock_run, mock_pyautogui):
-        from lincy.gui.actions import get_active_app
-
-        mock_run.return_value = MagicMock(stdout="Terminal\n", returncode=0)
-        result = get_active_app()
-        assert result == "Terminal"
-        mock_run.assert_called_once()
-
-
 class TestWait:
     def test_wait_clamps_and_sleeps(self):
         from lincy.gui.actions import wait
@@ -303,133 +222,3 @@ class TestScrollAtPixel:
         for call in mock_pyautogui.scroll.call_args_list:
             assert call == ((-1,), {})
         assert "up" in result
-
-
-class TestScrollAtBbox:
-    def test_scroll_down(self, mock_pyautogui):
-        from lincy.gui.actions import scroll_at_bbox
-
-        mock_pyautogui.size.return_value = (1920, 1080)
-        result = scroll_at_bbox([0, 0, 1000, 1000], "down", 3)
-        # Should delegate to scroll_at_pixel: moveTo then scroll
-        mock_pyautogui.moveTo.assert_called_once_with(960.0, 540.0)
-        assert mock_pyautogui.scroll.call_count == 3
-        for call in mock_pyautogui.scroll.call_args_list:
-            assert call == ((-1,), {})
-        assert "down" in result
-        assert "3 clicks" in result
-
-    def test_scroll_up(self, mock_pyautogui):
-        from lincy.gui.actions import scroll_at_bbox
-
-        mock_pyautogui.size.return_value = (1920, 1080)
-        result = scroll_at_bbox([0, 0, 1000, 1000], "up", 5)
-        assert mock_pyautogui.scroll.call_count == 5
-        for call in mock_pyautogui.scroll.call_args_list:
-            assert call == ((1,), {})
-        assert "up" in result
-        assert "5 clicks" in result
-
-    def test_scroll_at_specific_bbox(self, mock_pyautogui):
-        from lincy.gui.actions import scroll_at_bbox
-
-        mock_pyautogui.size.return_value = (1000, 1000)
-        scroll_at_bbox([0, 0, 500, 500], "down", 2)
-        mock_pyautogui.moveTo.assert_called_once_with(250.0, 250.0)
-        assert mock_pyautogui.scroll.call_count == 2
-
-    def test_scroll_invert_down(self, mock_pyautogui):
-        from lincy.gui.actions import scroll_at_bbox
-
-        mock_pyautogui.size.return_value = (1000, 1000)
-        result = scroll_at_bbox([0, 0, 1000, 1000], "down", 2, invert=True)
-        assert mock_pyautogui.scroll.call_count == 2
-        # Inverted: down sends +1 instead of -1
-        for call in mock_pyautogui.scroll.call_args_list:
-            assert call == ((1,), {})
-        assert "down" in result
-
-    def test_scroll_invert_up(self, mock_pyautogui):
-        from lincy.gui.actions import scroll_at_bbox
-
-        mock_pyautogui.size.return_value = (1000, 1000)
-        result = scroll_at_bbox([0, 0, 1000, 1000], "up", 2, invert=True)
-        assert mock_pyautogui.scroll.call_count == 2
-        # Inverted: up sends -1 instead of +1
-        for call in mock_pyautogui.scroll.call_args_list:
-            assert call == ((-1,), {})
-        assert "up" in result
-
-
-class TestDragBetweenBboxes:
-    def test_drag_calls_correct_sequence(self, mock_pyautogui):
-        from lincy.gui.actions import drag_between_bboxes
-
-        mock_pyautogui.size.return_value = (1000, 1000)
-        result = drag_between_bboxes([0, 0, 200, 200], [800, 800, 1000, 1000])
-        mock_pyautogui.moveTo.assert_called_once_with(100.0, 100.0)
-        mock_pyautogui.dragTo.assert_called_once_with(
-            900.0, 900.0, duration=0.5, button="left"
-        )
-        assert "100" in result
-        assert "900" in result
-
-    def test_drag_custom_duration(self, mock_pyautogui):
-        from lincy.gui.actions import drag_between_bboxes
-
-        mock_pyautogui.size.return_value = (1000, 1000)
-        drag_between_bboxes([0, 0, 200, 200], [800, 800, 1000, 1000], duration=1.5)
-        mock_pyautogui.dragTo.assert_called_once_with(
-            900.0, 900.0, duration=1.5, button="left"
-        )
-
-
-class TestPressKey:
-    @pytest.fixture(autouse=True)
-    def _set_keyboard_keys(self, mock_pyautogui):
-        mock_pyautogui.KEYBOARD_KEYS = [
-            "enter", "tab", "escape", "space", "command", "a",
-            "pagedown", "pageup", "home", "end",
-        ]
-
-    def test_single_key(self, mock_pyautogui):
-        from lincy.gui.actions import press_key
-
-        result = press_key("enter")
-        mock_pyautogui.press.assert_called_once_with("enter")
-        assert "enter" in result
-
-    def test_combo_key(self, mock_pyautogui):
-        from lincy.gui.actions import press_key
-
-        result = press_key("command+a")
-        mock_pyautogui.hotkey.assert_called_once_with("command", "a")
-        assert "command+a" in result
-
-    def test_normalize_underscore(self, mock_pyautogui):
-        from lincy.gui.actions import press_key
-
-        result = press_key("page_down")
-        mock_pyautogui.press.assert_called_once_with("pagedown")
-        assert "page_down" in result
-
-    def test_normalize_caps(self, mock_pyautogui):
-        from lincy.gui.actions import press_key
-
-        result = press_key("End")
-        mock_pyautogui.press.assert_called_once_with("end")
-        assert "End" in result
-
-    def test_invalid_key_returns_error(self, mock_pyautogui):
-        from lincy.gui.actions import press_key
-
-        result = press_key("nosuchkey")
-        assert result.startswith("Error:")
-        mock_pyautogui.press.assert_not_called()
-
-    def test_invalid_combo_key_returns_error(self, mock_pyautogui):
-        from lincy.gui.actions import press_key
-
-        result = press_key("command+nosuchkey")
-        assert result.startswith("Error:")
-        mock_pyautogui.hotkey.assert_not_called()

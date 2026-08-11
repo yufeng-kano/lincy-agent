@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from lincy.agent.core import setup_tools
+from lincy.agent.tool_setup import setup_tools
 from lincy.core.schema import ToolsConfig
 
 

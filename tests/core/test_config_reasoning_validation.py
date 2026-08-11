@@ -220,6 +220,52 @@ def test_openai_accepts_max_effort_even_when_profile_list_is_old(
     assert config.reasoning.effort == "max"
 
 
+def test_gemini_rejects_minimal_effort_at_config_load(monkeypatch, tmp_path: Path):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {
+            "provider": "gemini",
+            "model": "gemini-3-flash-preview",
+            "reasoning": {"effort": "minimal"},
+            "capabilities": {
+                "reasoning": {
+                    "supports_toggle": True,
+                    "supported_efforts": ["minimal", "low", "medium", "high"],
+                    "supports_max_tokens": True,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="not supported by the Gemini adapter"):
+        config_module.resolve_llm_config("llm/x.yaml")
+
+
+def test_gemini_3_pro_rejects_disabled_thinking_at_config_load(
+    monkeypatch, tmp_path: Path
+):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {
+            "provider": "gemini",
+            "model": "gemini-3-pro-preview",
+            "reasoning": {"enabled": False},
+            "capabilities": {
+                "reasoning": {
+                    "supports_toggle": True,
+                    "supported_efforts": ["low", "high"],
+                    "supports_max_tokens": True,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="does not support reasoning.enabled=false"):
+        config_module.resolve_llm_config("llm/x.yaml")
+
+
 def test_anthropic_accepts_native_thinking_and_effort(monkeypatch, tmp_path: Path):
     _write_yaml(
         tmp_path / "llm" / "x.yaml",

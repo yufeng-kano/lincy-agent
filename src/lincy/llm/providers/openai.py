@@ -9,8 +9,12 @@ See docs/dev/provider-api-spec.md.
 from typing import Any
 
 from ...core.schema import OpenAIConfig, OpenAIReasoningConfig
-from ..schema import Message, OpenAIMessagePayload
-from .openai_compat import OpenAICompatibleClient
+from ..schema import Message, OpenAIMessagePayload, OpenAIRequest
+from .openai_compat import OpenAICompatibleClient, merge_leading_system_messages
+
+
+class OpenAIRequestWithCacheRetention(OpenAIRequest):
+    prompt_cache_retention: str | None = None
 
 
 def _map_reasoning_effort(
@@ -50,8 +54,13 @@ class OpenAIClient(OpenAICompatibleClient):
                 config.provider_overrides,
             ),
             temperature=config.temperature,
-            prompt_cache_retention=prompt_cache_retention,
         )
+        self.prompt_cache_retention = prompt_cache_retention
+
+    def _build_request(self, *args: Any, **kwargs: Any) -> OpenAIRequestWithCacheRetention:
+        payload = super()._build_request(*args, **kwargs).model_dump()
+        payload["prompt_cache_retention"] = self.prompt_cache_retention
+        return OpenAIRequestWithCacheRetention.model_validate(payload)
 
     def _get_headers(self) -> dict[str, str]:
         return {
@@ -65,24 +74,4 @@ class OpenAIClient(OpenAICompatibleClient):
         OpenAI Chat Completions API does not document multi-system-message
         support.  Merge them to avoid undocumented-behaviour dependency.
         """
-        converted = super()._convert_messages(messages)
-        if len(converted) < 2:
-            return converted
-        sys_end = 0
-        while sys_end < len(converted) and converted[sys_end].role == "system":
-            sys_end += 1
-        if sys_end <= 1:
-            return converted
-        merged_parts: list[str] = []
-        for msg in converted[:sys_end]:
-            if isinstance(msg.content, str):
-                merged_parts.append(msg.content)
-            elif isinstance(msg.content, list):
-                for part in msg.content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        merged_parts.append(part["text"])
-        merged = OpenAIMessagePayload(
-            role="system",
-            content="\n\n".join(merged_parts),
-        )
-        return [merged] + converted[sys_end:]
+        return merge_leading_system_messages(super()._convert_messages(messages))

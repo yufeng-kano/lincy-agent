@@ -1,5 +1,6 @@
 from .adapters import ChannelAdapter, CLIAdapter
-from .core import AgentCore, setup_tools
+from .core import AgentCore
+from .tool_setup import setup_tools
 from .queue import PersistentPriorityQueue
 from .schema import InboundMessage, OutboundMessage, PendingOutbound, ShutdownSentinel
 

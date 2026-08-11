@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import logging
-import re
 import threading
 import time
 from pathlib import Path
@@ -14,7 +13,7 @@ from ...core.schema import ShellHandoffConfig
 from ...llm.schema import ToolDefinition, ToolParameter
 from ..shell_handoff import ShellHandoffEvaluator
 from ..shell_session import InteractiveShellSession, ShellSessionSnapshot
-from ..security import is_memory_write_shell_command
+from ..security import clamp_timeout, check_shell_command, is_memory_write_shell_command
 
 logger = logging.getLogger(__name__)
 _DEFAULT_SHUTDOWN_JOIN_TIMEOUT_SECONDS = 3.0
@@ -344,14 +343,6 @@ def create_shell_task(
     handoff_evaluator = ShellHandoffEvaluator.from_config(
         handoff or ShellHandoffConfig()
     )
-    blacklist_patterns = [re.compile(pattern) for pattern in (blacklist or [])]
-
-    def _blocked_pattern(command: str) -> str | None:
-        for pattern in blacklist_patterns:
-            if pattern.search(command):
-                return pattern.pattern
-        return None
-
     def shell_task(command: str = "", timeout: int | None = None, **kwargs) -> str:
         from ...agent.schema import InboundMessage
 
@@ -362,13 +353,9 @@ def create_shell_task(
             return "Error: command is required."
         if is_memory_write_shell_command(command, agent_os_dir=agent_os_dir):
             return "Error: Direct memory writes via shell are blocked. Use memory_edit."
-        blocked = _blocked_pattern(command)
+        blocked = check_shell_command(command, blacklist or [])
         if blocked is not None:
-            from ...tools.executor import _blacklist_hint
-
-            hint = _blacklist_hint(blocked)
-            msg = f"Error: Command blocked by pattern '{blocked}'"
-            return f"{msg}. {hint}" if hint else msg
+            return blocked
         if manager.is_closing():
             return "[SHELL UNAVAILABLE] Background shell tasks are shutting down."
         if not manager.try_acquire_slot():
@@ -377,9 +364,7 @@ def create_shell_task(
                 "Wait for a result before starting another one."
             )
 
-        effective_timeout = timeout if timeout is not None else default_timeout
-        if effective_timeout < default_timeout:
-            effective_timeout = default_timeout
+        effective_timeout = clamp_timeout(timeout, default_timeout)
 
         cwd = cwd_provider()
         session_id = manager.allocate_session_id()

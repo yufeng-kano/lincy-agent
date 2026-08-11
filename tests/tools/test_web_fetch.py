@@ -6,7 +6,7 @@ import socket
 import httpx
 import pymupdf
 
-from lincy.agent.core import setup_tools
+from lincy.agent.tool_setup import setup_tools
 from lincy.agent.staged_planning import build_stage1_tools
 from lincy.core.schema import ToolsConfig
 from lincy.tools.builtin.web_fetch import (

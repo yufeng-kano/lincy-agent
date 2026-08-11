@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from ...llm.schema import ToolDefinition, ToolParameter
+from .batch_helpers import normalize_batch_items
 from ...timezone_utils import get_tz, now as tz_now
 
 if TYPE_CHECKING:
@@ -257,20 +258,13 @@ def create_schedule_action(
 def _normalize_adds(
     adds: list[dict[str, Any]] | str | None,
 ) -> list[dict[str, Any]] | str:
-    if isinstance(adds, str):
-        try:
-            adds = json.loads(adds)
-        except (json.JSONDecodeError, TypeError):
-            return "Error: 'adds' must be an array for batch_add"
-    if not isinstance(adds, list):
-        return "Error: 'adds' must be an array for batch_add"
-    if not adds:
-        return "Error: 'adds' must contain at least one item"
-    if len(adds) > 12:
-        return "Error: 'adds' supports at most 12 items"
-    if not all(isinstance(item, dict) for item in adds):
-        return "Error: each batch_add item must be an object"
-    return adds
+    """Normalize batch additions using the shared scaffold."""
+    result = normalize_batch_items(adds, "adds", 12)
+    if isinstance(result, str):
+        return result.replace("'adds' must be an array", "'adds' must be an array for batch_add").replace(
+            "each adds item", "each batch_add item"
+        )
+    return result
 
 
 def _validate_adds(adds: list[dict[str, Any]]) -> str | None:

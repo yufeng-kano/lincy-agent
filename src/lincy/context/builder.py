@@ -424,23 +424,6 @@ class ContextBuilder:
         return [call_msg] + result_msgs
 
     @staticmethod
-    def _split_into_turns(conv_messages: list[Message]) -> list[list[Message]]:
-        """Split conversation messages into turns (user msg + subsequent non-user msgs)."""
-        turns: list[list[Message]] = []
-        current_turn: list[Message] = []
-
-        for msg in conv_messages:
-            if msg.role == "user" and current_turn:
-                turns.append(current_turn)
-                current_turn = []
-            current_turn.append(msg)
-
-        if current_turn:
-            turns.append(current_turn)
-
-        return turns
-
-    @staticmethod
     def _inject_conversation_cache_breakpoint(
         kept_conv: list[Message],
         cache_ctrl: dict[str, str],

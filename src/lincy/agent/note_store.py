@@ -8,12 +8,12 @@ the system prompts the agent to review and update the note.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ..json_store import format_source_tag, load_json, parse_datetime, save_json
 from ..timezone_utils import get_tz, localise as tz_localise, now as tz_now
 
 logger = logging.getLogger(__name__)
@@ -249,10 +249,8 @@ class NoteStore:
     # -- Persistence --------------------------------------------------------
 
     def _load(self) -> None:
-        if not self._path.exists():
-            return
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = load_json(self._path, default={})
             tz = get_tz()
             for key, item in raw.get("notes", {}).items():
                 self._notes[key] = Note(
@@ -263,7 +261,7 @@ class NoteStore:
                     source_app=item.get("source_app"),
                     source_id=item.get("source_id"),
                     source_label=item.get("source_label"),
-                    updated_at=_parse_dt(item.get("updated_at"), tz) or tz_now(),
+                    updated_at=parse_datetime(item.get("updated_at"), tz) or tz_now(),
                 )
             logger.info("Loaded %d notes from %s", len(self._notes), self._path)
         except Exception:
@@ -276,30 +274,11 @@ class NoteStore:
             del d["key"]  # key is the dict key
             d["updated_at"] = d["updated_at"].isoformat()
             data["notes"][key] = d
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        tmp.replace(self._path)
-
-
-def _parse_dt(value: str | None, tz) -> datetime | None:
-    if not value:
-        return None
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=tz)
-    return dt
+        save_json(self._path, data)
 
 
 def _format_source_tag(note: Note) -> str | None:
-    if not note.source_app:
-        return None
-    if note.source_label:
-        return f"{note.source_app}:{note.source_label}"
-    return note.source_app
+    return format_source_tag(note.source_app, note.source_label)
 
 
 def _format_source_detail(note: Note) -> str | None:
