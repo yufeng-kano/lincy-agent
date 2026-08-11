@@ -8,7 +8,6 @@ matching text appears in a user message.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from typing import Any, TYPE_CHECKING

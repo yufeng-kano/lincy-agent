@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .shared_state import SharedStateStore
     from ..brain_prompt_policy import BrainPromptPolicy
     from ..llm.providers.copilot_runtime import CopilotRuntime
+    from ..session.schema import SessionEntry
 
 from ..context import ContextBuilder, Conversation
 from ..core.schema import AppConfig

@@ -8,7 +8,6 @@ from typing import Literal
 import httpx
 from pydantic import ValidationError
 
-from ..core.schema import is_in_quiet_hours
 from ..llm.http_error import classify_http_status_error
 from ..llm.schema import ContextLengthExceededError, MalformedFunctionCallError
 from ..timezone_utils import get_tz, now as tz_now

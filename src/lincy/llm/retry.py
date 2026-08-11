@@ -15,7 +15,7 @@ from .http_error import (
     is_transient_error,
     parse_retry_after_seconds,
 )
-from .schema import LLMResponse, MalformedFunctionCallError, Message, ToolDefinition
+from .schema import LLMResponse, Message, ToolDefinition
 
 T = TypeVar("T")
 _429_BACKOFF_SCHEDULE = (5.0, 10.0, 20.0, 30.0, 30.0)

@@ -24,7 +24,6 @@ from ..schema import (
     OllamaNativeToolCall,
     ToolCall,
     ToolDefinition,
-    make_tool_result_message,
 )
 from ..schema import raise_if_context_length_error
 from .openai_compat import repair_missing_tool_results

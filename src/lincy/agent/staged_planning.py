@@ -27,7 +27,6 @@ from ..llm.schema import (
 from ..send_message_batch_guidance import build_stage2_message_economy_rule
 from ..tools import ToolRegistry
 from ..tools.registry import ToolResult
-from .side_channel import run_side_channel_tool_loop
 from .turn_overlay import DECISION_REMINDER_LABEL
 from .ui_event_console import AgentUiPort
 

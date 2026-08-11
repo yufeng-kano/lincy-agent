@@ -2,8 +2,26 @@
 
 from __future__ import annotations
 
-from .runtime import *
+import base64
+from html import escape as html_escape
+import hashlib
+import json
+from pathlib import Path
+import re
+from typing import Any
+
+from ...security import resolve_allowed_path
 from ..image import IMAGE_MIME_TYPES, html_to_markdown
+from .runtime import (
+    _HREF_RE,
+    _INLINE_URL_RE,
+    _MARKDOWN_IMAGE_RE,
+    _NOTE_HEADING_BLOCK_RE,
+    _ORDERED_LIST_RE,
+    _TABLE_SEPARATOR_RE,
+    _TEMPLATE_VAR_RE,
+    _URL_TEXT_RE,
+)
 
 def _build_note_html(title: str | None, body: str) -> str:
     """Build a simple HTML payload accepted by Notes."""
@@ -486,6 +504,3 @@ def _coerce_note_content_kind(*, source_url: str | None, has_images: bool) -> st
 def _applescript_utf8_file_read(name: str) -> str:
     """Return AppleScript that reads a UTF-8 temp file for the given variable."""
     return f'my readUtf8EnvFile("{name}")'
-
-
-__all__ = [name for name in globals() if not name.startswith("__")]

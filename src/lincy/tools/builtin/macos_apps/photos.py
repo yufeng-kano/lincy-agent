@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
+from ....llm.schema import ToolDefinition, ToolParameter
 from .notes_template import _applescript_utf8_file_read
-from .runtime import *
+from .runtime import _error, _json_output
 
 PHOTOS_TOOL_DEFINITION = ToolDefinition(
     name="photos_tool",

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ..heartbeat import apply_quiet_hours, make_heartbeat_message, parse_interval, random_delay
+from ..heartbeat import apply_quiet_hours, make_heartbeat_message, random_delay
 from ..schema import InboundMessage, OutboundMessage
 from ...timezone_utils import now as tz_now
 

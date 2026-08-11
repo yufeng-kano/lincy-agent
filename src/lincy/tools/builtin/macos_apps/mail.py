@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
-from .runtime import *
+
+from ....llm.schema import ToolDefinition, ToolParameter
+from .runtime import (
+    _APPLE_MAIL_DEFAULT_SCAN_LIMIT,
+    _APPLE_MAIL_GET_CONTENT_MAX_CHARS,
+    _APPLE_MAIL_MAX_SCAN_LIMIT,
+    _APPLE_MAIL_SCOPES,
+    _APPLE_MAIL_TRASH_MAX_MESSAGES,
+    _error,
+    _json_output,
+    _localize_mail_datetime_fields,
+    _parse_mail_range_datetime,
+    _parse_tool_iso_datetime,
+)
 
 MAIL_TOOL_DEFINITION = ToolDefinition(
     name="mail_tool",

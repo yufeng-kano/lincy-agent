@@ -2,11 +2,41 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+import base64
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+from html import escape as html_escape
+import re
 from typing import Any
-from .runtime import *
-from .notes_template import *
+
+from ....llm.schema import ContentPart, Message, ToolDefinition, ToolParameter
+from .notes_template import (
+    _apple_notes_cache_filename,
+    _applescript_utf8_file_read,
+    _build_note_html,
+    _coerce_note_content_kind,
+    _coerce_template_mapping,
+    _ensure_note_title_html,
+    _extract_source_url,
+    _html_to_markdown,
+    _load_json_file,
+    _normalize_markdown,
+    _render_note_template_html,
+    _write_json_file,
+)
+from .runtime import (
+    _APPLE_NOTES_CACHE_VERSION,
+    _APPLE_NOTES_DEFAULT_SEARCH_LIMIT,
+    _APPLE_NOTES_IMAGE_PROMPT,
+    _APPLE_NOTES_MAX_NOTE_WORKERS,
+    _APPLE_NOTES_SUMMARY_MAX_INPUT_CHARS,
+    _APPLE_NOTES_SUMMARY_SYSTEM_PROMPT,
+    _DATA_IMAGE_RE,
+    _error,
+    _json_output,
+    logger,
+)
 
 NOTES_TOOL_DEFINITION = ToolDefinition(
     name="notes_tool",

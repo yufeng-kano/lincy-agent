@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...llm.schema import ContentPart, ToolDefinition, ToolParameter
-from ..security import is_path_allowed, resolve_allowed_path
+from ..security import resolve_allowed_path
 from markdownify import markdownify
 
 if TYPE_CHECKING:

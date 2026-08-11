@@ -11,7 +11,7 @@ from ..context import ContextBuilder, Conversation
 from ..core.schema import MemoryArchiveConfig
 from ..llm import LLMResponse
 from ..llm.base import LLMClient
-from ..llm.schema import Message, ToolCall, ToolDefinition, make_tool_result_message
+from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import extract_memory_edit_paths
 from ..memory.hooks import check_and_archive_buffers
 from ..tools import ToolRegistry

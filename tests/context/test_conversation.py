@@ -4,7 +4,7 @@ from datetime import datetime
 
 from lincy.context import Conversation
 from lincy.context.conversation import split_turns
-from lincy.llm.schema import Message
+from lincy.llm.schema import Message, ToolCall
 
 
 def test_split_turns_groups_non_user_messages():
@@ -82,9 +82,7 @@ def test_len_tracks_current_history_size():
     assert len(conversation) == 1
 
 
-def _tool_call(call_id: str, name: str = "echo") -> "ToolCall":
-    from lincy.llm.schema import ToolCall
-
+def _tool_call(call_id: str, name: str = "echo") -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments={"text": "x"})
 
 

@@ -10,9 +10,9 @@ from lincy.agent.adapters.scheduler import (
     SchedulerAdapter,
     make_heartbeat_message,
     make_upgrade_notice_message,
-    parse_interval,
     random_delay,
 )
+from lincy.agent.heartbeat import parse_interval
 from lincy.agent.schema import InboundMessage
 
 
