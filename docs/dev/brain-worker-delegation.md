@@ -2,6 +2,25 @@
 
 Brain 不再擁有 shell 工具，所有指令執行都必須委派 `worker` 子代理。
 
+## Maintenance 直接派工（非同步 worker tool 的例外）
+
+`cli/app.py` 建立 `WorkerRunner` 的時機提前到 `AgentCore` 建構之前，同一個
+runner 實例同時給兩個呼叫者用：
+
+- brain 的 async `worker` tool（本文件其餘部分描述的路徑）
+- `AgentCore._perform_maintenance` 內的記憶檔案治理
+  （`src/lincy/memory/curation/worker_dispatch.py`），在 maintenance 執行緒
+  上同步呼叫 `WorkerRunner.run(...)`，不經過 tool call / 佇列 / 背景 thread
+
+兩者共用同一個 runner，所以：
+
+- fail-closed 記憶寫入規則、`tool_overrides`（unguarded file tools）、
+  `excluded_tools` 完全相同，維護派工同樣要在 `prompt` 中明確指派記憶維護
+  權限並用 `context_files` 帶入 `memory-maintenance` skill 的 `rules.md`
+- session debug log 掛點也共用（見 `session-debug-logs.md`），用
+  `worker_label`（`maintenance-digest`、`maintenance-curation`）在
+  `requests.jsonl` / `responses.jsonl` 區分
+
 ## 非同步派工
 
 `worker` tool 為非同步，實作範本對齊 `gui_task`（`src/lincy/gui/tool_adapter.py`）：

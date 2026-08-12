@@ -350,6 +350,20 @@ agents:
       enabled: true
       ttl: "1h"
 
+  # Tier 2 conversation compaction (see docs/dev/memory-curation.md "對話
+  # compaction"): summarizes older turns when codex remote compaction is
+  # unavailable or fails. Runs in the turn's critical path, so pick a fast
+  # model over a deep-thinking one.
+  compactor:
+    enabled: true
+    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
+    llm_fallbacks:
+      - cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml
+      - cfgs/llm/codex/gpt-5.5/low-thinking.yaml
+    llm_request_timeout: 600
+    llm_transient_retries: 2
+    warn_on_failure: true
+
   memory_editor:
     enabled: true
     llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
@@ -361,17 +375,6 @@ agents:
     llm_rate_limit_retries: 5 # 429 retry with Retry-After/backoff
     warn_on_failure: true
     post_parse_retries: 2 # planner JSON/schema parse retry (different layer from transport retry)
-
-  memory_curator:
-    enabled: true
-    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml
-    llm_fallbacks:
-      - cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml
-      - cfgs/llm/codex/gpt-5.5/low-thinking.yaml
-    llm_request_timeout: 600
-    llm_transient_retries: 2
-    llm_rate_limit_retries: 5
-    warn_on_failure: true
 
   gui_manager:
     enabled: true

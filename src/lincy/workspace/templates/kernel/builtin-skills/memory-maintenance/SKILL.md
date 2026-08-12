@@ -1,13 +1,17 @@
 ---
 name: memory-maintenance
-description: "記憶檔案維護：重複移除、格式規範、檔案拆分。收到 memory_edit warning 或用戶要求整理記憶檔案時使用。"
+description: "記憶檔案維護：重複移除、格式規範、檔案拆分。收到 memory_edit possible_duplicates warning 或用戶明確要求整理記憶檔案時使用；file_too_long 已由每日 maintenance 自動排入佇列處理，不需要手動介入。"
 ---
 
 # 記憶維護指南
 
 ## 用途
 
-收到 `memory_edit` warning（`possible_duplicates`、`file_too_long`）時，或用戶要求整理記憶檔案時使用。
+收到 `memory_edit` 的 `possible_duplicates` warning 時，或用戶明確要求整理記憶檔案時使用。
+
+`file_too_long` warning 不適用本 skill 的自動觸發：超標檔案由每日 maintenance
+的定期全掃 + 佇列機制自動處理（見 `docs/dev/memory-curation.md`），brain 看到
+這個 warning 不需要、也不應該派工處理，避免和 maintenance 對同一檔案重複改寫。
 
 ## 重複條目處理（possible_duplicates）
 
@@ -35,9 +39,11 @@ Remove duplicate entries in memory/agent/long-term.md:
 - 一次 `memory_edit` 處理一個檔案的所有重複
 - 不確定是否重複時，保留兩者，不要誤刪
 
-## 大規模維護（file_too_long / 用戶要求）
+## 大規模維護（用戶明確要求時）
 
-檔案過長、結構重整、跨檔拆分等複雜任務，委派 `worker` 直接整理。worker 有 `read_file` / `edit_file` / `write_file`，足以完成所有維護動作，不需要 shell 指令或 subprocess。
+用戶明確要求整理特定檔案（結構重整、跨檔拆分等複雜任務）時，委派 `worker` 直接整理。worker 有 `read_file` / `edit_file` / `write_file`，足以完成所有維護動作，不需要 shell 指令或 subprocess。
+
+（超標檔案的自動整理不走這條路徑——那是 maintenance 直接派工 worker，不經過 brain。）
 
 ### 任務單寫法
 

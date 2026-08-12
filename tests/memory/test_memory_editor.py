@@ -1257,6 +1257,39 @@ def test_warnings_file_too_large_uses_default_budget_and_queues(tmp_path: Path):
     assert queue[0]["first_seen"] == queue[0]["last_seen"]
 
 
+def test_warnings_file_too_long_does_not_instruct_brain_to_act(tmp_path: Path):
+    """file_too_long is owned by automated maintenance; brain must not delegate cleanup."""
+    target = tmp_path / "memory" / "agent" / "recent.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("a" * 1000, encoding="utf-8")
+
+    request = MemoryEditRequest(
+        request_id="r1",
+        target_path="memory/agent/recent.md",
+        instruction="append new entry",
+    )
+    plan = MemoryEditPlan(
+        status="ok",
+        operations=[MemoryEditOperation(kind="append_entry", payload_text="b")],
+    )
+    batch = MemoryEditBatch(
+        as_of="2026-02-22T12:00:00+08:00", turn_id="t1", requests=[request]
+    )
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(),
+        planner=_StaticPlanner({"r1": plan}),
+        warnings_config=MemoryEditWarningsConfig(max_chars=1000),
+    )
+    result = editor.apply_batch(
+        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
+    )
+
+    warning = next(w for w in result.warnings if w.code == "file_too_long")
+    assert "already queued for curation" in warning.detail
+    assert "do not delegate cleanup" in warning.detail
+    assert "kernel/builtin-skills/memory-maintenance" not in warning.detail
+
+
 def test_warnings_file_too_large_uses_first_matching_budget(tmp_path: Path):
     target = tmp_path / "memory" / "people" / "alice" / "profile.md"
     target.parent.mkdir(parents=True)

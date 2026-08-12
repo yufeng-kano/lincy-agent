@@ -49,5 +49,10 @@
 - brain client
 - memory sync client
 - skill check client
+- compactor client（對話 compaction 第 2 層摘要子代理，`client_label="compactor"`；見 `memory-curation.md` 的「對話 compaction」一節）
+- worker subagent（`WorkerRunner` 內部用 `client_label` 標記每次呼叫，例如
+  `worker-3`、`maintenance-digest`、`maintenance-curation`；maintenance
+  驅動的記憶檔案治理沒有專屬 client，直接沿用同一個 worker runner，因此
+  也落在這裡，不再是「零次請求」看起來像沒執行）
 
-因此一個 turn 內若有 stage2 planning、tool loop、memory sync side-channel，都會落到同一個 session 目錄裡，並共用同一個 turn id。
+因此一個 turn 內若有 stage2 planning、tool loop、memory sync side-channel，都會落到同一個 session 目錄裡，並共用同一個 turn id。maintenance 的 worker 派工不屬於任何使用者 turn，但沿用同一個 session sink，一樣可在 `requests.jsonl` / `responses.jsonl` 用 `client_label` 過濾查找。

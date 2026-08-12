@@ -178,6 +178,8 @@ from .m0167_temp_memory_delta_write import M0167TempMemoryDeltaWrite
 from .m0168_remove_gui_display_limits import M0168RemoveGuiDisplayLimits
 from .m0169_memory_curation_warnings import M0169MemoryCurationWarnings
 from .m0170_memory_curation import M0170MemoryCuration
+from .m0171_remove_memory_curator_agent import M0171RemoveMemoryCuratorAgent
+from .m0172_compactor_agent import M0172CompactorAgent
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -348,4 +350,6 @@ ALL_MIGRATIONS = [
     M0168RemoveGuiDisplayLimits(),
     M0169MemoryCurationWarnings(),
     M0170MemoryCuration(),
+    M0171RemoveMemoryCuratorAgent(),
+    M0172CompactorAgent(),
 ]

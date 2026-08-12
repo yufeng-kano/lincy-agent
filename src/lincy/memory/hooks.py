@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _DATE_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2})")
 _DIGEST_RE = re.compile(r"^\s*- \[digest (\d{4}-\d{2}-\d{2})\].*\n?", re.MULTILINE)
+_DIGEST_MARKER_PREFIX_RE = re.compile(r"^(?:-\s*)?\[digest \d{4}-\d{2}-\d{2}\]\s*")
 
 _RECENT_REL_PATH = "memory/agent/temp-memory.md"
 _RECENT_ARCHIVE_SUBDIR = "memory/archive/temp-memory"
@@ -179,11 +180,28 @@ def _archive_legacy(
 
 
 def _format_digest(day: date, digest: str) -> str:
-    compact = " ".join(digest.splitlines()).strip()
+    cleaned = _strip_digest_marker(digest)
+    compact = " ".join(cleaned.splitlines()).strip()
     return (
         f"- [digest {day.isoformat()}] {compact}"
         f"（全文：memory/archive/temp-memory/{day.isoformat()}.md）\n"
     )
+
+
+def _strip_digest_marker(text: str) -> str:
+    """Strip any leading digest marker(s) the model echoed back in its output.
+
+    The prompt tells the model not to emit the marker itself, but it does
+    anyway often enough that the code must be the guarantee: observed in
+    production as a doubled `- [digest 2026-08-08] - [digest 2026-08-08]
+    ...` line once _format_digest prepends its own canonical marker.
+    """
+    stripped = text.lstrip()
+    while True:
+        match = _DIGEST_MARKER_PREFIX_RE.match(stripped)
+        if not match:
+            return stripped
+        stripped = stripped[match.end():].lstrip()
 
 
 def _retain_unexpired_digests(content: str, today: date, retain_days: int) -> list[str]:

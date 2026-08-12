@@ -1213,6 +1213,175 @@ class TestM0170MemoryCuration:
         assert (kernel_dir / "agents/memory_curator/prompts/system.md").read_text() == "curator prompt"
 
 
+class TestM0171RemoveMemoryCuratorAgent:
+    def test_removes_memory_curator_from_workspace_config(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0171_remove_memory_curator_agent import (
+            M0171RemoveMemoryCuratorAgent,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "maintenance:\n"
+            "  curate:\n"
+            "    enabled: true\n"
+            "agents:\n"
+            "  worker:\n"
+            "    llm:\n"
+            "      provider: claude_code\n"
+            "      model: test-model\n"
+            "  memory_curator:\n"
+            "    enabled: true\n"
+            "    llm:\n"
+            "      provider: deepseek\n"
+            "      model: test-model\n"
+            "      thinking:\n"
+            "        enabled: false\n",
+            encoding="utf-8",
+        )
+
+        M0171RemoveMemoryCuratorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert "memory_curator" not in config["agents"]
+        assert "worker" in config["agents"]
+        # Validates cleanly against strict AppConfig after the key is gone.
+        from lincy.core.schema import AppConfig
+
+        AppConfig.model_validate(config)
+
+    def test_removes_stale_kernel_prompt_directory(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0171_remove_memory_curator_agent import (
+            M0171RemoveMemoryCuratorAgent,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        prompt_dir = kernel_dir / "agents" / "memory_curator"
+        prompt_dir.mkdir(parents=True)
+        (prompt_dir / "prompts").mkdir()
+        (prompt_dir / "prompts" / "system.md").write_text("old curator prompt")
+
+        M0171RemoveMemoryCuratorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        assert not prompt_dir.exists()
+
+    def test_missing_config_files_are_noop(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0171_remove_memory_curator_agent import (
+            M0171RemoveMemoryCuratorAgent,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+
+        # Should not raise even though no workspace config exists yet.
+        M0171RemoveMemoryCuratorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+    def test_workspace_without_memory_curator_key_is_untouched(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0171_remove_memory_curator_agent import (
+            M0171RemoveMemoryCuratorAgent,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        original = "agents:\n  worker:\n    enabled: true\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        M0171RemoveMemoryCuratorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config == {"agents": {"worker": {"enabled": True}}}
+
+
+class TestM0172CompactorAgent:
+    def test_adds_compactor_config_and_prompt(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
+
+        kernel_dir = tmp_path / "kernel"
+        prompt = tmp_path / "templates/agents/compactor/prompts/system.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("compactor prompt")
+        config_path = tmp_path / "cfgs/agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "agents:\n"
+            "  worker:\n"
+            "    llm:\n"
+            "      provider: claude_code\n"
+            "      model: test-model\n",
+            encoding="utf-8",
+        )
+
+        M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config["agents"]["compactor"]["enabled"] is True
+        assert config["agents"]["worker"]["llm"]["provider"] == "claude_code"
+        assert (
+            kernel_dir / "agents/compactor/prompts/system.md"
+        ).read_text() == "compactor prompt"
+
+    def test_upgraded_workspace_config_loads_cleanly(self, tmp_path: Path):
+        """m0172 output must still validate once llm: <path> refs are resolved."""
+        from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
+        from lincy.core.config import load_config
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "agents:\n"
+            "  brain:\n"
+            "    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml\n"
+            "  memory_editor:\n"
+            "    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml\n",
+            encoding="utf-8",
+        )
+
+        M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = load_config(str(config_path))
+        assert config.agents["compactor"].enabled is True
+        assert config.agents["compactor"].llm.provider == "deepseek"
+        assert config.agents["compactor"].llm.model == "deepseek-v4-flash"
+
+    def test_existing_compactor_key_is_untouched(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        original = (
+            "agents:\n"
+            "  compactor:\n"
+            "    enabled: false\n"
+            "    llm:\n"
+            "      provider: deepseek\n"
+            "      model: custom-model\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+
+        M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config["agents"]["compactor"]["enabled"] is False
+        assert config["agents"]["compactor"]["llm"]["model"] == "custom-model"
+
+    def test_missing_config_files_are_noop(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+
+        # Should not raise even though no workspace config exists yet.
+        M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+
 class TestM0169MemoryCurationWarnings:
     """Tests for the memory warning config migration."""
 

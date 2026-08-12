@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .adapters.protocol import ChannelAdapter
+    from .compactor_agent import CompactorAgent
     from .conscience import ConscienceAgent
     from .skill_check import SkillCheckAgent
     from .scope import ScopeResolver
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from ..brain_prompt_policy import BrainPromptPolicy
     from ..llm.providers.copilot_runtime import CopilotRuntime
     from ..session.schema import SessionEntry
+    from ..worker.runner import WorkerRunner
 
 from ..context import ContextBuilder, Conversation
 from ..core.schema import AppConfig
@@ -36,10 +38,12 @@ from ..llm.schema import (
 )
 from ..memory import (
     ARTIFACT_REGISTRY_TARGET,
-    MemoryCurator,
     check_and_archive_buffers,
+    curate_queue_via_worker,
+    digest_day_via_worker,
     find_missing_artifact_registry_paths,
     find_missing_memory_sync_targets,
+    scan_over_budget_files,
 )
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
@@ -228,8 +232,9 @@ class AgentCore:
         shared_state_store: SharedStateStore | None = None,
         scope_resolver: ScopeResolver | None = None,
         memory_sync_client: LLMClient | None = None,
-        memory_curator: MemoryCurator | None = None,
+        worker_runner: "WorkerRunner | None" = None,
         conversation_compaction_client: ConversationCompactionClient | None = None,
+        compactor_agent: "CompactorAgent | None" = None,
         brain_prompt_policy: "BrainPromptPolicy | None" = None,
         copilot_runtime: "CopilotRuntime | None" = None,
         ui_debug: bool = False,
@@ -243,7 +248,7 @@ class AgentCore:
     ):
         self.client = client
         self.memory_sync_client = memory_sync_client
-        self.memory_curator = memory_curator
+        self.worker_runner = worker_runner
         self.conversation = conversation
         self.builder = builder
         # Excluded tools stay hidden from both the schema and execution, so a
@@ -274,6 +279,7 @@ class AgentCore:
         self.shared_state_store = shared_state_store
         self.scope_resolver = scope_resolver or DEFAULT_SCOPE_RESOLVER
         self.conversation_compaction_client = conversation_compaction_client
+        self.compactor_agent = compactor_agent
         self.copilot_runtime = copilot_runtime
         self.brain_prompt_policy = brain_prompt_policy
         self.skill_registry = SkillGovernanceRegistry.load(
@@ -1404,24 +1410,41 @@ class AgentCore:
         try:
             # Curation owns temp-memory archival so a full day only leaves with
             # its digest committed in the same maintenance run.
-            if cfg.curate.enabled and self.memory_curator is not None:
+            if cfg.curate.enabled and self.worker_runner is not None:
+                try:
+                    # Full scan before consuming the queue: memory_edit only
+                    # queues files on write, so a stock over-budget file that
+                    # is never written again would otherwise sit unqueued
+                    # forever (design doc component 2b).
+                    queued = scan_over_budget_files(
+                        self.agent_os_dir, self.config.tools.memory_edit.warnings
+                    )
+                    if queued:
+                        logger.info(
+                            "Curation scan queued %d stock over-budget file(s)",
+                            len(queued),
+                        )
+                except Exception as e:
+                    logger.warning("Maintenance curation scan failed: %s", e)
                 try:
                     result = check_and_archive_buffers(
                         self.agent_os_dir,
                         cfg.archive,
                         curate_config=cfg.curate,
-                        digest_day=self.memory_curator.digest_day,
+                        digest_day=lambda d, c, m: digest_day_via_worker(
+                            self.worker_runner, d, c, m
+                        ),
                     )
                     if result.archived:
                         self.console.print_info(f"Memory archived: {result.summary}")
                 except Exception as e:
                     logger.warning("Maintenance temp-memory curation failed: %s", e)
                 try:
-                    self.memory_curator.curate_queue(self.agent_os_dir)
+                    curate_queue_via_worker(self.worker_runner, self.agent_os_dir)
                 except Exception as e:
                     logger.warning("Maintenance queued file curation failed: %s", e)
             elif cfg.curate.enabled:
-                logger.warning("Memory curation is enabled but no curator is available")
+                logger.warning("Memory curation is enabled but no worker is available")
             else:
                 _run_memory_archive(
                     self.agent_os_dir,

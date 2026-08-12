@@ -1,28 +1,20 @@
-"""Tests for LLM-backed memory curation."""
+"""Tests for temp-memory digest distillation (design doc component 3a).
+
+digest_day here is a plain callable (Callable[[date, str, int], str]) --
+in production it is worker_dispatch.digest_day_via_worker bound to a
+WorkerRunner (see test_memory_curation_worker_dispatch.py), but
+check_and_archive_buffers itself does not know or care what produces the
+text, so these tests exercise it with simple stubs.
+"""
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from lincy.core.schema import MaintenanceCurateConfig, MemoryArchiveConfig
 from lincy.memory import hooks as hooks_module
-from lincy.memory.curator import MemoryCurator
-from lincy.memory.hooks import _parse_recent_by_date, check_and_archive_buffers
-
-
-class StubCuratorClient:
-    def __init__(self, response: str | Exception):
-        self.response = response
-        self.calls: list[list[object]] = []
-
-    def chat(self, messages, **kwargs):
-        del kwargs
-        self.calls.append(messages)
-        if isinstance(self.response, Exception):
-            raise self.response
-        return self.response
+from lincy.memory.hooks import _format_digest, _parse_recent_by_date, check_and_archive_buffers
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -46,15 +38,11 @@ def test_digest_success_archives_full_text_and_replaces_it(tmp_path: Path, monke
     temp.write_text("# Recent\n\n" + _entry(old, "important agreement") + _entry(today, "today"))
     monkeypatch.setattr(hooks_module, "tz_now", lambda: datetime(2030, 1, 10, tzinfo=timezone.utc))
 
-    curator = MemoryCurator(
-        StubCuratorClient("Keep the agreement and follow-up."),
-        "system",
-    )
     result = check_and_archive_buffers(
         workspace,
         MemoryArchiveConfig(retain_days=3),
         curate_config=_curate_config(),
-        digest_day=curator.digest_day,
+        digest_day=lambda day, content, max_chars: "Keep the agreement and follow-up.",
     )
 
     remaining = temp.read_text()
@@ -74,12 +62,14 @@ def test_digest_llm_failure_leaves_full_text_in_temp_memory(tmp_path: Path, monk
     temp.write_text(original)
     monkeypatch.setattr(hooks_module, "tz_now", lambda: datetime(2030, 1, 10, tzinfo=timezone.utc))
 
-    curator = MemoryCurator(StubCuratorClient(RuntimeError("LLM unavailable")), "system")
+    def _raise(day, content, max_chars):
+        raise RuntimeError("worker unavailable")
+
     result = check_and_archive_buffers(
         workspace,
         MemoryArchiveConfig(retain_days=3),
         curate_config=_curate_config(),
-        digest_day=curator.digest_day,
+        digest_day=_raise,
     )
 
     assert not result.archived
@@ -136,45 +126,49 @@ def test_disabled_curation_preserves_legacy_archive_behavior(tmp_path: Path, mon
     assert "old full text" in (workspace / f"memory/archive/temp-memory/{old.isoformat()}.md").read_text()
 
 
-def test_queue_curation_writes_snapshot_before_rewrite(tmp_path: Path, monkeypatch):
+# -- digest marker dedupe (item 5: code must strip what the model echoes back) --
+
+
+def test_format_digest_strips_doubled_marker_from_model_output():
+    day = date(2030, 1, 1)
+    doubled = f"- [digest {day.isoformat()}] - [digest {day.isoformat()}] real digest body"
+
+    line = _format_digest(day, doubled)
+
+    assert line.count("[digest") == 1
+    assert "real digest body" in line
+
+
+def test_format_digest_strips_bracket_only_marker_without_dash():
+    day = date(2030, 1, 1)
+    text = f"[digest {day.isoformat()}] body without a leading dash"
+
+    line = _format_digest(day, text)
+
+    assert line.count("[digest") == 1
+    assert "body without a leading dash" in line
+
+
+def test_check_and_archive_buffers_normalizes_doubled_marker_end_to_end(
+    tmp_path: Path, monkeypatch
+):
     workspace = _workspace(tmp_path)
-    source = workspace / "memory/people/alice.md"
-    source.parent.mkdir(parents=True)
-    original = "# Alice\n\nLong history\n"
-    source.write_text(original)
-    (workspace / "state").mkdir()
-    (workspace / "state/memory-curation-queue.json").write_text(
-        json.dumps([{"path": "memory/people/alice.md"}])
+    today = date(2030, 1, 10)
+    old = today - timedelta(days=4)
+    temp = workspace / "memory/agent/temp-memory.md"
+    temp.write_text("# Recent\n\n" + _entry(old, "important agreement"))
+    monkeypatch.setattr(hooks_module, "tz_now", lambda: datetime(2030, 1, 10, tzinfo=timezone.utc))
+
+    doubled = f"- [digest {old.isoformat()}] - [digest {old.isoformat()}] real digest text"
+    result = check_and_archive_buffers(
+        workspace,
+        MemoryArchiveConfig(retain_days=3),
+        curate_config=_curate_config(),
+        digest_day=lambda *_args: doubled,
     )
-    monkeypatch.setattr("lincy.memory.curator.tz_now", lambda: datetime(2030, 1, 10, tzinfo=timezone.utc))
-    curator = MemoryCurator(StubCuratorClient("# Current\n\nCondensed history"), "system")
 
-    curator.curate_queue(workspace)
-
-    snapshot = workspace / "memory/archive/curation/memory/people/alice.md/2030-01-10.md"
-    assert snapshot.read_text() == original
-    assert source.read_text().startswith("# Current")
-    assert "Full archive: memory/archive/curation/memory/people/alice.md/2030-01-10.md" in source.read_text()
-    assert json.loads((workspace / "state/memory-curation-queue.json").read_text()) == []
-
-
-def test_snapshot_failure_aborts_rewrite_and_keeps_queue(tmp_path: Path, monkeypatch):
-    workspace = _workspace(tmp_path)
-    source = workspace / "memory/people/alice.md"
-    source.parent.mkdir(parents=True)
-    original = "original\n"
-    source.write_text(original)
-    (workspace / "state").mkdir()
-    queue = workspace / "state/memory-curation-queue.json"
-    queue.write_text(json.dumps([{"path": "memory/people/alice.md"}]))
-    snapshot = workspace / "memory/archive/curation/memory/people/alice.md/2030-01-10.md"
-    snapshot.parent.mkdir(parents=True)
-    snapshot.write_text("different existing snapshot\n")
-    monkeypatch.setattr("lincy.memory.curator.tz_now", lambda: datetime(2030, 1, 10, tzinfo=timezone.utc))
-    client = StubCuratorClient("rewritten")
-
-    MemoryCurator(client, "system").curate_queue(workspace)
-
-    assert source.read_text() == original
-    assert json.loads(queue.read_text()) == [{"path": "memory/people/alice.md"}]
-    assert client.calls == []
+    remaining = temp.read_text()
+    assert len(result.archived) == 1
+    digest_line = next(line for line in remaining.splitlines() if line.startswith("- [digest"))
+    assert digest_line.count("[digest") == 1
+    assert "real digest text" in digest_line

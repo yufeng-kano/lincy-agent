@@ -10,6 +10,7 @@ from dotenv import dotenv_values
 
 from ..agent import AgentCore, setup_tools
 from ..agent.tool_setup import validate_excluded_tools
+from ..agent.compactor_agent import CompactorAgent
 from ..agent.skill_check import SkillCheckAgent
 from ..agent.adapters.cli import CLIAdapter
 from ..agent.contact_map import ContactMap
@@ -31,7 +32,6 @@ from ..core.schema import CodexConfig, CopilotConfig, GrokConfig, OpenAIConfig
 from ..llm import create_agent_client
 from ..memory import (
     BM25MemorySearch,
-    MemoryCurator,
     MemoryEditor,
     MemoryEditPlanner,
     SessionCommitLog,
@@ -451,26 +451,8 @@ def main(user: str, resume: str | None = None) -> None:
         warnings_config=config.tools.memory_edit.warnings,
     )
 
-    memory_curator = None
-    memory_curator_config = config.agents.get("memory_curator")
-    if config.maintenance.curate.enabled and memory_curator_config is not None:
-        if not memory_curator_config.enabled:
-            _emit_pre_tui_message(
-                console,
-                "warning",
-                "agents.memory_curator is disabled; memory curation will be skipped.",
-            )
-        else:
-            memory_curator_prompt = _load_agent_prompt("memory_curator")
-            if memory_curator_prompt is None:
-                _emit_pre_tui_message(console, "error", "Failed to load memory_curator prompt")
-                return
-            memory_curator = MemoryCurator(
-                _build_subagent_client("memory_curator", memory_curator_config),
-                memory_curator_prompt,
-            )
-    elif config.maintenance.curate.enabled:
-        logger.warning("agents.memory_curator is missing; memory curation will be skipped")
+    if config.maintenance.curate.enabled and config.agents.get("worker") is None:
+        logger.warning("Memory curation is enabled but agents.worker is missing")
 
     timezone = config.app.timezone
     console.set_timezone(timezone)
@@ -868,6 +850,52 @@ def main(user: str, resume: str | None = None) -> None:
         is_shell_cancel_requested=cancel_controller.is_requested,
         web_fetch_summarizer=_wf_summarizer,
     )
+
+    # === worker subagent runner ===
+    # Built here (before AgentCore) because maintenance-driven memory
+    # curation calls the runner directly from AgentCore, not only via the
+    # brain-facing "worker" tool registered further below.
+    worker_config = config.agents.get("worker")
+    _worker_runner = None
+    _worker_counter = None
+    if worker_config is not None and worker_config.enabled:
+        from ..agent.tool_setup import build_worker_file_tools
+        from ..worker import WORKER_TOOL_DEFINITION, WorkerRunner, create_worker_tool
+        from ..worker.tool_adapter import WorkerCounter
+
+        _worker_client = _build_subagent_client("worker", worker_config)
+        _worker_prompt = _load_agent_prompt("worker")
+        if _worker_prompt is None:
+            _emit_pre_tui_message(console, "error", "Failed to load worker prompt")
+            return
+        _worker_cache_ctrl = build_cache_control(
+            resolve_breakpoint_cache_ttl(
+                provider=getattr(worker_config.llm, "provider", ""),
+                enabled=worker_config.cache.enabled,
+                configured_ttl=worker_config.cache.ttl,
+            )
+        )
+
+        # Always exclude worker itself to prevent recursion.
+        _excluded = frozenset(worker_config.excluded_tools) | {"worker"}
+        _worker_runner = WorkerRunner(
+            _worker_client,
+            registry,
+            _excluded,
+            _worker_prompt,
+            max_turns=worker_config.max_turns,
+            max_context_tokens=worker_config.max_context_tokens,
+            cache_control=_worker_cache_ctrl,
+            sink=session_mgr,
+            provider=getattr(worker_config.llm, "provider", None),
+            model=getattr(worker_config.llm, "model", None),
+            ui_console=console,
+            tool_overrides=build_worker_file_tools(
+                all_allowed_paths, agent_os_dir
+            ),
+        )
+        _worker_counter = WorkerCounter()
+
     memory_edit_allow_failure = config.tools.memory_edit.allow_failure
     commands = CommandHandler(console)
 
@@ -898,6 +926,18 @@ def main(user: str, resume: str | None = None) -> None:
     ):
         conversation_compaction_client = client
 
+    # Tier 2 conversation compaction: summarizing sub-agent used when codex
+    # remote compaction is unavailable (non-codex provider) or fails.
+    compactor_agent_instance: CompactorAgent | None = None
+    compactor_config = config.agents.get("compactor")
+    if compactor_config and compactor_config.enabled:
+        compactor_client = _build_subagent_client(
+            "compactor", compactor_config, session_debug_label="compactor"
+        )
+        compactor_prompt = _load_agent_prompt("compactor")
+        if compactor_prompt is not None:
+            compactor_agent_instance = CompactorAgent(compactor_client, compactor_prompt)
+
     agent = AgentCore(
         client=client,
         conversation=conversation,
@@ -918,8 +958,9 @@ def main(user: str, resume: str | None = None) -> None:
         shared_state_store=shared_state_store,
         scope_resolver=DEFAULT_SCOPE_RESOLVER,
         memory_sync_client=memory_sync_client,
-        memory_curator=memory_curator,
+        worker_runner=_worker_runner,
         conversation_compaction_client=conversation_compaction_client,
+        compactor_agent=compactor_agent_instance,
         brain_prompt_policy=brain_prompt_policy,
         copilot_runtime=copilot_runtime if brain_agent_config.llm.provider == "copilot" else None,
         ui_debug=debug,
@@ -1115,44 +1156,9 @@ def main(user: str, resume: str | None = None) -> None:
     registry.add_side_effect_tools(frozenset({"agent_task", "agent_note"}))
 
     # === worker subagent tool ===
-    worker_config = config.agents.get("worker")
-    if worker_config is not None and worker_config.enabled:
-        from ..agent.tool_setup import build_worker_file_tools
-        from ..worker import WORKER_TOOL_DEFINITION, WorkerRunner, create_worker_tool
-        from ..worker.tool_adapter import WorkerCounter
-
-        _worker_client = _build_subagent_client("worker", worker_config)
-        _worker_prompt = _load_agent_prompt("worker")
-        if _worker_prompt is None:
-            _emit_pre_tui_message(console, "error", "Failed to load worker prompt")
-            return
-        _worker_cache_ctrl = build_cache_control(
-            resolve_breakpoint_cache_ttl(
-                provider=getattr(worker_config.llm, "provider", ""),
-                enabled=worker_config.cache.enabled,
-                configured_ttl=worker_config.cache.ttl,
-            )
-        )
-
-        # Always exclude worker itself to prevent recursion.
-        _excluded = frozenset(worker_config.excluded_tools) | {"worker"}
-        _worker_runner = WorkerRunner(
-            _worker_client,
-            registry,
-            _excluded,
-            _worker_prompt,
-            max_turns=worker_config.max_turns,
-            max_context_tokens=worker_config.max_context_tokens,
-            cache_control=_worker_cache_ctrl,
-            sink=session_mgr,
-            provider=getattr(worker_config.llm, "provider", None),
-            model=getattr(worker_config.llm, "model", None),
-            ui_console=console,
-            tool_overrides=build_worker_file_tools(
-                all_allowed_paths, agent_os_dir
-            ),
-        )
-        _worker_counter = WorkerCounter()
+    # Runner itself was built earlier (before AgentCore); only register the
+    # brain-facing async tool here, once pqueue exists.
+    if _worker_runner is not None:
         registry.register(
             "worker",
             create_worker_tool(

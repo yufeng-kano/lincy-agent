@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 import hashlib
 import json
 import logging
@@ -14,6 +14,11 @@ import re
 
 from ...core.schema import MemoryEditWarningsConfig
 from ...workspace.people import sync_people_index_entry
+from ..curation.budget import (
+    matches_ignore_patterns as _matches_warning_patterns,
+    resolve_budget as _resolve_warning_budget,
+)
+from ..curation.queue import upsert_queue_entry as _upsert_curation_queue
 from ..index_kind import IndexKind, classify_memory_index_path, is_registry_index_path
 from .apply import (
     ApplyOutcome,
@@ -785,8 +790,9 @@ def _check_file_warnings(
                 path=rel_path,
                 code="file_too_long",
                 detail=(
-                    f"{chars} chars (budget: {budget}); queued for curation. "
-                    "see kernel/builtin-skills/memory-maintenance/"
+                    f"{chars} chars (budget: {budget}); already queued for "
+                    "curation. Automated maintenance handles this -- do not "
+                    "delegate cleanup for it."
                 ),
             )
         )
@@ -806,83 +812,6 @@ def _check_file_warnings(
         )
 
     return warnings
-
-
-def _matches_warning_patterns(
-    target: Path,
-    rel_path: str,
-    patterns: list[str],
-) -> bool:
-    """Match warning patterns against workspace-relative paths."""
-    for pattern in patterns:
-        if pattern.endswith("/"):
-            if f"/{pattern}" in f"/{rel_path}" or rel_path.startswith(pattern):
-                return True
-        elif target.name == pattern:
-            return True
-    return False
-
-
-def _resolve_warning_budget(
-    target: Path,
-    rel_path: str,
-    config: MemoryEditWarningsConfig,
-) -> int:
-    """Return the first matching budget override or the default budget."""
-    for override in config.budgets:
-        if _matches_warning_patterns(target, rel_path, [override.pattern]):
-            return override.max_chars
-    return config.max_chars
-
-
-def _upsert_curation_queue(
-    *,
-    agent_os_dir: Path,
-    rel_path: str,
-    chars: int,
-    budget: int,
-) -> None:
-    """Record an oversized file for the deterministic curation consumer."""
-    queue_path = agent_os_dir / "state" / "memory-curation-queue.json"
-    now = datetime.now(timezone.utc).isoformat()
-    entries: list[dict[str, object]] = []
-    try:
-        data = json.loads(queue_path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            entries = [entry for entry in data if isinstance(entry, dict)]
-    except FileNotFoundError:
-        pass
-    except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to load memory curation queue: %s", queue_path)
-
-    for entry in entries:
-        if entry.get("path") != rel_path:
-            continue
-        entry["chars"] = chars
-        entry["last_seen"] = now
-        break
-    else:
-        entries.append(
-            {
-                "path": rel_path,
-                "chars": chars,
-                "budget": budget,
-                "first_seen": now,
-                "last_seen": now,
-            }
-        )
-
-    temporary = queue_path.with_name(f".{queue_path.name}.tmp")
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        temporary.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(queue_path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def _find_duplicate_lines(lines: list[str]) -> list[int]:

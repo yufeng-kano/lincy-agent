@@ -18,7 +18,11 @@ from .bm25_search import (
 from .tool_adapter import MEMORY_EDIT_DEFINITION, create_memory_edit
 from .backup import MemoryBackupManager
 from .hooks import check_and_archive_buffers, ArchiveResult
-from .curator import MemoryCurator
+from .curation import (
+    curate_queue_via_worker,
+    digest_day_via_worker,
+    scan_over_budget_files,
+)
 from .tool_analysis import (
     ARTIFACT_REGISTRY_TARGET,
     MEMORY_SYNC_TARGETS,
@@ -46,7 +50,9 @@ __all__ = [
     "MemoryBackupManager",
     "check_and_archive_buffers",
     "ArchiveResult",
-    "MemoryCurator",
+    "curate_queue_via_worker",
+    "digest_day_via_worker",
+    "scan_over_budget_files",
     "ARTIFACT_REGISTRY_TARGET",
     "MEMORY_SYNC_TARGETS",
     "find_missing_artifact_registry_paths",
