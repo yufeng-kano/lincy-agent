@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from lincy.core.config import load_raw_agent_config
+
 from .config import CFGS_DIR, load_supervisor_config
 from .process import topological_sort
 from .schema import SupervisorConfig
@@ -114,10 +116,10 @@ def run_check(config_path: str = "supervisor.yaml") -> int:
 
     agent_yaml = CFGS_DIR / "agent.yaml"
     if agent_yaml.exists():
-        import yaml
-
-        with open(agent_yaml) as f:
-            agent_cfg = yaml.safe_load(f)
+        override_yaml = CFGS_DIR / "agent.override.yaml"
+        if override_yaml.exists():
+            print(f"  override      {override_yaml}  (applied)")
+        agent_cfg = load_raw_agent_config()
         agent_os_dir = Path(agent_cfg["app"]["agent_os_dir"]).expanduser().resolve()
         sessions_dir = agent_os_dir / "session" / "brain"
         if sessions_dir.exists():

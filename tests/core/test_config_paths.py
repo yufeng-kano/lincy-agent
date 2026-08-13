@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
+from chat_web_api.settings import WebApiSettings
 from lincy.core import config as config_module
 
 
@@ -105,7 +108,7 @@ def test_resolve_llm_config_reads_ollama_api_key_from_env(monkeypatch, tmp_path:
 
 
 def test_repo_agent_config_enables_shell_handoff_rules():
-    config = config_module.load_config("agent.yaml")
+    config = config_module.load_config("agent.yaml", apply_override=False)
 
     handoff = config.tools.shell.handoff
     assert handoff.enabled is True
@@ -118,7 +121,7 @@ def test_repo_agent_config_enables_shell_handoff_rules():
 
 
 def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
-    config = config_module.load_config("agent.yaml")
+    config = config_module.load_config("agent.yaml", apply_override=False)
 
     brain_llm = config.agents["brain"].llm
     assert brain_llm.provider == "claude_code"
@@ -136,7 +139,7 @@ def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
 
 
 def test_repo_agent_config_worker_uses_claude_code_with_expected_fallbacks():
-    config = config_module.load_config("agent.yaml")
+    config = config_module.load_config("agent.yaml", apply_override=False)
 
     worker_llm = config.agents["worker"].llm
     assert worker_llm.provider == "claude_code"
@@ -152,7 +155,7 @@ def test_repo_agent_config_worker_uses_claude_code_with_expected_fallbacks():
 
 
 def test_repo_agent_config_memory_editor_uses_deepseek_v4_flash_no_thinking():
-    config = config_module.load_config("agent.yaml")
+    config = config_module.load_config("agent.yaml", apply_override=False)
 
     memory_editor_llm = config.agents["memory_editor"].llm
     assert memory_editor_llm.provider == "deepseek"
@@ -273,3 +276,122 @@ def test_load_app_timezone_reads_only_timezone(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
 
     assert config_module.load_app_timezone("agent.yaml") == "Asia/Taipei"
+
+
+def _write_base_agent_config(tmp_path: Path) -> None:
+    _write_yaml(
+        tmp_path / "llm" / "openai" / "base.yaml",
+        {"provider": "openai", "model": "gpt-4o", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "llm" / "openai" / "local.yaml",
+        {"provider": "openai", "model": "gpt-4o-mini", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "agent.yaml",
+        {
+            "app": {"timezone": "UTC+8"},
+            "agents": {
+                "brain": {
+                    "llm": "llm/openai/base.yaml",
+                    "llm_fallbacks": ["llm/openai/base.yaml"],
+                    "llm_request_timeout": 600,
+                }
+            },
+        },
+    )
+
+
+def test_override_path_preserves_dotted_stem():
+    path = config_module._override_path_for(Path("cfgs/agent.dev.yaml"))
+
+    assert path.name == "agent.dev.override.yaml"
+
+
+def test_override_merges_into_agent_config(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": "llm/openai/local.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+    brain = config.agents["brain"]
+    assert brain.llm.model == "gpt-4o-mini"
+    # Untouched sibling keys survive the merge.
+    assert brain.llm_request_timeout == 600
+    assert [cfg.model for cfg in brain.llm_fallbacks] == ["gpt-4o"]
+
+
+def test_override_replaces_lists_wholesale(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm_fallbacks": []}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+    assert config.agents["brain"].llm_fallbacks == []
+
+
+def test_override_can_be_disabled(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": "llm/openai/local.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml", apply_override=False)
+    assert config.agents["brain"].llm.model == "gpt-4o"
+
+
+def test_load_app_timezone_honors_override(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(tmp_path / "agent.override.yaml", {"app": {"timezone": "UTC"}})
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    assert config_module.load_app_timezone("agent.yaml") == "UTC"
+
+
+def test_missing_override_is_a_no_op(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+    assert config.agents["brain"].llm.model == "gpt-4o"
+
+
+def test_empty_override_is_a_silent_no_op(monkeypatch, tmp_path: Path, caplog):
+    _write_base_agent_config(tmp_path)
+    (tmp_path / "agent.override.yaml").write_text("")
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.model == "gpt-4o"
+    assert "Applied agent.override.yaml" not in caplog.text
+
+
+@pytest.mark.parametrize("payload", [[], False])
+def test_falsey_non_mapping_override_raises(monkeypatch, tmp_path: Path, payload):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(tmp_path / "agent.override.yaml", payload)
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit, match="must contain a YAML mapping"):
+        config_module.load_config("agent.yaml")
+
+
+def test_web_api_settings_rejects_unknown_override_key(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"context": {"soft_max_prompt_token": 400_000}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(ValidationError, match="soft_max_prompt_token"):
+        WebApiSettings.from_env()

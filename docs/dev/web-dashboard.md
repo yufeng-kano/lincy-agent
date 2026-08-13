@@ -37,7 +37,7 @@ runtime UI event → FanoutUiSink（cli/app.py 組裝層）
 
 | 檔案 | 職責 |
 |------|------|
-| `settings.py` | 從 `cfgs/agent.yaml` 讀取 `agent_os_dir`、`soft_max_prompt_tokens` |
+| `settings.py` | 經 `load_config()` 讀 `cfgs/agent.yaml`（含 `agent.override.yaml`）：`agent_os_dir`、`soft_max_prompt_tokens` |
 | `pricing.py` | 從 LiteLLM GitHub JSON 抓取 model pricing，本地 cache 24h |
 | `session_reader.py` | 增量 JSONL 讀取器（byte offset seek，只讀新行） |
 | `cache.py` | In-memory metrics cache：sessions、turns、responses 聚合 |

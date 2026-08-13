@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from typing import TypeVar
@@ -27,6 +28,8 @@ from ..timezone_utils import validate_timezone_spec
 _dotenv_values = dotenv_values()
 
 CFGS_DIR = Path(__file__).parent.parent.parent.parent / "cfgs"
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar(
     "T",
@@ -88,6 +91,62 @@ def _resolve_cfg_relative_path(config_path: str) -> Path:
     if relative.parts[:1] == ("cfgs",):
         relative = Path(*relative.parts[1:])
     return CFGS_DIR / relative
+
+
+def _override_path_for(config_path: Path) -> Path:
+    """Return the sibling ``<name>.override.yaml`` for a config file."""
+    return config_path.with_name(f"{config_path.stem}.override.yaml")
+
+
+def _merge_override(base: dict, override: dict, *, prefix: str = "") -> list[str]:
+    """Deep-merge ``override`` into ``base`` in place; return overridden paths.
+
+    Only dicts merge recursively. Lists and scalars replace wholesale, because
+    element-level merging of things like ``llm_fallbacks`` has no predictable
+    semantics -- write the full list (or ``[]``) to change it.
+    """
+    applied: list[str] = []
+    for key, value in override.items():
+        path = f"{prefix}{key}"
+        current = base.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            applied.extend(_merge_override(current, value, prefix=f"{path}."))
+            continue
+        base[key] = value
+        applied.append(path)
+    return applied
+
+
+def load_raw_agent_config(
+    config_path: str = "agent.yaml",
+    *,
+    apply_override: bool = True,
+) -> dict:
+    """Read the agent config as a raw dict, merging its local override file.
+
+    All agent.yaml readers go through here so the agent process, supervisor and
+    web API never disagree about values such as ``app.agent_os_dir``.
+    """
+    full_path = _resolve_cfg_relative_path(config_path)
+    raw = _load_yaml(full_path) or {}
+
+    if not apply_override:
+        return raw
+
+    override_path = _override_path_for(full_path)
+    if not override_path.exists():
+        return raw
+
+    override = _load_yaml(override_path)
+    if override is None:
+        return raw
+    if not isinstance(override, dict):
+        raise SystemExit(f"Config error: {override_path} must contain a YAML mapping")
+
+    applied = _merge_override(raw, override)
+    if applied:
+        logger.info("Applied %s: %s", override_path.name, ", ".join(sorted(applied)))
+    return raw
 
 
 def resolve_llm_config(llm_path: str) -> LLMConfig:
@@ -152,10 +211,15 @@ def _resolve_agent_llm_reference(
     return config.model_dump()
 
 
-def load_config(config_path: str = "agent.yaml") -> AppConfig:
+def load_config(
+    config_path: str = "agent.yaml",
+    *,
+    apply_override: bool = True,
+) -> AppConfig:
     """Load and validate main config."""
-    full_path = _resolve_cfg_relative_path(config_path)
-    raw = _load_yaml(full_path)
+    # Merge before resolving LLM references, while `llm` fields are still
+    # plain path strings on both sides.
+    raw = load_raw_agent_config(config_path, apply_override=apply_override)
 
     # Resolve LLM config paths to actual configs
     if "agents" in raw:
@@ -211,8 +275,7 @@ def _validate_vision_coverage(config: AppConfig) -> None:
 
 def load_app_timezone(config_path: str = "agent.yaml") -> str:
     """Load only ``app.timezone`` from the main config."""
-    full_path = _resolve_cfg_relative_path(config_path)
-    raw = _load_yaml(full_path) or {}
+    raw = load_raw_agent_config(config_path)
     app_raw = raw.get("app")
     if not isinstance(app_raw, dict):
         raise ValueError("Config error: app section is required in agent config")

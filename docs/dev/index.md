@@ -35,6 +35,7 @@
 | [gui-computer-use.md](gui-computer-use.md) | GUI Computer Use：AX-first 架構、MCP server vendor 規範、context 管理策略 |
 | [brain-worker-delegation.md](brain-worker-delegation.md) | Brain 無 shell 工具：per-agent `excluded_tools` 機制、任務單規則、worker fail-closed 協定 |
 | [memory-curation.md](memory-curation.md) | 記憶檔案自動化重量管理（字元預算警告、超標佇列、curator 蒸餾）與對話 compaction 三層架構（codex remote / compactor agent / local） |
+| [local-config-override.md](local-config-override.md) | `cfgs/agent.override.yaml` 本機設定覆蓋：合併規則、統一讀取路徑 |
 
 ## 子資料夾
 
