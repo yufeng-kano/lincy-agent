@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from lincy.core.config import load_raw_agent_config
+from lincy.core.config import load_config
 
 
 _PRICING_URL = (
@@ -32,14 +32,13 @@ class WebApiSettings:
 
     @classmethod
     def from_env(cls) -> WebApiSettings:
-        """Build settings by reading cfgs/agent.yaml (+ its local override)."""
-        cfg = load_raw_agent_config()
+        """Build settings from the validated agent config (+ its local override)."""
+        cfg = load_config()
 
-        agent_os_dir = Path(cfg["app"]["agent_os_dir"]).expanduser().resolve()
-        soft_limit = cfg.get("context", {}).get("soft_max_prompt_tokens", 128_000)
-        control_cfg = cfg.get("app", {}).get("control", {})
-        control_host = control_cfg.get("host", "127.0.0.1")
-        control_port = control_cfg.get("port", 9001)
+        agent_os_dir = cfg.get_agent_os_dir()
+        soft_limit = cfg.context.soft_max_prompt_tokens
+        control_host = cfg.app.control.host
+        control_port = cfg.app.control.port
 
         sessions_dir = agent_os_dir / "session" / "brain"
         pricing_cache_path = agent_os_dir / "state" / "model_pricing_cache.json"

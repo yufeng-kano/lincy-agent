@@ -36,8 +36,7 @@ list 不做元素級合併：`llm_fallbacks`、`excluded_tools`、`boot_files` �
 
 ## 邊界
 
-- 經 `load_config()` 的讀取路徑仍以 schema 的 `extra="forbid"` 驗證：override 打錯 key 會在啟動時報錯，不會 silent ignore。
-- 只讀 `load_raw_agent_config()` 的周邊服務（如 Web API）不做 schema 驗證；override 打錯 key 時會沿用 base 值。
+- 經 `load_config()` 的讀取路徑（agent 進程與 Web API）以 schema 的 `extra="forbid"` 驗證：override 打錯 key 會在啟動時報錯，不會 silent ignore。
 - 不支援「刪除 key」語義（沒有 null sentinel）。
 - **不覆蓋 `cfgs/llm/**`**。本機要用不同的 provider profile，就在 `cfgs/llm/` 下自建檔案再由
   override 指過去；多一層 provider config override 只會讓實際生效值難以追查。
@@ -49,7 +48,7 @@ list 不做元素級合併：`llm_fallbacks`、`excluded_tools`、`boot_files` �
 避免 agent 進程與周邊服務對同一個值（如 `app.agent_os_dir`、`app.timezone`）看法不一致：
 
 - `load_config()` / `load_app_timezone()`（`src/lincy/core/config.py`）
-- `WebApiSettings.from_env()`（`src/chat_web_api/settings.py`）
+- `WebApiSettings.from_env()`（`src/chat_web_api/settings.py`，走 `load_config()`）
 - `chat_supervisor check`（`src/chat_supervisor/check.py`，同時會印出 override 是否套用）
 
 supervisor 的 `enabled: auto`（依 agent 實際使用的 provider 決定要不要啟動對應 proxy）
