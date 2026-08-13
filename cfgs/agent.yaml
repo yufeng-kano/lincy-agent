@@ -275,7 +275,7 @@ tools:
 # Agents
 agents:
   brain:
-    llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
+    llm: cfgs/llm/kano-proxy/brain.yaml
     llm_fallbacks:
       - cfgs/llm/heyroute/claude-opus-5/thinking.yaml
     llm_request_timeout: 600
@@ -332,7 +332,7 @@ agents:
 
   worker:
     enabled: true
-    llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
+    llm: cfgs/llm/kano-proxy/worker.yaml
     llm_fallbacks:
       - cfgs/llm/heyroute/claude-opus-5/thinking.yaml
       - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
@@ -378,7 +378,7 @@ agents:
 
   gui_manager:
     enabled: true
-    llm: cfgs/llm/claude_code/claude-opus-5/thinking.yaml
+    llm: cfgs/llm/kano-proxy/gui-manager.yaml
     llm_request_timeout: 600
     llm_transient_retries: 20
     warn_on_failure: true

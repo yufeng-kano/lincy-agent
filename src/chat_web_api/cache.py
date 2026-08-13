@@ -28,12 +28,13 @@ _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
         "deepseek",
         "grok",
         "heyroute",
+        "kano_proxy",
         "openai",
         "openrouter",
     }
 )
 _WRITE_CACHE_MEASURABLE_PROVIDERS = frozenset(
-    {"anthropic", "claude_code", "heyroute", "openrouter"}
+    {"anthropic", "claude_code", "heyroute", "kano_proxy", "openrouter"}
 )
 
 

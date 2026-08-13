@@ -1,0 +1,26 @@
+# Kano Proxy Anthropic-compatible Messages API profile, not a Claude Code native proxy.
+provider: kano_proxy
+# Gateway model id used by this Kano Proxy profile.
+model: lincy-brain-agent
+# Dedicated Kano Proxy key. Do not fall back to ANTHROPIC_API_KEY.
+api_key_env: KANO_PROXY_API_KEY
+# Kano Proxy gateway root. The client appends /v1/messages.
+base_url: https://kano-proxy.yuufeng.com/anthropic
+# Output token cap for this profile.
+max_tokens: 128000
+# HTTP timeout in seconds.
+request_timeout: 600.0
+# Sampling temperature. Anthropic omits temperature when thinking is active.
+temperature: 1.0
+# Whether the app may send image inputs to this profile.
+vision: true
+
+# Opus 5 thinks by default; adaptive is stated explicitly to keep the payload self-describing.
+thinking:
+  type: adaptive
+
+# xhigh is the recommended tier for agentic tool loops on Opus 5. max is left
+# for latency-insensitive one-off work: it overthinks conversational turns and
+# burns the subscription Opus quota faster for little gain here.
+output_config:
+  effort: xhigh

@@ -120,12 +120,12 @@ def test_repo_agent_config_enables_shell_handoff_rules():
     ]
 
 
-def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
+def test_repo_agent_config_brain_uses_kano_proxy_with_expected_fallbacks():
     config = config_module.load_config("agent.yaml", apply_override=False)
 
     brain_llm = config.agents["brain"].llm
-    assert brain_llm.provider == "claude_code"
-    assert brain_llm.model == "claude-opus-5"
+    assert brain_llm.provider == "kano_proxy"
+    assert brain_llm.model == "lincy-brain-agent"
     assert brain_llm.thinking is not None
     assert brain_llm.thinking.type == "adaptive"
     assert brain_llm.output_config is not None
@@ -138,12 +138,12 @@ def test_repo_agent_config_brain_uses_claude_code_with_expected_fallbacks():
     assert fallbacks[0].thinking.type == "adaptive"
 
 
-def test_repo_agent_config_worker_uses_claude_code_with_expected_fallbacks():
+def test_repo_agent_config_worker_uses_kano_proxy_with_expected_fallbacks():
     config = config_module.load_config("agent.yaml", apply_override=False)
 
     worker_llm = config.agents["worker"].llm
-    assert worker_llm.provider == "claude_code"
-    assert worker_llm.model == "claude-opus-5"
+    assert worker_llm.provider == "kano_proxy"
+    assert worker_llm.model == "lincy-worker-agent"
     assert worker_llm.thinking is not None
     assert worker_llm.thinking.type == "adaptive"
 

@@ -977,6 +977,35 @@ class HeyrouteConfig(AnthropicConfig):
         return HeyrouteClient(self)
 
 
+class KanoProxyConfig(AnthropicConfig):
+    """Kano Proxy gateway using the assumed Anthropic-compatible Messages API."""
+
+    provider: Literal["kano_proxy"] = "kano_proxy"
+    api_key_env: str | None = "KANO_PROXY_API_KEY"
+    base_url: str = Field(
+        default="https://kano-proxy.yuufeng.com/anthropic",
+        validate_default=True,
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        trimmed = value.strip().rstrip("/")
+        if not trimmed:
+            raise ValueError("base_url must not be empty")
+        if trimmed.endswith("/v1") or trimmed.endswith("/v1/messages"):
+            raise ValueError(
+                "Kano Proxy base_url must point to the gateway root, "
+                "not /v1 or /v1/messages"
+            )
+        return trimmed
+
+    def create_client(self) -> Any:
+        from ..llm.providers.kano_proxy import KanoProxyClient
+
+        return KanoProxyClient(self)
+
+
 class GeminiThinkingConfig(StrictConfigModel):
     """Gemini thinking config.
 
@@ -1231,6 +1260,7 @@ LLMConfig = Annotated[
     | DeepSeekConfig
     | AnthropicConfig
     | HeyrouteConfig
+    | KanoProxyConfig
     | GeminiConfig
     | OpenRouterConfig
     | LiteLLMConfig,

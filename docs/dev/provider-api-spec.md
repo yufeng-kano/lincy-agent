@@ -420,6 +420,36 @@
 
 ---
 
+## Kano Proxy
+
+> **重要標示**：kano-proxy 沒有獨立公開 API 文件。本節只把使用者指定的「Anthropic Messages API compatible gateway」建模為**假設相容、尚未驗證**。不把 gateway 的模型對應、限制或額外欄位寫成已知事實。
+
+### 1. 假設的 Anthropic-compatible 介面（尚未驗證）
+
+| 項目 | 事實 | 來源類型 | 可信度 | 備註 |
+|------|------|---------|--------|------|
+| Endpoint | `POST /v1/messages` | 假設 Anthropic-compatible / 未驗證 | 低 | 使用者指定 gateway root 為 `https://kano-proxy.yuufeng.com/anthropic`；client 依既有 Anthropic joining convention 附加 `/v1/messages` |
+| Auth | `x-api-key: {api_key}` + `anthropic-version: 2023-06-01` | 假設 Anthropic-compatible / 未驗證 | 低 | 與 Anthropic/Heyroute adapter 相同；key 必須走獨立 env，不可共用 `ANTHROPIC_API_KEY` |
+| Request / response shape | Anthropic Messages API native shape | 假設 Anthropic-compatible / 未驗證 | 低 | 不新增 gateway-specific 欄位 |
+| Thinking | `thinking: {"type": "adaptive"|"enabled"|"disabled"}`；enabled 可帶 `budget_tokens` | 假設 Anthropic-compatible / 未驗證 | 低 | 完全沿用本專案 Anthropic adapter shape |
+| Effort | `output_config: {"effort": "low"|"medium"|"high"|"xhigh"|"max"}` | 假設 Anthropic-compatible / 未驗證 | 低 | 不推測 kano-proxy 的額外 effort 值或模型能力 |
+
+### 2. 本專案 adapter 規則
+
+| 項目 | 規則 | 程式碼位置 | 備註 |
+|------|------|---------|------|
+| Provider 名稱 | 使用獨立 `provider: kano_proxy` 與 `KanoProxyConfig` / `KanoProxyClient` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/kano_proxy.py` | 獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
+| Client 實作 | `KanoProxyClient` 繼承 `AnthropicClient`，不複製 payload / response mapping | `src/lincy/llm/providers/kano_proxy.py` | 與 Heyroute 同一模式 |
+| Base URL | 預設 `https://kano-proxy.yuufeng.com/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/anthropic/v1/messages` |
+| API key env | 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/schema.py` + `src/lincy/core/config.py` | 依既有 `api_key_env` 解析規則；不可 fallback 到 `ANTHROPIC_API_KEY` |
+| Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 與 Anthropic adapter 相同而納入 |
+
+### 3. 實測 / 逆向資訊
+
+無。repo 內 curated profiles 使用 gateway 自訂 model id（`lincy-brain-agent`、`lincy-worker-agent`、`lincy-gui-manager`），不是 Anthropic 官方 model id。
+
+---
+
 ## Gemini
 
 ### 1. 官方 API 事實
@@ -557,6 +587,8 @@
 | max_tokens | 不需要（實測） | **必填** | 可選 | 可選（GPT-5+ 用 `max_completion_tokens`） | **必填** | **必填**（假設相容/未驗證） | 可選（maxOutputTokens） | 可選 | `options.num_predict` |
 | Prompt cache | 無 | Anthropic breakpoint | 自動 prefix + `x-grok-conv-id` sticky | 自動 prefix（`prompt_cache_retention: "24h"`） | Anthropic breakpoint | Anthropic breakpoint（假設相容/未驗證） | 無 | `cache_control` breakpoint | 無 |
 
+Kano Proxy 不另開欄：獨立 `provider: kano_proxy`，payload / auth header / cache breakpoint 與 Anthropic、Heyroute 同一 adapter；差異只有 gateway URL 與 `KANO_PROXY_API_KEY`。
+
 ---
 
 ## Usage Token 回收（non-streaming）
@@ -567,7 +599,7 @@
 |---|---|---|---|---|
 | OpenAI / OpenRouter / Copilot / Grok（OpenAI-compatible） | 是（視 gateway/模型） | 是 | 是（若有 prompt_tokens_details） | `usage=None` 時標記 unavailable |
 | Ollama（native `/api/chat`） | 是（`prompt_eval_count` / `eval_count`） | 是 | 否 | 欄位缺失時標記 unavailable |
-| Anthropic | 是 | 是（prompt = input + cache_read + cache_creation；completion = output） | 是（cache_read_input_tokens / cache_creation_input_tokens） | `usage` 缺失時標記 unavailable |
+| Anthropic / Heyroute / Kano Proxy | 是 | 是（prompt = input + cache_read + cache_creation；completion = output） | 是（cache_read_input_tokens / cache_creation_input_tokens） | `usage` 缺失時標記 unavailable |
 | Gemini | 是（usageMetadata） | 是（promptTokenCount / candidatesTokenCount / totalTokenCount） | 否 | `usageMetadata` 缺失時標記 unavailable |
 
 補充：

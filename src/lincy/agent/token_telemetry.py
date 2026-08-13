@@ -8,7 +8,7 @@ from ..llm import LLMResponse
 
 _READ_CACHE_MEASURABLE_PROVIDERS = frozenset({
     "anthropic", "claude_code", "codex", "copilot", "deepseek", "grok",
-    "heyroute", "openai", "openrouter",
+    "heyroute", "kano_proxy", "openai", "openrouter",
 })
 
 
