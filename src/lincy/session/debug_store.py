@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..llm import LLMResponse, Message, ToolDefinition
+from ..llm import LLMResponse, Message, ServedCandidate, ToolDefinition
 from ..timezone_utils import now as tz_now
 from .debug_schema import (
     SessionCheckpoint,
@@ -18,6 +18,21 @@ from .debug_schema import (
     SessionTurnRecord,
 )
 from .schema import SessionEntry
+
+
+def _served_fields(served: ServedCandidate | None) -> dict[str, Any]:
+    """Fields naming the failover candidate that actually served one call.
+
+    Empty when unknown (no fallback chain), so readers can tell "unknown" from
+    "the primary served it".
+    """
+    if served is None:
+        return {}
+    return {
+        "served_provider": served.provider,
+        "served_model": served.model,
+        "served_candidate_index": served.index,
+    }
 
 
 @dataclass
@@ -202,6 +217,7 @@ class SessionDebugStore:
         *,
         response: LLMResponse,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         """Persist one normalized tool-capable LLM response."""
         with self._seq_lock:
@@ -209,6 +225,7 @@ class SessionDebugStore:
                 self._active_turn.record_usage(response)
             self._response_seq += 1
             resp_seq = self._response_seq
+        served_fields = _served_fields(served)
         record = SessionLLMResponseRecord(
             seq=resp_seq,
             ts=tz_now(),
@@ -222,6 +239,7 @@ class SessionDebugStore:
             call_type=pending.call_type,  # type: ignore[arg-type]
             latency_ms=latency_ms,
             response=response,
+            **served_fields,
         )
         self._append_jsonl("responses.jsonl", record)
         self._append_event(
@@ -231,6 +249,7 @@ class SessionDebugStore:
             client_label=pending.client_label,
             data={
                 "round": pending.round,
+                **served_fields,
                 "finish_reason": response.finish_reason,
                 "tool_call_count": len(response.tool_calls),
                 "prompt_tokens": response.prompt_tokens,
@@ -249,11 +268,13 @@ class SessionDebugStore:
         *,
         response_text: str,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         """Persist one plain-text LLM response."""
         with self._seq_lock:
             self._response_seq += 1
             resp_seq = self._response_seq
+        served_fields = _served_fields(served)
         record = SessionLLMResponseRecord(
             seq=resp_seq,
             ts=tz_now(),
@@ -267,6 +288,7 @@ class SessionDebugStore:
             call_type=pending.call_type,  # type: ignore[arg-type]
             latency_ms=latency_ms,
             response_text=response_text,
+            **served_fields,
         )
         self._append_jsonl("responses.jsonl", record)
         self._append_event(
@@ -276,6 +298,7 @@ class SessionDebugStore:
             client_label=pending.client_label,
             data={
                 "round": pending.round,
+                **served_fields,
                 "response_chars": len(response_text),
                 "latency_ms": latency_ms,
             },
@@ -287,11 +310,13 @@ class SessionDebugStore:
         *,
         error: Exception,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         """Persist one LLM failure tied to a normalized request."""
         with self._seq_lock:
             self._response_seq += 1
             resp_seq = self._response_seq
+        served_fields = _served_fields(served)
         record = SessionLLMResponseRecord(
             seq=resp_seq,
             ts=tz_now(),
@@ -305,6 +330,7 @@ class SessionDebugStore:
             call_type=pending.call_type,  # type: ignore[arg-type]
             latency_ms=latency_ms,
             error=f"{type(error).__name__}: {error}",
+            **served_fields,
         )
         self._append_jsonl("responses.jsonl", record)
         self._append_event(
@@ -314,6 +340,7 @@ class SessionDebugStore:
             client_label=pending.client_label,
             data={
                 "round": pending.round,
+                **served_fields,
                 "error_type": type(error).__name__,
                 "error": str(error),
                 "latency_ms": latency_ms,

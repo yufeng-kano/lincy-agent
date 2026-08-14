@@ -64,6 +64,19 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 - 跨午夜仍在跑的 session（例如 7/10 建立、7/11 還在用 Grok）在「今天 / 7 天」會出現
 - `/api/requests` 依 response `ts` 過濾，並 **最新優先**（前端首頁 limit 500 才看得到當前 model）
 - dashboard 的 daily cost / token 也依 response / turn 當日聚合
+
+### 實際服務的 provider
+
+`/api/requests` 與 `/api/sessions/{id}` 的每筆 response 除了 `provider` / `model`（設定上的主 profile）外，另回：
+
+| 欄位 | 說明 |
+|------|------|
+| `served_provider` / `served_model` | 真正回應這筆請求的 failover candidate（來自 `responses.jsonl`，見 [session-debug-logs.md](session-debug-logs.md)） |
+| `served_by_fallback` | `true` 走了 fallback、`false` 由主 profile 服務、`null` 代表**未知**（舊 session 檔案，或該 client 沒有 fallback chain） |
+
+- `null` 一律當未知處理：前端不顯示任何標記，舊 session 的畫面與改動前相同
+- cost / pricing 仍以 `provider` + `model`（主 profile）計價，尚未改用 served model 計價
+- 前端在 Requests 表與 session 展開列的 model 欄位下，於 `served_by_fallback === true` 時加一行 `-> provider:model` 的琥珀色註記
 | GET | `/api/live` | 當前 active session 的 token 位置（brain-only，見「Live token 口徑」） |
 | GET | `/api/context/composition` | 即時分析最新一筆 brain request 的 prompt 組成（segments + token 估計），每次請求都重新解析 `requests.jsonl`、不進快取；session/brain request 不存在時回 `available: false`，見「Context 頁」 |
 | GET | `/api/claude-accounts` | 轉發 claude-code-proxy `/usage`：帳號、5h/週用量、model list；proxy 不可用時回 `available: false` |

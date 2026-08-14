@@ -5,8 +5,9 @@ from __future__ import annotations
 import time
 from typing import Any, Protocol
 
-from ..llm import LLMResponse, Message, ToolDefinition
+from ..llm import LLMResponse, Message, ServedCandidate, ToolDefinition
 from ..llm.base import LLMClient
+from ..llm.failover import observe_served_candidate
 from .debug_store import PendingLLMRequest
 
 
@@ -33,6 +34,7 @@ class _SessionDebugSink(Protocol):
         *,
         response: LLMResponse,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         ...
 
@@ -42,6 +44,7 @@ class _SessionDebugSink(Protocol):
         *,
         response_text: str,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         ...
 
@@ -51,6 +54,7 @@ class _SessionDebugSink(Protocol):
         *,
         error: Exception,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         ...
 
@@ -89,24 +93,29 @@ class DebugLoggingLLMClient:
             temperature=temperature,
         )
         started = time.perf_counter()
-        try:
-            response_text = self._client.chat(
-                messages,
-                response_schema=response_schema,
-                temperature=temperature,
-            )
-        except Exception as error:
-            self._sink.fail_llm_request(
+        # The failover chain lives below this wrapper, so the candidate that
+        # actually answered is reported out of band.
+        with observe_served_candidate() as probe:
+            try:
+                response_text = self._client.chat(
+                    messages,
+                    response_schema=response_schema,
+                    temperature=temperature,
+                )
+            except Exception as error:
+                self._sink.fail_llm_request(
+                    pending,
+                    error=error,
+                    latency_ms=_elapsed_ms(started),
+                    served=probe.get(),
+                )
+                raise
+            self._sink.complete_llm_text_response(
                 pending,
-                error=error,
+                response_text=response_text,
                 latency_ms=_elapsed_ms(started),
+                served=probe.get(),
             )
-            raise
-        self._sink.complete_llm_text_response(
-            pending,
-            response_text=response_text,
-            latency_ms=_elapsed_ms(started),
-        )
         return response_text
 
     def chat_with_tools(
@@ -125,24 +134,27 @@ class DebugLoggingLLMClient:
             temperature=temperature,
         )
         started = time.perf_counter()
-        try:
-            response = self._client.chat_with_tools(
-                messages,
-                tools,
-                temperature=temperature,
-            )
-        except Exception as error:
-            self._sink.fail_llm_request(
+        with observe_served_candidate() as probe:
+            try:
+                response = self._client.chat_with_tools(
+                    messages,
+                    tools,
+                    temperature=temperature,
+                )
+            except Exception as error:
+                self._sink.fail_llm_request(
+                    pending,
+                    error=error,
+                    latency_ms=_elapsed_ms(started),
+                    served=probe.get(),
+                )
+                raise
+            self._sink.complete_llm_response(
                 pending,
-                error=error,
+                response=response,
                 latency_ms=_elapsed_ms(started),
+                served=probe.get(),
             )
-            raise
-        self._sink.complete_llm_response(
-            pending,
-            response=response,
-            latency_ms=_elapsed_ms(started),
-        )
         return response
 
     def compact_messages(

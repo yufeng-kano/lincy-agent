@@ -87,6 +87,21 @@ def _aggregate_pricing_sources(rows: list[ResponseMetrics]) -> list[dict]:
     ]
 
 
+def _served_payload(row: ResponseMetrics) -> dict:
+    """Serving-provider annotation for one response row.
+
+    ``served_by_fallback`` is None when the record does not say who served it
+    (session files written before failover recording, or clients without a
+    fallback chain), so the UI can stay silent instead of guessing.
+    """
+    index = row.served_candidate_index
+    return {
+        "served_provider": row.served_provider,
+        "served_model": row.served_model,
+        "served_by_fallback": None if index is None else index > 0,
+    }
+
+
 def _has_stale_pricing(rows: list[ResponseMetrics]) -> bool:
     return any(row.pricing_stale for row in rows)
 
@@ -105,6 +120,11 @@ class ResponseMetrics:
     cost: float | None
     turn_id: str | None
     client_label: str | None = None
+    # Which failover candidate actually answered; None when the session file
+    # predates failover recording (treat as "assumed primary").
+    served_provider: str | None = None
+    served_model: str | None = None
+    served_candidate_index: int | None = None
     pricing_source: str | None = None
     pricing_source_url: str | None = None
     pricing_stale: bool = False
@@ -277,6 +297,9 @@ class MetricsCache:
                     cost=cost,
                     turn_id=rec.turn_id,
                     client_label=rec.client_label,
+                    served_provider=rec.served_provider,
+                    served_model=rec.served_model,
+                    served_candidate_index=rec.served_candidate_index,
                     pricing_source=pricing_meta.source if pricing_meta else None,
                     pricing_source_url=(
                         pricing_meta.source_url if pricing_meta else None
@@ -533,6 +556,7 @@ class MetricsCache:
                     "round": rm.round,
                     "provider": rm.provider,
                     "model": rm.model,
+                    **_served_payload(rm),
                     "prompt_tokens": rm.prompt_tokens,
                     "completion_tokens": rm.completion_tokens,
                     "read_cache_rate": _compute_read_cache_rate(
@@ -633,6 +657,7 @@ def _serialize_turn(t: TurnMetrics) -> dict:
                 "round": r.round,
                 "provider": r.provider,
                 "model": r.model,
+                **_served_payload(r),
                 "prompt_tokens": r.prompt_tokens,
                 "completion_tokens": r.completion_tokens,
                 "read_cache_rate": _compute_read_cache_rate(

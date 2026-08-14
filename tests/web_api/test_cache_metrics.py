@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from lincy.session.schema import SessionMetadata
-from chat_web_api.cache import MetricsCache, ResponseMetrics
+from chat_web_api.cache import MetricsCache, ResponseMetrics, TurnMetrics
 from chat_web_api.pricing import ModelPricing
 from chat_web_api.session_reader import SessionFiles
 
@@ -326,3 +326,108 @@ def test_all_requests_filters_by_response_ts_not_session_created():
     assert dash.total_cost == 0.2
     assert dash.daily_costs[0]["date"] == "2026-07-11"
     assert dash.daily_costs[0]["prompt_tokens"] == 200
+
+
+def _response(**overrides) -> ResponseMetrics:
+    base = dict(
+        ts=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
+        round=1,
+        provider="kano_proxy",
+        model="lincy-brain-agent",
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cache_read_tokens=500,
+        cache_write_tokens=0,
+        latency_ms=100,
+        cost=None,
+        turn_id="turn_000001",
+    )
+    base.update(overrides)
+    return ResponseMetrics(**base)
+
+
+def test_all_requests_exposes_the_serving_fallback():
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [
+        _response(
+            served_provider="heyroute",
+            served_model="deepseek-v3",
+            served_candidate_index=1,
+        )
+    ]
+
+    rows = cache.get_all_requests(date(2026, 4, 11), date(2026, 4, 11))
+
+    # The intended profile is unchanged; the served fields are additive.
+    assert rows[0]["provider"] == "kano_proxy"
+    assert rows[0]["model"] == "lincy-brain-agent"
+    assert rows[0]["served_provider"] == "heyroute"
+    assert rows[0]["served_model"] == "deepseek-v3"
+    assert rows[0]["served_by_fallback"] is True
+
+
+def test_all_requests_marks_primary_served_rows_as_not_fallback():
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [
+        _response(
+            served_provider="kano_proxy",
+            served_model="lincy-brain-agent",
+            served_candidate_index=0,
+        )
+    ]
+
+    rows = cache.get_all_requests(date(2026, 4, 11), date(2026, 4, 11))
+
+    assert rows[0]["served_by_fallback"] is False
+
+
+def test_all_requests_reports_unknown_serving_provider_for_old_sessions():
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [_response()]
+
+    rows = cache.get_all_requests(date(2026, 4, 11), date(2026, 4, 11))
+
+    assert rows[0]["served_provider"] is None
+    assert rows[0]["served_model"] is None
+    assert rows[0]["served_by_fallback"] is None
+
+
+def test_session_detail_responses_carry_served_fields():
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [
+        _response(
+            served_provider="heyroute",
+            served_model="deepseek-v3",
+            served_candidate_index=1,
+        )
+    ]
+    cache._turns["s1"] = [
+        TurnMetrics(
+            turn_id="turn_000001",
+            ts_started=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
+            ts_finished=datetime(2026, 4, 11, 12, 1, tzinfo=UTC),
+            channel="cli",
+            sender="alice",
+            status="completed",
+            llm_rounds=1,
+            max_prompt_tokens=1000,
+            total_prompt_tokens=1000,
+            read_cache_rate=None,
+            cache_read_tokens=500,
+            cache_write_tokens=0,
+            write_cache_measurable=True,
+            total_cost=None,
+            responses=cache._responses["s1"],
+        )
+    ]
+
+    detail = cache.get_session_detail("s1")
+
+    assert detail is not None
+    response = detail["turns"][0]["responses"][0]
+    assert response["served_provider"] == "heyroute"
+    assert response["served_by_fallback"] is True

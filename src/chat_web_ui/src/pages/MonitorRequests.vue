@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { fetchAllRequests } from '@/api/client'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useWebSocketStore } from '@/stores/websocket'
-import { formatCacheRate, formatCacheWriteTokens, formatCost, formatCostShort, formatTokens, formatLatency, formatPricingSource, pricingSourceClass } from '@/lib/format'
+import { formatCacheRate, formatCacheWriteTokens, formatCost, formatCostShort, formatTokens, formatLatency, formatPricingSource, formatServedByFallback, pricingSourceClass } from '@/lib/format'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import MonitorTabs from '@/components/dashboard/MonitorTabs.vue'
 import TimeRangeSelector from '@/components/dashboard/TimeRangeSelector.vue'
@@ -151,8 +151,15 @@ watch(() => dashStore.customTo, load)
             <TableCell class="text-xs text-[#6B7280] truncate max-w-[64px]">
               {{ (r.client_label as string) || 'brain' }}
             </TableCell>
-            <TableCell class="text-xs text-[#111827] truncate max-w-[144px]">
-              {{ r.model }}
+            <TableCell class="text-xs text-[#111827] max-w-[144px]">
+              <div class="truncate">{{ r.model }}</div>
+              <div
+                v-if="formatServedByFallback(r)"
+                class="truncate text-[10px] text-[#B45309]"
+                :title="`Served by fallback ${formatServedByFallback(r)}`"
+              >
+                &rarr; {{ formatServedByFallback(r) }}
+              </div>
             </TableCell>
             <TableCell class="text-xs text-right tabular-nums">
               {{ formatTokens((r.prompt_tokens as number) || 0) }}

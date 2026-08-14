@@ -54,7 +54,13 @@ class SessionLLMRequestRecord(BaseModel):
 
 
 class SessionLLMResponseRecord(BaseModel):
-    """Normalized LLM response or failure for one logged request."""
+    """Normalized LLM response or failure for one logged request.
+
+    ``provider`` / ``model`` stay the *intended* primary profile. The
+    ``served_*`` fields say which failover candidate actually handled the call;
+    they are ``None`` for records written before failover was recorded and for
+    clients without a fallback chain.
+    """
 
     seq: int
     ts: datetime
@@ -65,6 +71,9 @@ class SessionLLMResponseRecord(BaseModel):
     client_label: str
     provider: str | None = None
     model: str | None = None
+    served_provider: str | None = None
+    served_model: str | None = None
+    served_candidate_index: int | None = None
     call_type: Literal["chat", "chat_with_tools"]
     latency_ms: int
     response: LLMResponse | None = None

@@ -13,7 +13,7 @@ from typing import Any
 from ..timezone_utils import now as tz_now
 from pathlib import Path
 
-from ..llm import LLMResponse, Message, ToolDefinition
+from ..llm import LLMResponse, Message, ServedCandidate, ToolDefinition
 from .debug_store import PendingLLMRequest, SessionDebugStore
 from .schema import SessionEntry, SessionMetadata
 
@@ -258,6 +258,7 @@ class SessionManager:
         *,
         response: LLMResponse,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         """Record one normalized tool-capable LLM response."""
         if self._debug_store is None or pending is None:
@@ -266,6 +267,7 @@ class SessionManager:
             pending,
             response=response,
             latency_ms=latency_ms,
+            served=served,
         )
 
     def complete_llm_text_response(
@@ -274,6 +276,7 @@ class SessionManager:
         *,
         response_text: str,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         """Record one normalized plain-text LLM response."""
         if self._debug_store is None or pending is None:
@@ -282,6 +285,7 @@ class SessionManager:
             pending,
             response_text=response_text,
             latency_ms=latency_ms,
+            served=served,
         )
 
     def fail_llm_request(
@@ -290,6 +294,7 @@ class SessionManager:
         *,
         error: Exception,
         latency_ms: int,
+        served: ServedCandidate | None = None,
     ) -> None:
         """Record one failed LLM request attempt."""
         if self._debug_store is None or pending is None:
@@ -298,6 +303,7 @@ class SessionManager:
             pending,
             error=error,
             latency_ms=latency_ms,
+            served=served,
         )
 
     def write_checkpoint(self, entries: list[SessionEntry]) -> None:

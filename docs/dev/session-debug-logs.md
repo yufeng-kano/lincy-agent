@@ -26,6 +26,7 @@
   - 對 `chat_with_tools` 保留完整 `LLMResponse`
   - 對 plain `chat` 保留 `response_text`
   - 若 request 丟出 exception，會寫 `error`
+  - 另含 `served_provider` / `served_model` / `served_candidate_index`：**真正回應這一筆的 failover candidate**（見「Failover 實際服務者」）
 - `turns.jsonl`
   - 每個 turn 一行摘要
   - 方便直接看最近 20 輪
@@ -36,6 +37,23 @@
 - `checkpoints/render_cache.jsonl`
   - 保存已渲染的 conversation prefix，讓 resume 後 prompt cache 前綴較穩定
   - resume 時會比對目前 `messages.jsonl` 的對應訊息；若角色、tool call id/name/arguments、tool result id/name 或原文內容對不上，會丟棄這份 render cache，避免舊 cache 污染下一輪 prompt
+
+## Failover 實際服務者
+
+`provider` / `model` 記的是**設定上的主 profile**（`agents.<name>.llm`），不是實際回應者。主 provider 進入 failover cooldown 時，請求會靜默走 `llm_fallbacks`，只看這兩個欄位會把 fallback 的流量誤判成主 provider 的流量。
+
+因此 `responses.jsonl` 與 `events.jsonl` 的 `llm_response` / `llm_error` 另外記：
+
+| 欄位 | 說明 |
+|------|------|
+| `served_provider` | 實際回應（或丟出錯誤）的 candidate provider |
+| `served_model` | 該 candidate 的 model |
+| `served_candidate_index` | 在**設定順序**中的位置，`0` 為主 profile、`>0` 為 fallback（不是嘗試順序：cooldown 會改變嘗試順序，但這裡永遠是設定位置） |
+
+- `provider` / `model` 語意不變，既有消費者（pricing、cache 可測量性判斷）照舊
+- 串接方式：`FailoverLLMClient` 在勝出（或丟出錯誤）時把 candidate 寫進 `lincy/llm/failover.py` 的 ContextVar，`DebugLoggingLLMClient` 用 `observe_served_candidate()` 包住呼叫再讀回來——debug wrapper 在 failover client 之外，回傳值裡拿不到這個資訊
+- **缺值 = 未知**：舊 session 檔案沒有這些欄位，單一 candidate（沒有 `llm_fallbacks`）也不會產生 failover wrapper，兩者都寫 `None`，讀取端一律當「未知／假定為主 profile」處理，不可自行補值
+- `requests.jsonl` 沒有這些欄位：request 在呼叫前就落地，當下還不知道誰會接手
 
 ## 邊界
 

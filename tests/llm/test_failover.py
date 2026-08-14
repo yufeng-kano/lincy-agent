@@ -8,6 +8,7 @@ from lincy.llm.agent_factory import create_agent_client
 from lincy.llm.failover import (
     FailoverCandidate,
     llm_failover_key,
+    observe_served_candidate,
     preferred_candidate_supports_vision,
     reset_failover_cooldowns,
     with_llm_failover,
@@ -411,3 +412,116 @@ def test_agent_factory_skips_429_retries_before_fallback(monkeypatch):
             "retry_label": "brain.fallback1",
         },
     ]
+
+
+def _served_chain(primary: _StubClient, fallback: _StubClient):
+    return with_llm_failover(
+        [
+            FailoverCandidate(
+                key="kano-primary",
+                label="kano_proxy:lincy-brain-agent",
+                client=primary,
+                provider="kano_proxy",
+                model="lincy-brain-agent",
+            ),
+            FailoverCandidate(
+                key="heyroute-fallback",
+                label="heyroute:deepseek-v3",
+                client=fallback,
+                provider="heyroute",
+                model="deepseek-v3",
+            ),
+        ],
+        cooldown_seconds=1800,
+        label="brain",
+    )
+
+
+def test_served_candidate_reports_primary_when_it_answers():
+    client = _served_chain(
+        _StubClient(tool_effects=[LLMResponse(content="ok", tool_calls=[])]),
+        _StubClient(),
+    )
+
+    with observe_served_candidate() as probe:
+        client.chat_with_tools([Message(role="user", content="hi")], [])
+        served = probe.get()
+
+    assert served is not None
+    assert served.provider == "kano_proxy"
+    assert served.model == "lincy-brain-agent"
+    assert served.index == 0
+    assert served.is_fallback is False
+
+
+def test_served_candidate_reports_fallback_that_answered():
+    client = _served_chain(
+        _StubClient(tool_effects=[_make_429()]),
+        _StubClient(tool_effects=[LLMResponse(content="ok", tool_calls=[])]),
+    )
+
+    with observe_served_candidate() as probe:
+        client.chat_with_tools([Message(role="user", content="hi")], [])
+        served = probe.get()
+
+    assert served is not None
+    assert served.provider == "heyroute"
+    assert served.model == "deepseek-v3"
+    assert served.index == 1
+    assert served.is_fallback is True
+
+
+def test_served_candidate_keeps_configured_index_when_primary_is_cooling_down():
+    from lincy.llm import failover as failover_module
+
+    # A cooled-down primary is attempted last, but the fallback that answers
+    # must still be reported with its configured position, not its attempt order.
+    failover_module._COOLDOWNS.mark("kano-primary", 1800)
+    client = _served_chain(
+        _StubClient(),
+        _StubClient(chat_effects=["ok"]),
+    )
+
+    with observe_served_candidate() as probe:
+        assert client.chat([Message(role="user", content="hi")]) == "ok"
+        served = probe.get()
+
+    assert served is not None
+    assert served.index == 1
+    assert served.provider == "heyroute"
+
+
+def test_served_candidate_reports_the_candidate_that_raised():
+    client = _served_chain(
+        _StubClient(tool_effects=[_make_429()]),
+        _StubClient(tool_effects=[_make_429()]),
+    )
+
+    with observe_served_candidate() as probe:
+        with pytest.raises(httpx.HTTPStatusError):
+            client.chat_with_tools([Message(role="user", content="hi")], [])
+        served = probe.get()
+
+    assert served is not None
+    assert served.provider == "heyroute"
+    assert served.index == 1
+
+
+def test_served_candidate_is_unknown_without_a_failover_chain():
+    single = with_llm_failover(
+        [
+            FailoverCandidate(
+                key="only",
+                label="kano_proxy:lincy-brain-agent",
+                client=_StubClient(chat_effects=["ok"]),
+                provider="kano_proxy",
+                model="lincy-brain-agent",
+            )
+        ],
+        cooldown_seconds=1800,
+        label="brain",
+    )
+
+    with observe_served_candidate() as probe:
+        assert single.chat([Message(role="user", content="hi")]) == "ok"
+        assert probe.get() is None

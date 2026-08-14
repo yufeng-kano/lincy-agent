@@ -3,7 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchSessionDetail } from '@/api/client'
 import { useWebSocketStore } from '@/stores/websocket'
-import { formatCacheRate, formatCacheWriteTokens, formatCostShort, formatCost, formatTokens, formatLatency, formatPricingSource, formatPricingSources, pricingSourceClass } from '@/lib/format'
+import { formatCacheRate, formatCacheWriteTokens, formatCostShort, formatCost, formatTokens, formatLatency, formatPricingSource, formatPricingSources, formatServedByFallback, pricingSourceClass } from '@/lib/format'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 
@@ -168,7 +168,16 @@ watch(() => route.params.id, load)
             >
               <span class="w-8">r{{ resp.round }}</span>
               <span class="w-16 truncate text-[#9CA3AF]">{{ (resp.client_label as string) || 'brain' }}</span>
-              <span class="w-16 truncate">{{ resp.model }}</span>
+              <div class="w-16">
+                <div class="truncate">{{ resp.model }}</div>
+                <div
+                  v-if="formatServedByFallback(resp)"
+                  class="truncate text-[10px] text-[#B45309]"
+                  :title="`Served by fallback ${formatServedByFallback(resp)}`"
+                >
+                  &rarr; {{ formatServedByFallback(resp) }}
+                </div>
+              </div>
               <span class="w-14">{{ formatTokens((resp.prompt_tokens as number) || 0) }}</span>
               <span class="w-20">
                 {{ formatCacheRate((resp.read_cache_rate as number | null) ?? null) }}

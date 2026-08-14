@@ -52,6 +52,8 @@ def create_agent_client(
                 label=_candidate_label(llm_config),
                 client=client,
                 supports_vision=llm_config.get_vision(),
+                provider=llm_config.provider,
+                model=getattr(llm_config, "model", None),
             )
         )
 

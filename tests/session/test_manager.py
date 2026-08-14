@@ -15,7 +15,7 @@ from lincy.session.debug_schema import (
     SessionTurnRecord,
 )
 from lincy.session.schema import SessionEntry
-from lincy.llm import LLMResponse, ToolDefinition, ToolParameter
+from lincy.llm import LLMResponse, ServedCandidate, ToolDefinition, ToolParameter
 
 
 def _entry(msg: Message, *, channel: str | None = None, sender: str | None = None) -> SessionEntry:
@@ -412,3 +412,88 @@ class TestDebugArtifacts:
         assert turn.llm_rounds == 1
         assert turn.cache_read_tokens == 90
         assert turn.cache_write_tokens == 15
+
+    def test_response_record_names_the_failover_candidate_that_served(
+        self,
+        mgr: SessionManager,
+        sessions_dir: Path,
+    ):
+        sid = mgr.create("alice", "Alice")
+        mgr.start_turn(
+            channel="cli",
+            sender="alice",
+            inbound_kind="user_message",
+            input_text="hi",
+            input_timestamp=datetime.now(tz.utc),
+            turn_metadata=None,
+        )
+        pending = mgr.begin_llm_request(
+            client_label="brain",
+            provider="kano_proxy",
+            model="lincy-brain-agent",
+            call_type="chat_with_tools",
+            messages=[Message(role="user", content="hi")],
+            tools=None,
+            temperature=None,
+        )
+        assert pending is not None
+
+        mgr.complete_llm_response(
+            pending,
+            response=LLMResponse(content="ok", tool_calls=[]),
+            latency_ms=120,
+            served=ServedCandidate(
+                provider="heyroute",
+                model="deepseek-v3",
+                label="heyroute:deepseek-v3",
+                index=1,
+            ),
+        )
+
+        response_path = sessions_dir / sid / "responses.jsonl"
+        response = SessionLLMResponseRecord.model_validate_json(
+            response_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+        # The intended profile stays untouched; the served fields are additive.
+        assert response.provider == "kano_proxy"
+        assert response.model == "lincy-brain-agent"
+        assert response.served_provider == "heyroute"
+        assert response.served_model == "deepseek-v3"
+        assert response.served_candidate_index == 1
+
+        event_path = sessions_dir / sid / "events.jsonl"
+        events = [
+            json.loads(line)
+            for line in event_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        response_event = next(e for e in events if e["kind"] == "llm_response")
+        assert response_event["data"]["served_provider"] == "heyroute"
+        assert response_event["data"]["served_candidate_index"] == 1
+
+    def test_response_record_omits_served_fields_when_unknown(
+        self,
+        mgr: SessionManager,
+        sessions_dir: Path,
+    ):
+        sid = mgr.create("alice", "Alice")
+        pending = mgr.begin_llm_request(
+            client_label="brain",
+            provider="kano_proxy",
+            model="lincy-brain-agent",
+            call_type="chat",
+            messages=[Message(role="user", content="hi")],
+            tools=None,
+            temperature=None,
+        )
+        assert pending is not None
+
+        mgr.complete_llm_text_response(pending, response_text="ok", latency_ms=5)
+
+        response_path = sessions_dir / sid / "responses.jsonl"
+        response = SessionLLMResponseRecord.model_validate_json(
+            response_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+        assert response.served_provider is None
+        assert response.served_model is None
+        assert response.served_candidate_index is None

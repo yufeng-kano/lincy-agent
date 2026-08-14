@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 import logging
 import re
 import threading
 import time
-from typing import Any, Sequence, TypeVar
+from typing import Any, Iterator, Sequence, TypeVar
 
 import httpx
 
@@ -45,6 +47,53 @@ class FailoverCandidate:
     label: str
     client: LLMClient
     supports_vision: bool = True
+    provider: str | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class ServedCandidate:
+    """Which candidate of a fallback chain actually handled one call."""
+
+    provider: str | None
+    model: str | None
+    label: str
+    index: int
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.index > 0
+
+
+# Telemetry needs the winning candidate, but the failover client sits *below*
+# the session debug wrapper and cannot reach it through the return value.
+_SERVED_CANDIDATE: ContextVar[ServedCandidate | None] = ContextVar(
+    "llm_served_candidate",
+    default=None,
+)
+
+
+class ServedCandidateProbe:
+    """Read the candidate that served the call running in this scope."""
+
+    def get(self) -> ServedCandidate | None:
+        return _SERVED_CANDIDATE.get()
+
+
+@contextmanager
+def observe_served_candidate() -> Iterator[ServedCandidateProbe]:
+    """Scope one LLM call so its serving candidate can be read afterwards.
+
+    Yields a probe whose ``get()`` returns the candidate that handled the call
+    (or produced the raised error), and ``None`` when the client is not a
+    failover chain.
+    """
+
+    token = _SERVED_CANDIDATE.set(None)
+    try:
+        yield ServedCandidateProbe()
+    finally:
+        _SERVED_CANDIDATE.reset(token)
 
 
 class _CooldownRegistry:
@@ -244,9 +293,10 @@ class FailoverLLMClient:
 
             attempted = True
             try:
-                return invoke(candidate.client)
+                result = invoke(candidate.client)
             except Exception as exc:
                 last_error = exc
+                _SERVED_CANDIDATE.set(self._served(candidate))
                 if not _should_failover(exc):
                     raise
 
@@ -269,6 +319,9 @@ class FailoverLLMClient:
                     _format_error(exc),
                     cooldown,
                 )
+            else:
+                _SERVED_CANDIDATE.set(self._served(candidate))
+                return result
 
         if last_error is not None:
             raise last_error
@@ -277,6 +330,16 @@ class FailoverLLMClient:
                 "No vision-capable LLM available for a prompt that contains images"
             )
         raise RuntimeError("Failover client has no candidates")
+
+    def _served(self, candidate: FailoverCandidate) -> ServedCandidate:
+        # Index in the *configured* chain, not in the cooldown-ordered attempt
+        # list, so 0 always means "the primary profile served this request".
+        return ServedCandidate(
+            provider=candidate.provider,
+            model=candidate.model,
+            label=candidate.label,
+            index=self._candidates.index(candidate),
+        )
 
     def _ordered_candidates(self) -> list[FailoverCandidate]:
         return order_values_by_cooldown(

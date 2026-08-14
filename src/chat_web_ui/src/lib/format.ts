@@ -43,6 +43,18 @@ export function formatClockTime(iso: string): string {
   })
 }
 
+/**
+ * "provider:model" of the fallback that actually served a request, or null
+ * when the primary served it / the record does not say (old sessions).
+ */
+export function formatServedByFallback(row: Record<string, unknown>): string | null {
+  if (row.served_by_fallback !== true) return null
+  const provider = (row.served_provider as string | null) || null
+  const model = (row.served_model as string | null) || null
+  if (!provider && !model) return 'fallback'
+  return [provider, model].filter(Boolean).join(':')
+}
+
 export function formatLatency(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
   return `${ms}ms`
