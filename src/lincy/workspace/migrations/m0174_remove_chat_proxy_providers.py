@@ -7,12 +7,19 @@ import yaml
 from ...core.config import CFGS_DIR
 from .base import Migration
 
-# Removed provider config directories under cfgs/llm/.
+# Providers removed from LLMConfig: even an existing custom profile under
+# these dirs (or an inline config) can no longer validate, so always rewrite.
+_REMOVED_PROVIDER_NAMES = frozenset({"claude_code", "codex", "copilot", "grok"})
 _REMOVED_PROVIDER_DIRS = (
     "cfgs/llm/claude_code/",
     "cfgs/llm/codex/",
     "cfgs/llm/copilot/",
     "cfgs/llm/grok/",
+)
+
+# Dirs whose shipped profiles were deleted but whose provider is still
+# supported: an existing file there is a user-created custom profile.
+_RETIRED_PROFILE_DIRS = (
     "cfgs/llm/deepseek/",
     "cfgs/llm/gemini/",
     "cfgs/llm/heyroute/",
@@ -40,15 +47,24 @@ def _profile_exists(value: str) -> bool:
 
 
 def _map_llm_path(value: object) -> object:
+    if isinstance(value, dict):
+        # Inline provider config (previously valid): a removed provider no
+        # longer validates, so reroute the whole entry to a kept profile.
+        if value.get("provider") in _REMOVED_PROVIDER_NAMES:
+            return _FALLBACK_LLM_PATH
+        return value
     if not isinstance(value, str):
         return value
+    if any(value.startswith(prefix) for prefix in _REMOVED_PROVIDER_DIRS):
+        # Removed provider: even an existing custom file cannot validate.
+        return _LLM_PATH_MAP.get(value, _FALLBACK_LLM_PATH)
     # A file that still exists is a user-created custom profile (deepseek,
     # gemini, heyroute and litellm providers remain supported) -- keep it.
     if _profile_exists(value):
         return value
     if value in _LLM_PATH_MAP:
         return _LLM_PATH_MAP[value]
-    if any(value.startswith(prefix) for prefix in _REMOVED_PROVIDER_DIRS):
+    if any(value.startswith(prefix) for prefix in _RETIRED_PROFILE_DIRS):
         return _FALLBACK_LLM_PATH
     return value
 
@@ -99,13 +115,15 @@ class M0174RemoveChatProxyProviders(Migration):
                     fallbacks = agent_config.get("llm_fallbacks")
                     if isinstance(fallbacks, list):
                         mapped = [_map_llm_path(item) for item in fallbacks]
-                        # Dedupe and drop entries equal to the primary path.
-                        deduped: list[object] = []
-                        for item in mapped:
-                            if item == agent_config.get("llm") or item in deduped:
-                                continue
-                            deduped.append(item)
-                        if deduped != fallbacks:
+                        if mapped != fallbacks:
+                            # Only a rewritten list gets deduped: mapping
+                            # several retired profiles can collapse onto the
+                            # same kept profile (or the primary).
+                            deduped: list[object] = []
+                            for item in mapped:
+                                if item == agent_config.get("llm") or item in deduped:
+                                    continue
+                                deduped.append(item)
                             agent_config["llm_fallbacks"] = deduped
                             changed = True
 

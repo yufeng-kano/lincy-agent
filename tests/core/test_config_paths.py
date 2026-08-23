@@ -424,6 +424,54 @@ def test_existing_custom_profile_under_retired_dir_is_preserved(
     assert config.agents["brain"].llm.model == "deepseek-custom"
 
 
+def test_inline_removed_provider_config_is_rewritten(
+    monkeypatch, tmp_path: Path, caplog
+):
+    """An inline {provider: codex, ...} entry no longer validates against
+    LLMConfig, so the loader reroutes it to a kept profile."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "kano-proxy" / "worker.yaml",
+        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": {"provider": "codex", "model": "gpt-5.5"}}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "kano_proxy"
+    assert "Rewriting retired LLM profile" in caplog.text
+
+
+def test_existing_profile_under_removed_provider_dir_is_still_rewritten(
+    monkeypatch, tmp_path: Path
+):
+    """A custom file under cfgs/llm/codex/ cannot validate (the provider is
+    gone), so it must be rerouted even though the file exists."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "kano-proxy" / "worker.yaml",
+        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "llm" / "codex" / "custom.yaml",
+        {"provider": "codex", "model": "gpt-custom"},
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": "cfgs/llm/codex/custom.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "kano_proxy"
+
+
 def test_retired_keys_in_base_config_are_dropped(monkeypatch, tmp_path: Path):
     _write_base_agent_config(tmp_path)
     raw = yaml.safe_load((tmp_path / "agent.yaml").read_text())
