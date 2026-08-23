@@ -124,7 +124,6 @@ class Message(BaseModel):
 
     role: Literal["user", "assistant", "system", "tool"]
     content: str | list[ContentPart] | None = None
-    codex_compaction_encrypted_content: str | None = None
     reasoning_content: str | None = None  # Plain text for display
     reasoning_details: list[dict[str, Any]] | None = None  # Structured round-trip
     tool_calls: list[ToolCall] | None = None  # For assistant messages with tool calls
@@ -135,56 +134,6 @@ class Message(BaseModel):
     # during serialization (e.g. Anthropic wraps content in a content-block
     # with cache_control).  ContextBuilder sets it; content type stays str.
     cache_control: dict[str, str] | None = None
-
-
-class CopilotNativeRequest(BaseModel):
-    """Native internal request sent to the local Copilot proxy."""
-
-    model: str
-    messages: list[Message]
-    max_tokens: int | None = None
-    tools: list[ToolDefinition] | None = None
-    response_schema: dict[str, Any] | None = None
-    reasoning_effort: str | None = None
-    temperature: float | None = None
-    initiator: Literal["user", "agent"]
-    interaction_id: str | None = None
-    interaction_type: Literal["conversation-agent", "conversation-subagent"] | None = (
-        None
-    )
-    request_id: str | None = None
-
-
-class CodexNativeRequest(BaseModel):
-    """Native internal request sent to the local Codex proxy."""
-
-    model: str
-    messages: list[Message]
-    max_output_tokens: int | None = None
-    prompt_cache_key: str | None = None
-    session_id: str | None = None
-    turn_id: str | None = None
-    tools: list[ToolDefinition] | None = None
-    response_schema: dict[str, Any] | None = None
-    reasoning_effort: str | None = None
-    temperature: float | None = None
-
-
-class CodexCompactRequest(BaseModel):
-    """Native internal request sent to the local Codex compact proxy."""
-
-    model: str
-    messages: list[Message]
-    session_id: str | None = None
-    turn_id: str | None = None
-    tools: list[ToolDefinition] | None = None
-    reasoning_effort: str | None = None
-
-
-class CodexCompactResponse(BaseModel):
-    """Compacted message history returned by the local Codex proxy."""
-
-    messages: list[Message]
 
 
 def make_tool_result_message(
@@ -406,36 +355,6 @@ class AnthropicRequest(BaseModel):
     max_tokens: int
     system: str | None = None
     tools: list[AnthropicTool] | None = None
-
-
-class ClaudeCodeMessagePayload(BaseModel):
-    role: str
-    content: str | list[dict[str, Any]]
-
-    model_config = ConfigDict(extra="allow")
-
-
-class ClaudeCodeRequest(BaseModel):
-    model: str
-    messages: list[ClaudeCodeMessagePayload]
-    max_tokens: int
-    system: str | list[str | dict[str, Any]] | None = None
-    # Kept as raw dicts: the proxy must forward tools verbatim. Server tools
-    # (e.g. advisor_20260301) have no description/input_schema, and typed
-    # validation would also strip unknown JSON-schema fields upstream accepts.
-    tools: list[dict[str, Any]] | None = None
-    thinking: dict[str, Any] | None = None
-    output_config: dict[str, Any] | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    stream: bool = False
-    stop_sequences: list[str] | None = Field(
-        default=None,
-        validation_alias=AliasChoices("stop_sequences", "stopSequences"),
-        serialization_alias="stop_sequences",
-    )
-
-    model_config = ConfigDict(extra="allow")
 
 
 class AnthropicContentBlock(BaseModel):

@@ -11,11 +11,8 @@ from pydantic import TypeAdapter
 from .schema import (
     AnthropicConfig,
     AppConfig,
-    CodexConfig,
-    CopilotConfig,
     DeepSeekConfig,
     GeminiConfig,
-    GrokConfig,
     HeyrouteConfig,
     KanoProxyConfig,
     LLMConfig,
@@ -35,9 +32,6 @@ logger = logging.getLogger(__name__)
 T = TypeVar(
     "T",
     OllamaNativeConfig,
-    CopilotConfig,
-    CodexConfig,
-    GrokConfig,
     DeepSeekConfig,
     OpenAIConfig,
     AnthropicConfig,
@@ -130,6 +124,9 @@ _RETIRED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("agents", "brain", "staged_planning"),
     ("agents", "skill_checker"),
     ("agents", "conscience"),
+    # Removed in kernel 0.77.0 (chat_proxy providers dropped).
+    ("features", "copilot"),
+    ("features", "codex_remote_compaction"),
 )
 
 

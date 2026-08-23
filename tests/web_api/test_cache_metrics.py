@@ -21,14 +21,14 @@ def _meta(session_id: str) -> SessionMetadata:
     )
 
 
-def test_session_summary_uses_read_cache_rate_and_marks_codex_write_unmeasurable():
+def test_session_summary_uses_read_cache_rate_and_marks_openai_write_unmeasurable():
     cache = MetricsCache(Path("/tmp"), {})
     cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
     cache._responses["s1"] = [
         ResponseMetrics(
             ts=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
             round=1,
-            provider="codex",
+            provider="openai",
             model="gpt-5.4",
             prompt_tokens=1000,
             completion_tokens=100,
@@ -168,7 +168,7 @@ def test_live_status_uses_current_turn_brain_max_without_turn_record():
         ResponseMetrics(
             ts=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
             round=1,
-            provider="claude_code",
+            provider="kano_proxy",
             model="claude-opus-5",
             prompt_tokens=100,
             completion_tokens=10,
@@ -182,7 +182,7 @@ def test_live_status_uses_current_turn_brain_max_without_turn_record():
         ResponseMetrics(
             ts=datetime(2026, 4, 11, 12, 1, tzinfo=UTC),
             round=2,
-            provider="claude_code",
+            provider="kano_proxy",
             model="claude-opus-5",
             prompt_tokens=200,
             completion_tokens=10,
@@ -262,7 +262,7 @@ def test_live_status_ignores_worker_responses_for_prompt_and_hard_limit():
 
 
 def test_all_requests_filters_by_response_ts_not_session_created():
-    """Multi-day sessions must still surface recent requests (e.g. grok)."""
+    """Multi-day sessions must still surface recent requests."""
     cache = MetricsCache(Path("/tmp"), {})
     created = datetime(2026, 7, 10, 3, 0, tzinfo=UTC)
     cache._files["s1"] = SessionFiles(
@@ -280,7 +280,7 @@ def test_all_requests_filters_by_response_ts_not_session_created():
         ResponseMetrics(
             ts=datetime(2026, 7, 10, 6, 0, tzinfo=UTC),
             round=1,
-            provider="claude_code",
+            provider="kano_proxy",
             model="claude-opus-4-8",
             prompt_tokens=100,
             completion_tokens=10,
@@ -293,8 +293,8 @@ def test_all_requests_filters_by_response_ts_not_session_created():
         ResponseMetrics(
             ts=datetime(2026, 7, 11, 1, 5, tzinfo=UTC),
             round=1,
-            provider="grok",
-            model="grok-4.5",
+            provider="openrouter",
+            model="x-ai/grok-4.5",
             prompt_tokens=200,
             completion_tokens=20,
             cache_read_tokens=150,
@@ -307,13 +307,13 @@ def test_all_requests_filters_by_response_ts_not_session_created():
 
     today_only = cache.get_all_requests(date(2026, 7, 11), date(2026, 7, 11))
     assert len(today_only) == 1
-    assert today_only[0]["provider"] == "grok"
-    assert today_only[0]["model"] == "grok-4.5"
+    assert today_only[0]["provider"] == "openrouter"
+    assert today_only[0]["model"] == "x-ai/grok-4.5"
     assert today_only[0]["read_cache_rate"] == 0.75
 
-    # Newest first: grok before older claude call.
+    # Newest first: openrouter before the older kano_proxy call.
     week = cache.get_all_requests(date(2026, 7, 5), date(2026, 7, 11))
-    assert [r["provider"] for r in week] == ["grok", "claude_code"]
+    assert [r["provider"] for r in week] == ["openrouter", "kano_proxy"]
 
     sessions = cache.get_sessions_in_range(date(2026, 7, 11), date(2026, 7, 11))
     assert len(sessions) == 1

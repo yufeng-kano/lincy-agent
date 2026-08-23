@@ -49,7 +49,7 @@ promotion thread（每 60 秒）
           → turn 完成後自動塞下一個 [HEARTBEAT]
 ```
 
-> **Cache TTL 保護**：保留未來心跳是為了避免重啟後 heartbeat timer 重置，增加 cold cache miss 機率。這裡的 `1h` 應視為歷史設計假設，不是目前 Codex upstream 的可靠契約；近期觀察見 [`codex-cache-survival.md`](./codex-cache-survival.md)。
+> **Cache TTL 保護**：保留未來心跳是為了避免重啟後 heartbeat timer 重置，增加 cold cache miss 機率。這裡的 `1h` 應視為歷史設計假設，不是 provider upstream 的可靠契約。
 
 若本次啟動前剛發生 kernel upgrade，upgrade 摘要是否獨立注入由 `enqueue_upgrade_notice` 控制，預設 `true`：
 

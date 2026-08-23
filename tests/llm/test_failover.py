@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from lincy.core.schema import AgentConfig, ClaudeCodeConfig, OpenRouterConfig
+from lincy.core.schema import AgentConfig, AnthropicConfig, OpenRouterConfig
 from lincy.llm.agent_factory import create_agent_client
 from lincy.llm.failover import (
     FailoverCandidate,
@@ -334,15 +334,15 @@ def test_preferred_candidate_supports_vision_respects_cooldown():
 
 
 def test_failover_key_shares_quota_bucket_across_models():
-    claude_opus = ClaudeCodeConfig(
-        provider="claude_code",
+    claude_opus = AnthropicConfig(
+        provider="anthropic",
         model="claude-opus-4-6",
-        base_url="http://localhost:4142",
+        api_key="test-key",
     )
-    claude_sonnet = ClaudeCodeConfig(
-        provider="claude_code",
+    claude_sonnet = AnthropicConfig(
+        provider="anthropic",
         model="claude-sonnet-4-6",
-        base_url="http://localhost:4142",
+        api_key="test-key",
     )
     openrouter_sonnet = OpenRouterConfig(
         provider="openrouter",
@@ -382,10 +382,10 @@ def test_agent_factory_skips_429_retries_before_fallback(monkeypatch):
     monkeypatch.setattr("lincy.llm.agent_factory.create_client", _fake_create_client)
 
     agent_config = AgentConfig(
-        llm=ClaudeCodeConfig(
-            provider="claude_code",
+        llm=AnthropicConfig(
+            provider="anthropic",
             model="claude-sonnet-4-6",
-            base_url="http://localhost:4142",
+            api_key="test-key",
         ),
         llm_fallbacks=[
             OpenRouterConfig(

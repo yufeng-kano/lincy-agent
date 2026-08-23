@@ -4,7 +4,6 @@
 
 配套文件：
 - API 事實盤點：`docs/dev/provider-api-spec.md`
-- Copilot premium request 省費機制：`docs/dev/copilot-agent-hint.md`
 
 ## 核心原則
 
@@ -54,7 +53,7 @@ provider kwargs 應由組裝層決定是否傳入，並由對應 provider 的 `c
 
 ### 5. runtime feature 放在組裝層，不放進 provider YAML
 
-像 Copilot 的 initiator routing 屬於 runtime policy（計費/分類優化），不是靜態模型設定。
+runtime policy（計費/分類優化類的請求路由）不是靜態模型設定。
 
 規則：
 - runtime feature routing 放在 `app.py`（composition root）
@@ -80,7 +79,7 @@ provider kwargs 應由組裝層決定是否傳入，並由對應 provider 的 `c
 - 不做 provider-specific 特判
 
 ### `src/lincy/cli/app.py`
-- app-level policy 與 runtime hints 的路由（例如 Copilot initiator routing）
+- app-level policy 與 runtime hints 的路由（例如 OpenAI cache retention）
 - 可做最小限度 provider-aware 判斷（組裝層例外）
 - 不直接組 provider payload
 

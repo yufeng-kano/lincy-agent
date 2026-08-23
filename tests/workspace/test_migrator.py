@@ -1230,7 +1230,7 @@ class TestM0171RemoveMemoryCuratorAgent:
             "agents:\n"
             "  worker:\n"
             "    llm:\n"
-            "      provider: claude_code\n"
+            "      provider: kano_proxy\n"
             "      model: test-model\n"
             "  memory_curator:\n"
             "    enabled: true\n"
@@ -1310,7 +1310,7 @@ class TestM0172CompactorAgent:
             "agents:\n"
             "  worker:\n"
             "    llm:\n"
-            "      provider: claude_code\n"
+            "      provider: kano_proxy\n"
             "      model: test-model\n",
             encoding="utf-8",
         )
@@ -1319,14 +1319,17 @@ class TestM0172CompactorAgent:
 
         config = yaml.safe_load(config_path.read_text())
         assert config["agents"]["compactor"]["enabled"] is True
-        assert config["agents"]["worker"]["llm"]["provider"] == "claude_code"
+        assert config["agents"]["worker"]["llm"]["provider"] == "kano_proxy"
         assert (
             kernel_dir / "agents/compactor/prompts/system.md"
         ).read_text() == "compactor prompt"
 
     def test_upgraded_workspace_config_loads_cleanly(self, tmp_path: Path):
-        """m0172 output must still validate once llm: <path> refs are resolved."""
+        """m0172 + m0174 output must validate once llm: <path> refs are resolved."""
         from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
+        from lincy.workspace.migrations.m0174_remove_chat_proxy_providers import (
+            M0174RemoveChatProxyProviders,
+        )
         from lincy.core.config import load_config
 
         kernel_dir = tmp_path / "kernel"
@@ -1336,18 +1339,21 @@ class TestM0172CompactorAgent:
         config_path.write_text(
             "agents:\n"
             "  brain:\n"
-            "    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml\n"
+            "    llm: cfgs/llm/kano-proxy/utility.yaml\n"
             "  memory_editor:\n"
-            "    llm: cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml\n",
+            "    llm: cfgs/llm/kano-proxy/utility.yaml\n",
             encoding="utf-8",
         )
 
         M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
+        # m0172 wrote retired provider paths; m0174 rewrites them in the real
+        # upgrade chain, so validate the chained result.
+        M0174RemoveChatProxyProviders().upgrade(kernel_dir, tmp_path / "templates")
 
         config = load_config(str(config_path))
         assert config.agents["compactor"].enabled is True
-        assert config.agents["compactor"].llm.provider == "deepseek"
-        assert config.agents["compactor"].llm.model == "deepseek-v4-flash"
+        assert config.agents["compactor"].llm.provider == "kano_proxy"
+        assert config.agents["compactor"].llm.model == "lincy-worker-agent"
 
     def test_existing_compactor_key_is_untouched(self, tmp_path: Path):
         from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
@@ -1396,7 +1402,7 @@ class TestM0173RemoveStagedPlanningAgents:
             "agents:\n"
             "  brain:\n"
             "    llm:\n"
-            "      provider: claude_code\n"
+            "      provider: kano_proxy\n"
             "      model: test-model\n"
             "    staged_planning:\n"
             "      enabled: true\n"

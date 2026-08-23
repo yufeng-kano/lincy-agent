@@ -49,7 +49,7 @@ runner 實例同時給兩個呼叫者用：
 
 Worker 與 brain 共用 `src/lincy/context/cache_breakpoints.py`：
 
-- `agents.worker.cache.enabled/ttl` 經 `resolve_breakpoint_cache_ttl` 夾到 provider 上限（claude_code 等為 `1h`）
+- `agents.worker.cache.enabled/ttl` 經 `resolve_breakpoint_cache_ttl` 夾到 provider 上限（anthropic 系 provider 為 `1h`）
 - system message 掛 `cache_control`
 - 每次 tool-loop request（compact 之後）呼叫 `advance_cache_breakpoint`，conversation-tier breakpoint 推到最新合格 message
 - 不走 `ContextBuilder`（無 boot files / reminder）；只對齊 breakpoint TTL 與 tool-loop 推進行為

@@ -12,7 +12,7 @@ from ..session.schema import SessionEntry
 
 logger = logging.getLogger(__name__)
 
-CompactionSource = Literal["codex_remote", "compactor", "local", "local_fallback"]
+CompactionSource = Literal["compactor", "local", "local_fallback"]
 _RENDERED_STATIC_METADATA_KEY = "rendered_static"
 
 
@@ -29,7 +29,6 @@ class ContextCompactionResult:
     @property
     def source_label(self) -> str | None:
         labels = {
-            "codex_remote": "codex remote",
             "compactor": "compactor agent",
             "local_fallback": "local fallback",
             "local": "local",
@@ -73,30 +72,6 @@ class ContextCompactor:
             self._core.session_mgr.rewrite_messages(self._core.conversation.get_messages())
         return ContextCompactionResult(True, removed, source, trigger, fallback)
 
-    def compact_remote(self, *, trigger: str) -> ContextCompactionResult:
-        client = getattr(self._core, "conversation_compaction_client", None)
-        if client is None:
-            return ContextCompactionResult(changed=False)
-        rendered = self._core.builder.build(self._core.conversation)
-        compacted = client.compact_messages(rendered, tools=self._core.registry.get_definitions())
-        if not compacted:
-            return ContextCompactionResult(False, source="codex_remote", trigger=trigger)
-        previous = self._core.conversation.get_messages()
-        entries = [
-            SessionEntry(message=message, metadata={_RENDERED_STATIC_METADATA_KEY: True})
-            for message in compacted
-        ]
-        self._core.conversation.replace_messages(entries)
-        self._core.builder.clear_render_cache()
-        if self._core.session_mgr is not None:
-            self._core.session_mgr.rewrite_messages(entries)
-        return ContextCompactionResult(
-            changed=entries != previous,
-            removed_messages=max(len(previous) - len(entries), 0),
-            source="codex_remote",
-            trigger=trigger,
-        )
-
     def compact_via_compactor_agent(
         self, preserve_turns: int, *, trigger: str, fallback: bool = False,
     ) -> ContextCompactionResult:
@@ -104,10 +79,9 @@ class ContextCompactor:
 
         Keeps the most recent preserve_turns turns verbatim (same window
         compact_local would keep) and replaces everything older with a
-        single distilled summary message, so a non-codex provider (or a
-        failed codex remote compaction) does not lose history outright.
+        single distilled summary message, so history is not lost outright.
         ``fallback`` mirrors compact_local's flag: True when this tier only
-        ran because codex remote compaction just failed above.
+        ran after a higher tier failed.
         """
         agent = getattr(self._core, "compactor_agent", None)
         if agent is None:
@@ -144,24 +118,8 @@ class ContextCompactor:
         )
 
     def compact(self, *, preserve_turns: int, trigger: str) -> ContextCompactionResult:
-        # Tier 1: codex remote compaction, when wired (unchanged detection/behavior).
+        # Tier 1: compactor agent summarization.
         higher_tier_failed = False
-        if getattr(self._core, "conversation_compaction_client", None) is not None:
-            try:
-                result = self.compact_remote(trigger=trigger)
-                if result.changed:
-                    self.record_result(result)
-                return result
-            except Exception as error:
-                logger.warning(
-                    "Codex remote compaction failed during %s; falling back to compactor agent: %s",
-                    trigger,
-                    error,
-                )
-                higher_tier_failed = True
-
-        # Tier 2: compactor agent summarization, used when tier 1 is unavailable
-        # (non-codex provider) or just failed above.
         if getattr(self._core, "compactor_agent", None) is not None:
             try:
                 result = self.compact_via_compactor_agent(
@@ -178,7 +136,7 @@ class ContextCompactor:
                 )
                 higher_tier_failed = True
 
-        # Tier 3: last-resort deterministic message drop.
+        # Tier 2: last-resort deterministic message drop.
         result = self.compact_local(preserve_turns, trigger=trigger, fallback=higher_tier_failed)
         if result.changed:
             self.record_result(result)

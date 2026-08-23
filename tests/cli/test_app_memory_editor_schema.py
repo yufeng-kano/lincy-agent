@@ -1,10 +1,14 @@
 from lincy.cli import app as app_module
-from lincy.core.schema import AgentConfig, CodexConfig, DeepSeekConfig
+from lincy.core.schema import AgentConfig, DeepSeekConfig, OllamaNativeConfig
 
 
 def test_agent_supports_response_schema_requires_all_fallback_candidates():
     agent_config = AgentConfig(
-        llm=CodexConfig(provider="codex", model="gpt-5.5"),
+        llm=OllamaNativeConfig(
+            provider="ollama",
+            model="qwen3.5:9b",
+            thinking={"mode": "toggle", "enabled": False},
+        ),
         llm_fallbacks=[
             DeepSeekConfig(
                 provider="deepseek",

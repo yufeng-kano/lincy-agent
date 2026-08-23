@@ -22,11 +22,7 @@ logger = logging.getLogger(__name__)
 _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
     {
         "anthropic",
-        "claude_code",
-        "codex",
-        "copilot",
         "deepseek",
-        "grok",
         "heyroute",
         "kano_proxy",
         "openai",
@@ -34,7 +30,7 @@ _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
     }
 )
 _WRITE_CACHE_MEASURABLE_PROVIDERS = frozenset(
-    {"anthropic", "claude_code", "heyroute", "kano_proxy", "openrouter"}
+    {"anthropic", "heyroute", "kano_proxy", "openrouter"}
 )
 
 

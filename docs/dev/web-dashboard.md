@@ -61,7 +61,7 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 
 `from` / `to` 以 **turn 開始時間** 與 **response 時間戳** 判斷是否落在區間內，**不是** session `created_at`：
 
-- 跨午夜仍在跑的 session（例如 7/10 建立、7/11 還在用 Grok）在「今天 / 7 天」會出現
+- 跨午夜仍在跑的 session（例如 7/10 建立、7/11 還在活動）在「今天 / 7 天」會出現
 - `/api/requests` 依 response `ts` 過濾，並 **最新優先**（前端首頁 limit 500 才看得到當前 model）
 - dashboard 的 daily cost / token 也依 response / turn 當日聚合
 
@@ -79,17 +79,6 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 - 前端在 Requests 表與 session 展開列的 model 欄位下，於 `served_by_fallback === true` 時加一行 `-> provider:model` 的琥珀色註記
 | GET | `/api/live` | 當前 active session 的 token 位置（brain-only，見「Live token 口徑」） |
 | GET | `/api/context/composition` | 即時分析最新一筆 brain request 的 prompt 組成（segments + token 估計），每次請求都重新解析 `requests.jsonl`、不進快取；session/brain request 不存在時回 `available: false`，見「Context 頁」 |
-| GET | `/api/claude-accounts` | 轉發 claude-code-proxy `/usage`：帳號、5h/週用量、model list；proxy 不可用時回 `available: false` |
-| POST | `/api/claude-accounts/login` | 轉發 proxy `POST /login`：開始 browser OAuth，回 `login_id` + `authorization_url` |
-| POST | `/api/claude-accounts/login/{login_id}/complete` | 轉發 proxy 完成登入：body `{"code": "code#state"}`，token 寫入 proxy store |
-| POST | `/api/claude-accounts/{token_id}/promote` | 轉發 proxy `POST /tokens/{id}/promote`：設為最高優先 |
-| DELETE | `/api/claude-accounts/{token_id}` | 轉發 proxy `DELETE /tokens/{id}`：移除 token |
-| GET | `/api/codex-accounts` | 轉發 codex-proxy `/usage`：帳號、usage windows；proxy 不可用時回 `available: false` |
-| POST | `/api/codex-accounts/login` | 轉發 proxy 開始 browser OAuth，回 `login_id` + `authorization_url`（可能附 `listener_error`） |
-| GET | `/api/codex-accounts/login/{login_id}` | 輪詢登入狀態，回 `status`：`pending` / `completed` / `expired`（前端每 2 秒輪詢一次） |
-| POST | `/api/codex-accounts/login/{login_id}/complete` | 完成登入：body `{"value": "<callback URL 或 code#state>"}`，token 寫入 proxy store |
-| POST | `/api/codex-accounts/{token_id}/promote` | 設為最高優先 |
-| DELETE | `/api/codex-accounts/{token_id}` | 移除 token |
 | GET | `/api/chat/events?limit=` | Web Chat 最近事件（舊介面遺留；Agent 頁已不使用） |
 | GET | `/api/chat/channels` | 可選的送出 channel 清單（轉發 control API），回 `{"channels": ["cli", "discord", ...]}`；**永遠不含 `web` / `system`** |
 | POST | `/api/chat/messages` | 轉送訊息到 chat-cli control API，body `{"content": "...", "channel": "cli"}`（`channel` 預設 `cli`）；成功回 202 `{"status": "accepted", "channel": "..."}`，正在處理上一輪時回 409 |
@@ -234,7 +223,6 @@ Tech stack：Vue 3 + Vite + Bun + shadcn-vue + Tailwind CSS + Chart.js
 | `/monitor/requests` | MonitorRequests | 跨 session request log，按 session 分組 |
 | `/monitor/context` | MonitorContext | Brain agent 最新一輪 prompt 組成視覺化：donut + sequence bar + files + breakdown table |
 | `/monitor/:id` | MonitorSession | 單一 session：turn timeline + expandable responses |
-| `/proxy` | ProxyPage | Proxy usage 獨立區塊：Claude / Codex 帳號用量 + 帳號管理（add/promote/remove） |
 | `/chat` | ChatPage | 遠端 TUI：Brain 時間軸 + 子代理分頁 + 帶 channel 選擇的 composer |
 | `/settings` | SettingsPlaceholder | 預留 |
 
@@ -258,44 +246,6 @@ Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
 - Refresh 時機：mount 時、手動按鈕、`session_updated` WebSocket 事件（debounce 2 秒，避免 tool loop 密集觸發時反覆重新解析大檔）
 - debounce 是 **trailing-edge**：連續事件期間不得讓畫面停在第一次的快照，最後一次事件後 2 秒必須實際重抓一次（tool loop 每次 round 都會觸發 `session_updated`，若做成 leading-edge 或在 in-flight 時直接丟棄，畫面會固定落後整個 tool loop）
 - 頁面同時顯示該筆 request 的 `request_ts`，讓「這是哪一刻的消耗」可被直接核對，不必從 turn/round 反推
-
-### Proxy 頁（Claude Accounts 卡片）
-
-`components/proxy/ClaudeAccountsCard.vue`（獨立 `/proxy` 頁，sidebar「Proxy」）顯示並管理 claude-code-proxy token pool：
-
-- 每帳號一列：狀態點（active 綠 / standby 灰 / benched 琥珀 / unusable 紅）、email、plan 標籤。狀態文字改為 dot 的 `title` tooltip，不再另外顯示 ACTIVE/STANDBY 等文字；plan 標籤縮短（`rate_limit_tier`/`plan_type` 去掉 `default_`、`claude_` 前綴並 title-case，例：`default_claude_max_5x` → `Max 5x`、`claude_pro` → `Pro`、`default_claude_ai` → `AI`）
-- 用量改為對齊的單欄 meter rows（每帳號一個 grid，欄位對齊）：一列一個時間窗，依序 label、bar（<70% 黑、70-90% 琥珀、≥90% 紅）、% 與重置時間，涵蓋 5h、Week，以及 model-scoped weekly（如 Fable）；model-scoped 列來源是 proxy 解析 OAuth usage `limits[]` 中 `kind=weekly_scoped` 的項目（以 `scope.model.display_name` 當 label），在 `/api/claude-accounts` 回應以 `usage.seven_day_scoped` 欄位輸出
-- 底部列出 active 帳號可用的 model id（來源 proxy `/v1/models` passthrough），呈現為 mono 文字列表（`·` 分隔）；預設收合，點「Models (N)」disclosure 展開
-- 資料來源 `/api/claude-accounts`，3 分鐘輪詢；卡片右上有手動 Refresh 按鈕，帶 `?refresh=true` 繞過 proxy 端 60s snapshot 快取強制重抓
-- 前端另用 `sessionStorage`（`lincy.proxy-accounts.claude`）快取上次成功回應：F5 / remount 先立刻畫出舊資料，背景再打 API；同 tab 關閉後清掉
-- 帳號用量抓取失敗（如 OAuth endpoint 429）時顯示上次成功資料，錯誤降為灰字 `stale — ...` 註記；完全沒有資料才顯示紅字錯誤
-
-編輯操作（等價於 `proxy claude-code login` / `tokens promote` / `tokens remove`）：
-
-- **Add account**：`POST /api/claude-accounts/login` 取得授權連結，使用者在新分頁授權後把 `code#state` 貼回卡片，`POST .../login/{login_id}/complete` 完成；pending login 狀態存在 proxy 記憶體，15 分鐘過期
-- **Promote**：非最高優先帳號顯示 icon 按鈕（`ArrowUp`），設為最高優先
-- **Remove**：icon 按鈕（`X`），`window.confirm` 確認後移除 token
-- 任何編輯成功後 proxy 會失效 usage snapshot 快取，卡片跟著 `?refresh=true` 重抓
-- proxy 端管理端點與 `/usage` 同一道 inbound gate：loopback 直接信任，遠端需 `CLAUDE_CODE_PROXY_API_KEY`
-
-單帳號列的呈現（狀態點、email/id、plan 標籤、promote/remove 按鈕、meter grid、error/stale 行）抽成共用元件 `components/proxy/ProxyAccountRow.vue`，Claude 與 Codex 卡片都用它渲染，只餵不同的 props（rows 陣列、plan 文字、canPromote/canRemove 等），視覺上完全一致。
-
-### Proxy 頁（Codex Accounts 卡片）
-
-`components/proxy/CodexAccountsCard.vue`（`/proxy` 頁，Claude 卡片下方）顯示並管理 codex-proxy token pool，版面與互動邏輯比照 Claude 卡片，皆透過 `ProxyAccountRow` 渲染：
-
-- 用量列直接對應 `/api/codex-accounts` 回應的 `usage.windows[]`：每列 `label`（例：`5h`、`Week`，由 proxy 端 `limit_window_seconds` 推導）、`utilization`、`resets_at`；label 不是 `\d+h` 形式時重置時間帶日期（`MM/DD HH:MM`），否則只顯示 `HH:MM`
-- plan 標籤：`account.plan_type` title-case（例：`plus` → `Plus`）；`source === "codex_auth"` 的帳號（讀自官方 Codex CLI 的 `~/.codex/auth.json`，不在本專案 token store 裡）在標籤後綴 ` · codex cli`，並隱藏 promote/remove 按鈕，因為這類帳號無法透過 proxy store API 操作
-- `models` 目前固定回空陣列，沿用 Claude 卡片同一顆 `v-if`，故不顯示 Models disclosure
-- 資料來源 `/api/codex-accounts`，3 分鐘輪詢；同 Claude 卡片提供手動 Refresh（`?refresh=true`）；同樣用 `sessionStorage`（`lincy.proxy-accounts.codex`）做 F5 hydrate
-
-登入流程與 Claude 卡片的手動貼 `code#state` 不同，改成「自動完成為主、手動貼網址為備援」：
-
-- **Add account**：`POST /api/codex-accounts/login` 取得 `authorization_url` 後在新分頁開啟；ChatGPT 授權完成後會導回 proxy 監聽的 `http://localhost:1455/auth/callback`，proxy 端 listener 自動完成登入（僅當瀏覽器與 proxy 在同一台機器時才連得到 localhost）
-- 面板開啟後卡片以 2 秒間隔輪詢 `GET /api/codex-accounts/login/{login_id}`：`completed` 時關閉面板並 `?refresh=true` 重抓；`expired` 時顯示錯誤並清空面板，需重新點 Add account
-- 手動 fallback：遠端瀏覽器打不開 callback 頁面時，把網址列上失敗的 `localhost:1455/...` 網址複製貼到卡片輸入框，按 Complete 呼叫 `POST .../login/{login_id}/complete`（body `{"value": "..."}`）
-- `beginCodexLogin()` 回應若帶 `listener_error`，卡片顯示提示：自動完成不可用，需改用手動貼網址
-- Cancel 按鈕清除輪詢 timer；元件 unmount 時一併清掉，避免背景持續打 API
 
 ### 視覺風格
 

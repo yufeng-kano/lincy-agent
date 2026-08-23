@@ -15,7 +15,7 @@ cp cfgs/agent.override.yaml.example cfgs/agent.override.yaml
 # cfgs/agent.override.yaml
 agents:
   brain:
-    llm: cfgs/llm/codex/gpt-5.5/thinking.yaml
+    llm: cfgs/llm/kano-proxy/worker.yaml
     llm_fallbacks:
       - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
 ```

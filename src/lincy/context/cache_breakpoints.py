@@ -18,11 +18,10 @@ from ..llm.schema import ContentPart, Message
 logger = logging.getLogger(__name__)
 
 BREAKPOINT_CACHE_PROVIDERS = frozenset(
-    {"openrouter", "claude_code", "anthropic", "heyroute", "kano_proxy"}
+    {"openrouter", "anthropic", "heyroute", "kano_proxy"}
 )
 BREAKPOINT_MAX_TTL = {
     "openrouter": "1h",
-    "claude_code": "1h",
     "anthropic": "1h",
     "heyroute": "1h",
     "kano_proxy": "1h",

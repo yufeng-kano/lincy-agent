@@ -3,7 +3,7 @@
 import pytest
 
 from lincy.agent.tool_setup import validate_excluded_tools
-from lincy.core.schema import AgentConfig, ClaudeCodeConfig
+from lincy.core.schema import AgentConfig, AnthropicConfig
 from lincy.llm.schema import ToolCall, ToolDefinition
 from lincy.tools.registry import FilteredToolRegistry, ToolRegistry
 from lincy.worker.runner import WorkerRunner
@@ -77,10 +77,10 @@ class TestFilteredToolRegistry:
 
 def _agent_config(excluded_tools: list[str]) -> AgentConfig:
     return AgentConfig(
-        llm=ClaudeCodeConfig(
-            provider="claude_code",
+        llm=AnthropicConfig(
+            provider="anthropic",
             model="claude-sonnet-5",
-            base_url="http://localhost:4142",
+            api_key="test-key",
         ),
         excluded_tools=excluded_tools,
     )

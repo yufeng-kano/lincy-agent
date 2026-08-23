@@ -24,7 +24,7 @@ brain --screenshot_by_subagent--> GUIWorker (Gemini 視覺describe，僅此用�
 ```
 
 - **兩層不變**：CU loop 隔離在 `gui_task` 子 loop，不把 9 個 AX 工具掛到 brain。理由：每步 tree+截圖是高流量暫時性 context，掛 brain 會炸 `soft_max_prompt_tokens`、破壞 brain cache 準則，且做完後殘留對話歷史。
-- **manager 直接看圖**：tool result 內含截圖（claude_code provider 支援 tool result image parts），不再有視覺轉述層。
+- **manager 直接看圖**：tool result 內含截圖（Anthropic 系 provider 支援 tool result image parts），不再有視覺轉述層。
 - **gui_worker 僅存於** `screenshot_by_subagent`；GUI 任務 loop 不再依賴。
 - `gui_task` 對 brain 的介面（intent / session_id / app_prompt、背景執行、GUI lock）完全不變。
 
@@ -49,7 +49,7 @@ MCP 工具全帶 `app` 參數（英文名或 bundle id；本地化名稱解析�
 
 1. **舊快照折疊**：`_collapse_stale_states()` 只保留最近 `keep_full_states`（預設 2）份完整多模態 tool result；更舊的**去圖、文字截到 `stale_text_max_chars`（預設 2000）**——token 大頭（截圖、巨樹尾部）砍掉，但已觀察到的內容保留給讀取/回報型任務。每輪只有「剛過期的那一份」變動，已折疊前綴保持 byte-stable，對 prompt cache 友善。
 2. **樹上限**：`ax.max_tree_nodes` / `ax.max_tree_depth` 傳入 `get_app_state`（預設 null = server 預設）。
-3. **Prompt cache（對齊 brain）**：`agents.gui_manager.cache` 啟用後，組裝層用 `resolve_breakpoint_cache_ttl` 夾 TTL（claude_code / anthropic / openrouter 上限 `1h`），system message 掛 `cache_control`；每次 tool-loop request 前呼叫共用的 `advance_cache_breakpoint`，把 conversation-tier breakpoint 推到最新合格 message（與 brain responder / worker 同路徑）。
+3. **Prompt cache（對齊 brain）**：`agents.gui_manager.cache` 啟用後，組裝層用 `resolve_breakpoint_cache_ttl` 夾 TTL（kano_proxy / anthropic / openrouter 上限 `1h`），system message 掛 `cache_control`；每次 tool-loop request 前呼叫共用的 `advance_cache_breakpoint`，把 conversation-tier breakpoint 推到最新合格 message（與 brain responder / worker 同路徑）。
 
 ## Vendor 與供應鏈
 

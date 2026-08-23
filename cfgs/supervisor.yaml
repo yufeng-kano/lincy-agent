@@ -7,50 +7,6 @@ restart:
   interval_hours: 12
 
 processes:
-  copilot-proxy:
-    enabled: auto
-    auto_enable_when_any_agent_uses_provider: copilot
-    command: ["uv", "run", "proxy", "copilot", "serve"]
-    cwd: "."
-    auto_restart: true
-    startup_delay: 1
-    health_check_url: "http://127.0.0.1:4141/health"
-    health_check_timeout: 30
-    log_output: true
-
-  codex-proxy:
-    enabled: auto
-    auto_enable_when_any_agent_uses_provider: codex
-    command: ["uv", "run", "proxy", "codex", "serve"]
-    cwd: "."
-    auto_restart: true
-    startup_delay: 1
-    health_check_url: "http://127.0.0.1:4143/health"
-    health_check_timeout: 30
-    log_output: true
-
-  claude-code-proxy:
-    enabled: auto
-    auto_enable_when_any_agent_uses_provider: claude_code
-    command: ["uv", "run", "proxy", "claude-code", "serve"]
-    cwd: "."
-    auto_restart: true
-    startup_delay: 1
-    health_check_url: "http://127.0.0.1:4142/health"
-    health_check_timeout: 30
-    log_output: true
-
-  grok-proxy:
-    enabled: auto
-    auto_enable_when_any_agent_uses_provider: grok
-    command: ["uv", "run", "proxy", "grok", "serve"]
-    cwd: "."
-    auto_restart: true
-    startup_delay: 1
-    health_check_url: "http://127.0.0.1:4144/health"
-    health_check_timeout: 30
-    log_output: true
-
   chat-web-ui-build:
     enabled: true
     command: ["bun", "run", "build"]
@@ -86,7 +42,7 @@ processes:
     shutdown_timeout: 1200
     auto_restart: true
     join_restart_cycle: true
-    depends_on: ["copilot-proxy", "codex-proxy", "claude-code-proxy", "grok-proxy", "chat-web-api", "ax-server-build"]
+    depends_on: ["chat-web-api", "ax-server-build"]
     log_output: false
     start_new_session: false
 

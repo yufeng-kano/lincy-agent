@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from ..llm import LLMResponse
 
 _READ_CACHE_MEASURABLE_PROVIDERS = frozenset({
-    "anthropic", "claude_code", "codex", "copilot", "deepseek", "grok",
-    "heyroute", "kano_proxy", "openai", "openrouter",
+    "anthropic", "deepseek", "heyroute", "kano_proxy", "openai", "openrouter",
 })
 
 
@@ -89,8 +88,6 @@ class TokenTelemetry:
                 usage_available=True,
             )
             self._warn_low_cache_rate(aggregate)
-        elif self._core._brain_provider == "copilot" and aggregate.saw_missing_usage:
-            self._core._latest_token_status = LatestTokenStatus(missing_usage=True)
 
     def _warn_low_cache_rate(self, aggregate: TurnTokenUsage) -> None:
         prompt = aggregate.max_prompt_tokens
@@ -126,5 +123,5 @@ class TokenTelemetry:
                 cache += f" w{state.cache_write_tokens:,}"
             return f"tok {state.prompt_tokens:,}/{limit:,} ({percentage:.1f}%){cache}{suffix}"
         if state.missing_usage:
-            return f"tok unavailable/{limit:,} (copilot no usage)"
+            return f"tok unavailable/{limit:,} (no usage)"
         return f"tok --/{limit:,} (--.-%)"

@@ -31,7 +31,7 @@
 - 統一的是 client 介面（如 `chat`/`chat_with_tools`），不是各 provider 的 config/payload 格式
 - provider-specific 的驗證、payload 映射、能力差異應放在各 provider config/client，不放共用層
 - `factory` 只做共通流程（timeout/retry/wrapping），不得加入 provider-specific 判斷
-- runtime feature（如 Copilot `force_agent`）在組裝層路由，不放進 YAML config 欄位
+- runtime feature 在組裝層路由，不放進 YAML config 欄位
 - 不允許 silent ignore provider-specific kwargs；不支援就早停報錯
 - 架構/API 行為變更時，同步更新 `docs/dev/provider-api-spec.md`（官方事實 / adapter 規則 / 實測逆向）
 
