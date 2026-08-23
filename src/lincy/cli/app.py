@@ -426,9 +426,6 @@ def main(user: str, resume: str | None = None) -> None:
         preserve_turns=config.context.preserve_turns,
         provider=brain_agent_config.llm.provider,
         cache_ttl=cache_ttl,
-        format_reminders=config.features.format_reminders.model_dump(),
-        decision_reminder=config.features.decision_reminder.model_dump(),
-        send_message_batch_guidance=config.features.send_message_batch_guidance.enabled,
         fingerprint_boot_files=brain_cache.fingerprint.boot_files,
         fingerprint_boot_files_as_tool=brain_cache.fingerprint.boot_files_as_tool,
     )

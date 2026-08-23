@@ -1325,10 +1325,10 @@ class TestM0172CompactorAgent:
         ).read_text() == "compactor prompt"
 
     def test_upgraded_workspace_config_loads_cleanly(self, tmp_path: Path):
-        """m0172 + m0174 output must validate once llm: <path> refs are resolved."""
+        """m0172 + m0175 output must validate once llm: <path> refs are resolved."""
         from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
-        from lincy.workspace.migrations.m0174_remove_chat_proxy_providers import (
-            M0174RemoveChatProxyProviders,
+        from lincy.workspace.migrations.m0175_remove_chat_proxy_providers import (
+            M0175RemoveChatProxyProviders,
         )
         from lincy.core.config import load_config
 
@@ -1346,9 +1346,9 @@ class TestM0172CompactorAgent:
         )
 
         M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
-        # m0172 wrote retired provider paths; m0174 rewrites them in the real
+        # m0172 wrote retired provider paths; m0175 rewrites them in the real
         # upgrade chain, so validate the chained result.
-        M0174RemoveChatProxyProviders().upgrade(kernel_dir, tmp_path / "templates")
+        M0175RemoveChatProxyProviders().upgrade(kernel_dir, tmp_path / "templates")
 
         config = load_config(str(config_path))
         assert config.agents["compactor"].enabled is True

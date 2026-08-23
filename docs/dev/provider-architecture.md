@@ -63,7 +63,7 @@ runtime policy（計費/分類優化類的請求路由）不是靜態模型設�
 
 ## 分層責任（目前實作）
 
-### `src/lincy/core/schema.py`
+### `src/lincy/core/provider_schema.py`
 - 定義 provider-specific config 類型（含各自 reasoning/thinking config）
 - 提供每個 config 的 `validate_reasoning()` / `get_vision()` / `create_client()`
 - 不提供跨 provider 的中央 reasoning 分發

@@ -224,20 +224,6 @@ class TaskStore:
     def list_all(self) -> list[Task]:
         return list(self._tasks.values())
 
-    def find_pending_by_source(
-        self,
-        *,
-        source_app: str,
-        source_id: str,
-    ) -> Task | None:
-        """Return the first pending task linked to the given external item."""
-        for task in self._tasks.values():
-            if task.status != "pending":
-                continue
-            if task.source_app == source_app and task.source_id == source_id:
-                return task
-        return None
-
     def complete(self, task_id: str) -> tuple[Task, datetime | None]:
         """Mark a task complete.
 

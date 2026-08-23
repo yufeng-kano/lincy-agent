@@ -335,14 +335,8 @@ class AgentCore:
         state = self._latest_token_status
         return bool(state.usage_available and state.prompt_tokens is not None and state.prompt_tokens > self._soft_max_prompt_tokens)
 
-    def _record_compaction_result(self, result: ContextCompactionResult) -> None:
-        self._compaction().record_result(result)
-
     def _apply_soft_prompt_compaction(self) -> None:
         self._compaction().apply_soft_prompt_compaction()
-
-    def _compact_context_local(self, preserve_turns: int, *, trigger: str, fallback: bool = False) -> ContextCompactionResult:
-        return self._compaction().compact_local(preserve_turns, trigger=trigger, fallback=fallback)
 
     def _compact_context(self, *, preserve_turns: int, trigger: str) -> ContextCompactionResult:
         return self._compaction().compact(preserve_turns=preserve_turns, trigger=trigger)

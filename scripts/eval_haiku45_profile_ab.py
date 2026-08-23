@@ -371,7 +371,6 @@ def main() -> None:
         preserve_turns=app_cfg.context.preserve_turns,
         provider=brain_cfg.llm.provider,
         cache_ttl=None,
-        format_reminders=app_cfg.features.format_reminders.model_dump(),
     )
     builder.reload_boot_files()
 

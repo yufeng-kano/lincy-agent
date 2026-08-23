@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .session.schema import SessionEntry
-from .timezone_utils import localise as tz_localise
+from .timezone_utils import format_local_stamp
 
 TURN_PROCESSING_STARTED_AT_KEY = "turn_processing_started_at"
 TURN_PROCESSING_DELAY_SECONDS_KEY = "turn_processing_delay_seconds"
@@ -19,7 +19,6 @@ TURN_DELAY_REASON_SCHEDULED_TURN = "scheduled_turn"
 TURN_DELAY_REASON_YIELDED_SCHEDULED_TURN = "yielded_scheduled_turn"
 TURN_DELAY_REASON_QUEUE_BACKLOG = "queue_backlog"
 
-_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _STALE_DELAY_THRESHOLD = timedelta(minutes=5)
 _FAILED_RETRY_COUNT_KEY = "turn_failure_requeue_count"
 
@@ -44,13 +43,6 @@ def _parse_datetime(value: object) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
-
-
-def _format_local_time(value: datetime) -> str:
-    """Render a local timestamp using the repo's standard prompt format."""
-    local = tz_localise(value)
-    day = _DAY_NAMES[local.weekday()]
-    return local.strftime(f"%Y-%m-%d ({day}) %H:%M")
 
 
 def _format_delay(delay_seconds: int) -> str:
@@ -197,10 +189,10 @@ def build_turn_timing_notice(entry: SessionEntry) -> str | None:
 
     lines = [
         "[Timing Notice]",
-        f"Current processing time: {_format_local_time(info.processing_started_at)}",
+        f"Current processing time: {format_local_stamp(info.processing_started_at)}",
     ]
     if info.event_timestamp is not None:
-        lines.append(f"Original event time: {_format_local_time(info.event_timestamp)}")
+        lines.append(f"Original event time: {format_local_stamp(info.event_timestamp)}")
     if info.delay_seconds > 0:
         lines.append(f"Observed delay: {_format_delay(info.delay_seconds)}")
 

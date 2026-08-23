@@ -227,21 +227,17 @@ def _build_dynamic_turn_overlay(
 ) -> Callable[[list[Message]], list[Message]] | None:
     """Build the responder overlay for the per-turn dynamic blocks.
 
-    Assembles [Runtime Context], [Timing Notice], [Decision Reminder], and
-    [Agent Notes] (see agent/turn_overlay.py) and returns an overlay that
-    appends them to the latest user message of the outgoing request only.
-    These blocks used to be baked into ContextBuilder's rendered/frozen
-    messages on every turn; they now live only on the wire, never in
-    Conversation or the builder's render cache. Returns None when none of
-    the blocks have anything to say (e.g. no notes, no boot dir, timing
-    unremarkable, decision reminder disabled).
+    Assembles [Runtime Context], [Timing Notice], and [Agent Notes] (see
+    agent/turn_overlay.py) and returns an overlay that appends them to the
+    latest user message of the outgoing request only. These blocks used to
+    be baked into ContextBuilder's rendered/frozen messages on every turn;
+    they now live only on the wire, never in Conversation or the builder's
+    render cache. Returns None when none of the blocks have anything to
+    say (e.g. no notes, no boot dir, timing unremarkable).
     """
     text = build_dynamic_turn_overlay_text(
         entry=entry,
         agent_os_dir=builder.agent_os_dir,
-        decision_reminder_enabled=builder.decision_reminder_enabled,
-        decision_reminder_files=builder.decision_reminder_files,
-        decision_reminder_core_values=builder.decision_reminder_core_values,
         note_store=note_store,
     )
     if not text:

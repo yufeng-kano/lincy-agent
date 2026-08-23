@@ -40,10 +40,10 @@
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|-----------|------|
 | 送 `reasoning_effort` 頂層欄位 | `OpenAICompatibleClient` 送 `reasoning_effort` | `src/lincy/llm/providers/openai_compat.py` | 符合 Chat Completions API 官方格式 |
-| `enabled=false` 需要 override | 驗證要求有 `provider_overrides.openai_reasoning_effort` | `src/lincy/core/schema.py`（`OpenAIConfig.validate_reasoning()`） | 本專案規則，非 API 限制 |
-| `reasoning.effort` 值 | config 接受 low/medium/high/xhigh/max 並原樣送成 `reasoning_effort`；不代表每個 OpenAI 模型都支援完整集合；`max` 屬 passthrough，OpenAI 官方文件目前未列為 Chat Completions effort | `src/lincy/core/schema.py` + `src/lincy/llm/providers/openai.py` | 上游若不支援會回 request error；profile 內 `supported_efforts` 只保留已知/文件化提示，不作 hard gate |
-| `max_tokens` 在 reasoning 裡擋掉 | OpenAI provider schema 不提供 reasoning.max_tokens 欄位 | `src/lincy/core/schema.py`（`OpenAIReasoningConfig`） | 本專案規則 |
-| `max_completion_tokens` 切換 | `OpenAIConfig.use_max_completion_tokens=true` 時，client 送 `max_completion_tokens` 並 null 掉 `max_tokens` | `src/lincy/llm/providers/openai.py` + `src/lincy/core/schema.py` | GPT-5+ 必要 |
+| `enabled=false` 需要 override | 驗證要求有 `provider_overrides.openai_reasoning_effort` | `src/lincy/core/provider_schema.py`（`OpenAIConfig.validate_reasoning()`） | 本專案規則，非 API 限制 |
+| `reasoning.effort` 值 | config 接受 low/medium/high/xhigh/max 並原樣送成 `reasoning_effort`；不代表每個 OpenAI 模型都支援完整集合；`max` 屬 passthrough，OpenAI 官方文件目前未列為 Chat Completions effort | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/openai.py` | 上游若不支援會回 request error；profile 內 `supported_efforts` 只保留已知/文件化提示，不作 hard gate |
+| `max_tokens` 在 reasoning 裡擋掉 | OpenAI provider schema 不提供 reasoning.max_tokens 欄位 | `src/lincy/core/provider_schema.py`（`OpenAIReasoningConfig`） | 本專案規則 |
+| `max_completion_tokens` 切換 | `OpenAIConfig.use_max_completion_tokens=true` 時，client 送 `max_completion_tokens` 並 null 掉 `max_tokens` | `src/lincy/llm/providers/openai.py` + `src/lincy/core/provider_schema.py` | GPT-5+ 必要 |
 | `prompt_cache_retention` passthrough | agent cache config `ttl: "24h"` 時，組裝層傳入 `prompt_cache_retention="24h"` 給 `OpenAIClient` | `src/lincy/cli/app.py` + `src/lincy/llm/providers/openai.py` | 不走 breakpoint path |
 | Cache TTL clamp | 組裝層依 provider 最大支援 TTL 做 clamp：OpenRouter `1h`、Anthropic/ClaudeCode `ephemeral`、OpenAI `24h` | `src/lincy/cli/app.py` | 避免 provider 切換時 silent misconfiguration |
 
@@ -79,11 +79,11 @@
 
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|-----------|------|
-| Provider 名稱 | 使用獨立 `provider: deepseek`，不共用 `openai` config | `src/lincy/core/schema.py` + `src/lincy/llm/providers/deepseek.py` | DeepSeek 有專屬 thinking/cache 規則 |
+| Provider 名稱 | 使用獨立 `provider: deepseek`，不共用 `openai` config | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/deepseek.py` | DeepSeek 有專屬 thinking/cache 規則 |
 | Base URL | profile 使用 `https://api.deepseek.com`，client 自行附加 `/chat/completions` | `src/lincy/llm/providers/deepseek.py` | 拒絕 `/v1` 或 `/chat/completions` 結尾 |
-| Thinking config | YAML 使用 `thinking.enabled` 與 `thinking.effort`；enabled 時只允許 `high` / `max` | `src/lincy/core/schema.py` | 不接受官方會自動映射的 effort 值 |
+| Thinking config | YAML 使用 `thinking.enabled` 與 `thinking.effort`；enabled 時只允許 `high` / `max` | `src/lincy/core/provider_schema.py` | 不接受官方會自動映射的 effort 值 |
 | Thinking payload | enabled 時送 `thinking.type=enabled` 與 `reasoning_effort`；disabled 時只送 `thinking.type=disabled` | `src/lincy/llm/providers/deepseek.py` | disabled 不送 `reasoning_effort` |
-| Temperature 驗證 | thinking enabled 時若設定 `temperature` 則早停報錯 | `src/lincy/core/schema.py` | 避免 silent no-op |
+| Temperature 驗證 | thinking enabled 時若設定 `temperature` 則早停報錯 | `src/lincy/core/provider_schema.py` | 避免 silent no-op |
 | Reasoning 回放 | assistant tool-call history 使用 `reasoning_content`，不使用 OpenAI-compatible base client 的 `reasoning` 欄位 | `src/lincy/llm/providers/deepseek.py` | 避免 DeepSeek thinking tool 回合 400 |
 | 合成 tool call 回放 | thinking enabled 時，assistant tool-call history 若沒有可回放的 `reasoning_content`，adapter 送空字串欄位 | `src/lincy/llm/providers/deepseek.py` | boot / pinned context / skill prerequisite 這類系統合成 tool call 沒有模型 reasoning；實測最後一則訊息為 tool result 時缺欄位會 400 |
 | Structured outputs | `response_schema` 目前不支援；client 早停報錯 | `src/lincy/llm/providers/deepseek.py` | DeepSeek JSON Output 不是本專案目前的 JSON Schema 介面 |
@@ -161,9 +161,9 @@
 
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|---------|------|
-| Provider 名稱 | 使用獨立 `provider: heyroute` 與 `HeyrouteConfig` / `HeyrouteClient` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/heyroute.py` | Heyroute 是獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
-| Base URL | 預設 `https://heyroute.ai/`，config validator 會去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://heyroute.ai/v1/messages`，不會有 double slash |
-| API key env | `HEYROUTE_API_KEY` | `src/lincy/core/schema.py` + `src/lincy/core/config.py` | 依既有 provider 的 `api_key_env` 解析規則 |
+| Provider 名稱 | 使用獨立 `provider: heyroute` 與 `HeyrouteConfig` / `HeyrouteClient` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/heyroute.py` | Heyroute 是獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
+| Base URL | 預設 `https://heyroute.ai/`，config validator 會去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://heyroute.ai/v1/messages`，不會有 double slash |
+| API key env | `HEYROUTE_API_KEY` | `src/lincy/core/provider_schema.py` + `src/lincy/core/config.py` | 依既有 provider 的 `api_key_env` 解析規則 |
 | Payload / response | Heyroute client 重用 Anthropic Messages adapter，不複製 payload 與 response mapping | `src/lincy/llm/providers/heyroute.py` | 只重用已確認的本專案 Anthropic-compatible shape |
 | Tool result 合併 | 連續的 `role: "tool"` message 會合併成單一 user message 的多個 `tool_result` block；遇到 assistant / user message 才開新的 | `src/lincy/llm/providers/anthropic.py` | 這是 Anthropic 平行 tool use 的正規形狀，同時是 heyroute 的硬性要求 |
 | Temperature | thinking 為 active 時省略；disabled 或未設定 thinking 時照既有 Anthropic 規則送出 | `src/lincy/llm/providers/anthropic.py` | gateway 行為未獨立驗證 |
@@ -203,10 +203,10 @@
 
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|---------|------|
-| Provider 名稱 | 使用獨立 `provider: kano_proxy` 與 `KanoProxyConfig` / `KanoProxyClient` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/kano_proxy.py` | 獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
+| Provider 名稱 | 使用獨立 `provider: kano_proxy` 與 `KanoProxyConfig` / `KanoProxyClient` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/kano_proxy.py` | 獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
 | Client 實作 | `KanoProxyClient` 繼承 `AnthropicClient`，不複製 payload / response mapping | `src/lincy/llm/providers/kano_proxy.py` | 與 Heyroute 同一模式 |
-| Base URL | 預設 `https://kano-proxy.yuufeng.com/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/anthropic/v1/messages` |
-| API key env | 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/schema.py` + `src/lincy/core/config.py` | 依既有 `api_key_env` 解析規則；不可 fallback 到 `ANTHROPIC_API_KEY` |
+| Base URL | 預設 `https://kano-proxy.yuufeng.com/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/anthropic/v1/messages` |
+| API key env | 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` + `src/lincy/core/config.py` | 依既有 `api_key_env` 解析規則；不可 fallback 到 `ANTHROPIC_API_KEY` |
 | Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 與 Anthropic adapter 相同而納入 |
 
 ### 3. 實測 / 逆向資訊
@@ -277,11 +277,11 @@
 
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|-----------|------|
-| effort / max_tokens 互斥 | config 層驗證，同時設定 → ValueError | `src/lincy/core/schema.py`（`OpenRouterConfig.validate_reasoning()`） | 符合官方 API 限制 |
+| effort / max_tokens 互斥 | config 層驗證，同時設定 → ValueError | `src/lincy/core/provider_schema.py`（`OpenRouterConfig.validate_reasoning()`） | 符合官方 API 限制 |
 | `enabled=False` -> `{"effort": "none"}` | 映射 | `src/lincy/llm/providers/openrouter.py` | 符合官方語意 |
 | `enabled=True` 單獨保留 | 只設 `enabled=true` 時送 `{"enabled": true}` | `src/lincy/llm/providers/openrouter.py` | 讓 Claude 4.6 可顯式走 adaptive thinking |
-| `verbosity` passthrough | YAML `verbosity` 由 `OpenRouterClient` 在 provider 層補到 OpenRouter 頂層 `verbosity` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/openrouter.py` | Anthropic 路由會再映射到 `output_config.effort` |
-| `provider_routing` payload | YAML `provider_routing` 映射到 request `provider` object；`null` 時不送 `provider`（走 OpenRouter 預設路由） | `src/lincy/core/schema.py` + `src/lincy/llm/providers/openrouter.py` + `src/lincy/llm/providers/openai_compat.py` | 允許各 profile 個別固定 endpoint 或回到預設 |
+| `verbosity` passthrough | YAML `verbosity` 由 `OpenRouterClient` 在 provider 層補到 OpenRouter 頂層 `verbosity` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/openrouter.py` | Anthropic 路由會再映射到 `output_config.effort` |
+| `provider_routing` payload | YAML `provider_routing` 映射到 request `provider` object；`null` 時不送 `provider`（走 OpenRouter 預設路由） | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/openrouter.py` + `src/lincy/llm/providers/openai_compat.py` | 允許各 profile 個別固定 endpoint 或回到預設 |
 | Header 名稱 | 同時送 `X-OpenRouter-Title` + `X-Title` | `openrouter.py` | 官方 header + alias 相容 |
 | 連線參數 self-contained | `api_key_env`/`base_url`/`site_url` 在每個 LLM YAML；`site_name` null 時 fallback 到 agent name；`site_url` 在 `load_config()` 自動附加 `/{agent_name}`（可用 `agents.*.openrouter.site_url` 覆蓋） | `src/lincy/core/config.py`（`load_config()`） | YAML 可獨立使用（validate_llm.py 等） |
 | Cache breakpoint 注入 | `ContextBuilder` BP1 (system prompt) + BP2 (boot files)，`cache_control` passthrough via `_convert_content_parts()`；所有 per-turn dynamic note（`current_local_time` / `[Timing Notice]` / message-time common ground）必須留在 latest turn，不得新增 system-tier message；僅 OpenRouter provider 啟用 | `src/lincy/context/builder.py` + `src/lincy/agent/responder.py` + `openai_compat.py` + `cli/app.py` | 成本最佳化：1h TTL for heartbeat；重建同一輪長 prompt 時，cache hit 應維持 >90% |
@@ -317,8 +317,8 @@
 | 項目 | 規則 | 程式碼位置 | 備註 |
 |------|------|-----------|------|
 | 單一路徑 | 本專案 `ollama` provider 只走 native `/api/chat`，不混用 OpenAI-compat | `src/lincy/llm/providers/ollama_native.py` | 單一 concrete client 對應單一 API format |
-| thinking YAML | 使用 `thinking.mode=toggle|effort`；toggle 映射到 `think: true/false`，effort 映射到 `think: "low"|"medium"|"high"|"xhigh"|"max"` | `src/lincy/core/schema.py` + `src/lincy/llm/providers/ollama_native.py` | provider-specific config，不做假統一 |
-| level 驗證 | `thinking.mode=effort` 的 effort 值允許 low/medium/high/xhigh/max 並原樣送出；`gpt-oss:*` 仍要求使用 effort mode，不用 toggle | `src/lincy/core/schema.py` | 值集合依本專案設定需求放寬；上游若不支援會回 request error |
+| thinking YAML | 使用 `thinking.mode=toggle|effort`；toggle 映射到 `think: true/false`，effort 映射到 `think: "low"|"medium"|"high"|"xhigh"|"max"` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/ollama_native.py` | provider-specific config，不做假統一 |
+| level 驗證 | `thinking.mode=effort` 的 effort 值允許 low/medium/high/xhigh/max 並原樣送出；`gpt-oss:*` 仍要求使用 effort mode，不用 toggle | `src/lincy/core/provider_schema.py` | 值集合依本專案設定需求放寬；上游若不支援會回 request error |
 | `max_tokens` 映射 | YAML `max_tokens` -> native `options.num_predict` | `src/lincy/llm/providers/ollama_native.py` | 本專案統一輸出 token cap 口徑 |
 | `temperature` 映射 | YAML `temperature` -> native `options.temperature` | `src/lincy/llm/providers/ollama_native.py` | native 欄位名與 OpenAI compat 不同 |
 | `response_schema` 映射 | `chat(..., response_schema=...)` -> native `format` JSON schema | `src/lincy/llm/providers/ollama_native.py` | 對齊 Ollama structured outputs |
@@ -327,7 +327,7 @@
 | real tool-loop thinking replay guard | 若**真實** assistant tool history 含 `thinking`，但對應 `tool_calls[]` 缺 `thoughtSignature`，adapter 會在 replay 時省略 `thinking`、只保留 tool_calls；否則 Gemini-backed Ollama 會回 `400` `"Function call is missing a thought_signature..."` | `src/lincy/llm/providers/ollama_native.py` | 實測確認上游可能回傳無 `thoughtSignature` 的真 tool call；此 guard 僅在 metadata 已壞掉時啟用 |
 | token usage 回收 | `prompt_eval_count` / `eval_count` -> `LLMResponse.prompt_tokens` / `completion_tokens` / `total_tokens` | `src/lincy/llm/providers/ollama_native.py` | 供 soft limit / status bar 使用 |
 | cloud profile 命名 | repo 內 curated profiles 一律使用 cloud-only 目錄命名與 cloud model ids | `cfgs/llm/ollama/` | 減少本地模型與 cloud 模型語意混淆 |
-| API key 支援（cloud direct） | `api_key` / `api_key_env` 設定時，adapter 送 `Authorization: Bearer <key>`；未設定時不送 auth header（本機 daemon 預設） | `src/lincy/core/schema.py` + `src/lincy/core/config.py` + `src/lincy/llm/providers/ollama_native.py` | 讓同一個 provider 可接本機 daemon 或 `https://ollama.com` |
+| API key 支援（cloud direct） | `api_key` / `api_key_env` 設定時，adapter 送 `Authorization: Bearer <key>`；未設定時不送 auth header（本機 daemon 預設） | `src/lincy/core/provider_schema.py` + `src/lincy/core/config.py` + `src/lincy/llm/providers/ollama_native.py` | 讓同一個 provider 可接本機 daemon 或 `https://ollama.com` |
 
 ### 3. 逆向/實測資訊
 
@@ -383,6 +383,6 @@ Kano Proxy 不另開欄：獨立 `provider: kano_proxy`，payload / auth header 
 | 3 | Gemini effort 只支援 low/high | 依模型：3 Pro 是 low/high；3 Flash 是 minimal/low/medium/high；3.1 Pro 是 low/medium/high | [Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) ThinkingLevel 表格 | 有效 |
 | 4 | Ollama 用 reasoning_effort | 無官方依據。Thinking 是 native `think` 參數 | [OpenAI Compatibility](https://docs.ollama.com/api/openai-compatibility) + [Thinking](https://docs.ollama.com/capabilities/thinking) | 有效 |
 | 5 | OpenAI reasoning_effort 是頂層欄位（曾修正為「改成 reasoning object」） | **撤回修正**。Chat Completions API 仍用 `reasoning_effort` 頂層欄位。`reasoning` object 是 Responses API 格式。本專案用 Chat Completions，現行做法正確 | [GPT-5.2 Guide](https://developers.openai.com/api/docs/guides/latest-model/) 原文："Chat Completions API uses: `reasoning_effort`" | 撤回 |
-| 6 | OpenAI enabled=false 需要 override | 非 API 事實，是本專案 `OpenAIConfig.validate_reasoning()` 規則 | `src/lincy/core/schema.py` | 有效 |
+| 6 | OpenAI enabled=false 需要 override | 非 API 事實，是本專案 `OpenAIConfig.validate_reasoning()` 規則 | `src/lincy/core/provider_schema.py` | 有效 |
 | 7 | Gemini auth 只有 URL parameter | 也支援 `x-goog-api-key` header | [Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) 範例 | 有效 |
 | 8 | OpenRouter effort + max_tokens 時 effort 優先 | 非官方保證，本專案自定 precedence | [Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) | 有效 |

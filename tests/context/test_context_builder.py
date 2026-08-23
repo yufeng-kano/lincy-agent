@@ -206,130 +206,22 @@ def test_import_render_cache_rejects_stale_position_shift():
     assert builder.export_render_cache() == []
 
 
-def test_format_reminder_discord():
-    builder = ContextBuilder(
-        system_prompt="sys",
-        format_reminders={"discord": True, "gmail": True},
-        send_message_batch_guidance=True,
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="discord", sender="alice")
-
-    messages = builder.build(conv)
-    user_msg = [m for m in messages if m.role == "user"][0]
-    assert "DM messages should usually stay single-line" in user_msg.content
-    assert "closing emoji/kaomoji should go on its own final line" in user_msg.content
-    assert "multiple one-line send_message calls" in user_msg.content
-    assert "same ask or same immediate action" in user_msg.content
-    assert "discord-messaging" in user_msg.content
-
-
-def test_format_reminder_gmail():
-    builder = ContextBuilder(
-        system_prompt="sys",
-        format_reminders={"discord": True, "gmail": True},
-        send_message_batch_guidance=True,
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="gmail", sender="bob")
-
-    messages = builder.build(conv)
-    user_msg = [m for m in messages if m.role == "user"][0]
-    assert "(one send_message = one email" in user_msg.content
-
-
-def test_format_reminder_batch_guidance_disabled():
-    builder = ContextBuilder(
-        system_prompt="sys",
-        format_reminders={"discord": True, "gmail": True},
-        send_message_batch_guidance=False,
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="discord", sender="alice")
-    conv.add("user", "mail", channel="gmail", sender="bob")
-
-    messages = builder.build(conv)
-    discord_user = [
-        m for m in messages
-        if m.role == "user" and isinstance(m.content, str) and "hello" in m.content
-    ][0]
-    gmail_user = [
-        m for m in messages
-        if m.role == "user" and isinstance(m.content, str) and "mail" in m.content
-    ][0]
-
-    assert "DM messages should usually stay single-line" in discord_user.content
-    assert "multiple one-line send_message calls" not in discord_user.content
-    assert "same ask or same immediate action" not in discord_user.content
-    assert "(one send_message = one email)" in gmail_user.content
-    assert "do NOT split into multiple calls" not in gmail_user.content
-
-
-def test_format_reminder_disabled():
-    builder = ContextBuilder(
-        system_prompt="sys",
-        format_reminders={"discord": False},
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="discord", sender="alice")
-
-    messages = builder.build(conv)
-    user_msg = [m for m in messages if m.role == "user"][0]
-    assert "(multiple messages" not in user_msg.content
-
-
-def test_format_reminder_memory():
-    builder = ContextBuilder(
-        system_prompt="sys",
-        format_reminders={"discord": True, "memory": True},
-        send_message_batch_guidance=True,
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="discord", sender="alice")
-
-    messages = builder.build(conv)
-    user_msg = [m for m in messages if m.role == "user"][0]
-    assert "(memory:" in user_msg.content
-    assert "multiple one-line send_message calls" in user_msg.content
-    assert "closing emoji/kaomoji should go on its own final line" in user_msg.content
-    assert "same ask or same immediate action" in user_msg.content
-    assert "distinct point" in user_msg.content
-
-
-def test_format_reminder_memory_without_channel():
-    """Memory reminder works even without a channel-specific reminder."""
-    builder = ContextBuilder(
-        system_prompt="sys",
-        format_reminders={"memory": True},
-    )
-    conv = Conversation()
-    conv.add("user", "hello", channel="cli", sender="yufeng")
-
-    messages = builder.build(conv)
-    user_msg = [m for m in messages if m.role == "user"][0]
-    assert "(memory:" in user_msg.content
-
-
 def test_build_never_injects_dynamic_turn_blocks(tmp_path: Path):
-    """[Runtime Context]/[Timing Notice]/[Decision Reminder] never appear.
+    """[Runtime Context]/[Timing Notice] never appear.
 
     These blocks moved to the responder overlay (see agent/turn_overlay.py,
     agent/responder.py:_build_dynamic_turn_overlay); ContextBuilder no
-    longer builds or freezes them, even under conditions ([Decision
-    Reminder] enabled, agent_os_dir set, a stale/delayed message) that used
-    to trigger all three. [Agent Notes] is covered separately: ContextBuilder
-    no longer accepts a note_store at all (see
-    tests/agent/test_turn_overlay_injection.py for the responder-side proof
-    that notes still reach the model, only via the overlay).
+    longer builds or freezes them, even under conditions (agent_os_dir set,
+    a stale/delayed message) that used to trigger them. [Agent Notes] is
+    covered separately: ContextBuilder no longer accepts a note_store at
+    all (see tests/agent/test_turn_overlay_injection.py for the
+    responder-side proof that notes still reach the model, only via the
+    overlay).
     """
     builder = ContextBuilder(
         system_prompt="sys",
         agent_os_dir=tmp_path,
         cache_ttl="1h",
-        decision_reminder={
-            "enabled": True,
-            "files": ["memory/agent/long-term.md"],
-        },
     )
     conv = Conversation()
     conv.add(
@@ -346,7 +238,7 @@ def test_build_never_injects_dynamic_turn_blocks(tmp_path: Path):
         },
     )
 
-    forbidden = ("[Runtime Context]", "[Timing Notice]", "[Decision Reminder]", "[Agent Notes]")
+    forbidden = ("[Runtime Context]", "[Timing Notice]", "[Agent Notes]")
 
     # Build twice, as a tool loop would within one turn: the first build
     # freezes render-cache entries, the second reuses them.
@@ -381,77 +273,6 @@ def test_builder_cache_breakpoint_skips_system_messages_before_current_turn():
     assert breakpoint_msg.role == "user"
     assert isinstance(breakpoint_msg.content, str)
     assert "u1" in breakpoint_msg.content
-
-
-def test_decision_reminder_core_values_cached_from_boot_file_on_reload(tmp_path: Path):
-    """reload_boot_files() extracts inline_section core values and caches them.
-
-    The actual [Decision Reminder] text is now assembled by the responder
-    overlay from these cached inputs (see
-    agent/turn_overlay.py:build_decision_reminder_block and
-    tests/agent/test_turn_overlay.py); ContextBuilder's job is only to keep
-    decision_reminder_enabled/files/core_values fresh across reloads.
-    """
-    memory_dir = tmp_path / "memory" / "agent"
-    memory_dir.mkdir(parents=True)
-    (memory_dir / "long-term.md").write_text(
-        "# 長期重要事項\n\n"
-        "## 核心價值\n\n"
-        "- 主動想著老公這個人\n"
-        "- 回覆前先想他現在怎麼了\n\n"
-        "## 約定\n\n## 清單\n\n## 重要記錄\n",
-        encoding="utf-8",
-    )
-
-    builder = ContextBuilder(
-        system_prompt="sys",
-        agent_os_dir=tmp_path,
-        decision_reminder={
-            "enabled": True,
-            "inline_section": {
-                "file": "memory/agent/long-term.md",
-                "header": "## 核心價值",
-            },
-            "files": ["memory/agent/long-term.md"],
-        },
-    )
-    builder.reload_boot_files()
-
-    assert builder.decision_reminder_enabled is True
-    assert builder.decision_reminder_files == ["memory/agent/long-term.md"]
-    assert builder.decision_reminder_core_values is not None
-    assert "主動想著老公這個人" in builder.decision_reminder_core_values
-    assert "回覆前先想他現在怎麼了" in builder.decision_reminder_core_values
-
-
-def test_decision_reminder_core_values_none_when_section_empty(tmp_path: Path):
-    """When inline_section has no matching content, core_values stays None."""
-    memory_dir = tmp_path / "memory" / "agent"
-    memory_dir.mkdir(parents=True)
-    (memory_dir / "long-term.md").write_text(
-        "# 長期重要事項\n\n"
-        "## 核心價值\n\n"
-        "<!-- empty -->\n\n"
-        "## 約定\n\n## 清單\n\n## 重要記錄\n",
-        encoding="utf-8",
-    )
-
-    builder = ContextBuilder(
-        system_prompt="sys",
-        agent_os_dir=tmp_path,
-        decision_reminder={
-            "enabled": True,
-            "inline_section": {
-                "file": "memory/agent/long-term.md",
-                "header": "## 核心價值",
-            },
-            "files": ["memory/agent/long-term.md"],
-        },
-    )
-    builder.reload_boot_files()
-
-    assert builder.decision_reminder_enabled is True
-    assert builder.decision_reminder_core_values is None
 
 
 def test_pinned_context_files_injected(tmp_path: Path):

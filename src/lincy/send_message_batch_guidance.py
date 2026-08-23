@@ -26,20 +26,6 @@ _SEND_MESSAGE_DESCRIPTION_BATCH = (
     "one response instead of splitting across rounds."
 )
 
-_DISCORD_REMINDER_BASE = (
-    "(Discord: read builtin skill discord-messaging before channel-specific "
-    "formatting; DM messages should usually stay single-line, but a closing "
-    "emoji/kaomoji should go on its own final line instead of inline"
-)
-_DISCORD_REMINDER_BATCH = (
-    "; schedules/reminders should be split into multiple one-line "
-    "send_message calls only when the points are truly distinct; if several "
-    "lines serve the same ask or same immediate action, merge them into one "
-    "message, and each split message should add a distinct point)"
-)
-_GMAIL_REMINDER_BASE = "(one send_message = one email"
-_GMAIL_REMINDER_BATCH = "; do NOT split into multiple calls)"
-
 def build_prompt_fragment_spec(
     *,
     enabled: bool,
@@ -58,17 +44,4 @@ def build_tool_description(*, enabled: bool) -> str:
     if enabled:
         return _SEND_MESSAGE_DESCRIPTION_BASE + _SEND_MESSAGE_DESCRIPTION_BATCH
     return _SEND_MESSAGE_DESCRIPTION_BASE
-
-
-def build_channel_reminders(*, enabled: bool) -> dict[str, str]:
-    """Build per-channel reminders with optional batch guidance."""
-    reminders = {
-        "discord": _DISCORD_REMINDER_BASE + ")",
-        "gmail": _GMAIL_REMINDER_BASE + ")",
-    }
-    if enabled:
-        reminders["discord"] = _DISCORD_REMINDER_BASE + _DISCORD_REMINDER_BATCH
-        reminders["gmail"] = _GMAIL_REMINDER_BASE + _GMAIL_REMINDER_BATCH
-    return reminders
-
 

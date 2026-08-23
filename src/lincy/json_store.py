@@ -43,6 +43,18 @@ def save_json(path: Path, data: Any) -> None:
         raise
 
 
+def save_text(path: Path, content: str) -> None:
+    """Atomically replace a text file so interruption cannot corrupt it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def parse_datetime(value: str | None, timezone) -> datetime | None:
     """Parse a persisted timestamp, assigning the store timezone if needed."""
     if not value:

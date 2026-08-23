@@ -8,6 +8,7 @@ import logging
 import re
 
 from ..core.schema import MemoryArchiveConfig, MaintenanceCurateConfig
+from ..json_store import save_text
 from ..timezone_utils import now as tz_now
 
 logger = logging.getLogger(__name__)
@@ -145,7 +146,7 @@ def check_and_archive_buffers(
     if result.archived:
         # Do not remove any successful source text until every resulting digest
         # can be committed together; a write failure leaves the original intact.
-        _atomic_write_text(
+        save_text(
             buf_path,
             retained + "".join(failed_content) + "".join(retained_digests + new_digests),
         )
@@ -223,17 +224,7 @@ def _remove_expired_digests(buf_path: Path, content: str, retain_days: int) -> N
         content,
     )
     if retained != content:
-        _atomic_write_text(buf_path, retained)
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(content, encoding="utf-8")
-        temporary.replace(path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
+        save_text(buf_path, retained)
 
 
 def _write_archive_file(archive_dir: Path, d: date, content: str) -> ArchivedFile:

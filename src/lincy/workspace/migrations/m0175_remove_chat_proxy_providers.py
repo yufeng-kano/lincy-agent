@@ -69,7 +69,7 @@ def _map_llm_path(value: object) -> object:
     return value
 
 
-class M0174RemoveChatProxyProviders(Migration):
+class M0175RemoveChatProxyProviders(Migration):
     """Drop chat_proxy provider references from workspace agent configs."""
 
     version = "0.77.0"

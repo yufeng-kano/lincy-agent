@@ -129,52 +129,6 @@ class NoteStore:
             self._save()
         return note
 
-    def upsert(
-        self,
-        *,
-        key: str,
-        value: str,
-        triggers: list[str] | None = None,
-        description: str | None = None,
-        source_app: str | None = None,
-        source_id: str | None = None,
-        source_label: str | None = None,
-    ) -> Note:
-        """Create or replace a note without churning timestamps on no-op updates."""
-        normalized_triggers = triggers or []
-        note = self._notes.get(key)
-        if note is None:
-            created = self.create(
-                key=key,
-                value=value,
-                triggers=normalized_triggers,
-                description=description,
-                source_app=source_app,
-                source_id=source_id,
-                source_label=source_label,
-            )
-            assert not isinstance(created, str)
-            return created
-        changed = (
-            note.value != value
-            or note.triggers != normalized_triggers
-            or note.description != description
-            or note.source_app != source_app
-            or note.source_id != source_id
-            or note.source_label != source_label
-        )
-        if not changed:
-            return note
-        note.value = value
-        note.triggers = normalized_triggers
-        note.description = description
-        note.source_app = source_app
-        note.source_id = source_id
-        note.source_label = source_label
-        note.updated_at = tz_now()
-        self._save()
-        return note
-
     def get(self, key: str) -> Note | None:
         return self._notes.get(key)
 

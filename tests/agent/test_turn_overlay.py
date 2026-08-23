@@ -11,8 +11,6 @@ from pathlib import Path
 
 from lincy.agent.note_store import NoteStore
 from lincy.agent.turn_overlay import (
-    DECISION_REMINDER_LABEL,
-    build_decision_reminder_block,
     build_dynamic_turn_overlay_text,
     build_latest_turn_runtime_context,
 )
@@ -51,40 +49,6 @@ def test_runtime_context_none_without_agent_os_dir():
     assert build_latest_turn_runtime_context(entry, agent_os_dir=None) is None
 
 
-def test_decision_reminder_disabled_returns_none():
-    block = build_decision_reminder_block(
-        enabled=False,
-        anchor_files=["memory/agent/long-term.md"],
-        core_values=None,
-    )
-    assert block is None
-
-
-def test_decision_reminder_generic_template_without_core_values():
-    block = build_decision_reminder_block(
-        enabled=True,
-        anchor_files=["memory/agent/long-term.md"],
-        core_values=None,
-    )
-
-    assert block is not None
-    assert block.startswith(f"{DECISION_REMINDER_LABEL}\n")
-    assert "Keep long-term.md in mind before acting." in block
-
-
-def test_decision_reminder_inlines_core_values_when_present():
-    block = build_decision_reminder_block(
-        enabled=True,
-        anchor_files=["memory/agent/long-term.md"],
-        core_values="- 主動想著老公這個人\n- 回覆前先想他現在怎麼了",
-    )
-
-    assert block is not None
-    assert "Core values to embody:" in block
-    assert "主動想著老公這個人" in block
-    assert "Verify constraints from long-term.md, then decide." in block
-
-
 def test_dynamic_overlay_text_joins_blocks_in_order(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True)
@@ -95,16 +59,12 @@ def test_dynamic_overlay_text_joins_blocks_in_order(tmp_path: Path):
     text = build_dynamic_turn_overlay_text(
         entry=entry,
         agent_os_dir=tmp_path,
-        decision_reminder_enabled=True,
-        decision_reminder_files=["memory/agent/long-term.md"],
-        decision_reminder_core_values=None,
         note_store=note_store,
     )
 
     runtime_idx = text.index("[Runtime Context]")
-    decision_idx = text.index(DECISION_REMINDER_LABEL)
     notes_idx = text.index("[Agent Notes]")
-    assert runtime_idx < decision_idx < notes_idx
+    assert runtime_idx < notes_idx
     assert text.count("[Runtime Context]") == 1
     assert text.count("[Agent Notes]") == 1
 
@@ -115,9 +75,6 @@ def test_dynamic_overlay_text_empty_when_nothing_applies():
     text = build_dynamic_turn_overlay_text(
         entry=entry,
         agent_os_dir=None,
-        decision_reminder_enabled=False,
-        decision_reminder_files=[],
-        decision_reminder_core_values=None,
         note_store=None,
     )
 

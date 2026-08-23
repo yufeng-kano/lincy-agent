@@ -113,19 +113,22 @@ def _merge_override(base: dict, override: dict, *, prefix: str = "") -> list[str
     return applied
 
 
-# Config paths removed in kernel 0.76.8 (staged planning, skill_checker,
-# conscience). Kernel migrations cannot repair these: load_config() runs at
-# startup before the migrator, and an untracked cfgs/agent.override.yaml is
-# outside the workspace the migrator scans. Stripping them here keeps an
-# existing install bootable. Unknown keys outside this list still fail strict
-# validation, so typos are not silently ignored -- see
-# docs/dev/local-config-override.md.
+# Config paths removed by past releases. Kernel migrations cannot repair
+# these: load_config() runs at startup before the migrator, and an untracked
+# cfgs/agent.override.yaml is outside the workspace the migrator scans.
+# Stripping them here keeps an existing install bootable. Unknown keys outside
+# this list still fail strict validation, so typos are not silently ignored --
+# see docs/dev/local-config-override.md.
 _RETIRED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+    # Kernel 0.76.8: staged planning, skill_checker, conscience
     ("agents", "brain", "staged_planning"),
     ("agents", "skill_checker"),
     ("agents", "conscience"),
-    # Removed in kernel 0.77.0 (chat_proxy providers dropped).
+    # Kernel 0.76.9: format_reminders, decision_reminder, copilot initiator policy
     ("features", "copilot"),
+    ("features", "format_reminders"),
+    ("features", "decision_reminder"),
+    # Kernel 0.77.0: chat_proxy providers dropped
     ("features", "codex_remote_compaction"),
 )
 

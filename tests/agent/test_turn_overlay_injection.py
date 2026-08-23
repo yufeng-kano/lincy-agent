@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from lincy.agent.core import AgentCore, _run_responder
-from lincy.agent.turn_runtime import LatestTokenStatus, TurnTokenUsage
+from lincy.agent.token_telemetry import LatestTokenStatus, TurnTokenUsage
 from lincy.agent.note_store import NoteStore
 from lincy.agent.turn_context import TurnContext
 from lincy.context.builder import ContextBuilder
@@ -163,7 +163,7 @@ def test_dynamic_overlay_lands_once_on_latest_user_message_and_is_snapshot_stabl
             assert "[Runtime Context]" not in content
 
 
-def test_dynamic_overlay_absent_when_no_boot_dir_no_notes_no_decision_reminder(
+def test_dynamic_overlay_absent_when_no_boot_dir_no_notes(
     tmp_path: Path,
 ):
     core = AgentCore.__new__(AgentCore)

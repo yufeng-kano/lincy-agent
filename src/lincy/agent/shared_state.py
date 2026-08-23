@@ -65,11 +65,6 @@ class SharedStateStore:
     def cache_path(self) -> Path:
         return self._cache_path
 
-    @property
-    def is_empty(self) -> bool:
-        with self._lock:
-            return not self._cache.scopes
-
     def get_current_rev(self, scope_id: str) -> int:
         with self._lock:
             scope = self._cache.scopes.get(scope_id)

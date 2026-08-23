@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -70,11 +69,6 @@ class MemoryEditOperation(BaseModel):
                 raise ValueError("payload_text is required for overwrite")
 
         return self
-
-    def semantic_payload(self) -> str:
-        """Canonical payload used for semantic lock hash."""
-        obj = self.model_dump(mode="json", exclude_none=True)
-        return json.dumps(obj, ensure_ascii=False, sort_keys=True)
 
 
 class MemoryEditPlan(BaseModel):

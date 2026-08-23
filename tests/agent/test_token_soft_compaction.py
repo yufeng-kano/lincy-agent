@@ -19,7 +19,7 @@ def _seed_turns(conv: Conversation, count: int) -> None:
 
 def _make_core(tmp_path, *, provider: str, preserve_turns: int = 2, soft_limit: int = 128_000):
     from lincy.agent.core import AgentCore
-    from lincy.agent.turn_runtime import LatestTokenStatus, TurnTokenUsage
+    from lincy.agent.token_telemetry import LatestTokenStatus, TurnTokenUsage
     from lincy.agent.turn_context import TurnContext
 
     core = AgentCore.__new__(AgentCore)

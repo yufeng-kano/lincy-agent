@@ -12,6 +12,8 @@ import json
 import logging
 from pathlib import Path
 
+from ...json_store import save_json
+
 logger = logging.getLogger(__name__)
 
 _QUEUE_REL_PATH = "state/memory-curation-queue.json"
@@ -38,7 +40,7 @@ def remove_queue_entry(agent_os_dir: Path, rel_path: str) -> None:
     path = agent_os_dir / _QUEUE_REL_PATH
     entries = load_queue(agent_os_dir)
     retained = [entry for entry in entries if entry.get("path") != rel_path]
-    _atomic_write_json(path, retained)
+    save_json(path, retained)
 
 
 def upsert_queue_entry(
@@ -74,18 +76,6 @@ def upsert_queue_entry(
                 "last_seen": now,
             }
         )
-    _atomic_write_json(path, entries)
+    save_json(path, entries)
 
 
-def _atomic_write_json(path: Path, entries: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise

@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+from ...json_store import save_text
+
 _ARCHIVE_ROOT_REL_PATH = "memory/archive"
 _CURATION_ARCHIVE_REL_PATH = "memory/archive/curation"
 
@@ -51,17 +53,7 @@ def write_verified_snapshot(path: Path, content: str) -> None:
         if path.read_text(encoding="utf-8") != content:
             raise FileExistsError(f"refusing to replace existing archive snapshot: {path}")
     else:
-        _atomic_write_text(path, content)
+        save_text(path, content)
     if path.read_text(encoding="utf-8") != content:
         raise OSError(f"archive snapshot verification failed: {path}")
 
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(content, encoding="utf-8")
-        temporary.replace(path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
