@@ -465,6 +465,7 @@ class OpenAIReasoningConfig(StrictConfigModel):
 
 
 class OpenAICapabilities(StrictConfigModel):
+    vision: bool = False
     reasoning: "OpenAIReasoningCapabilities"
 
 
@@ -754,6 +755,7 @@ class GeminiThinkingConfig(StrictConfigModel):
 
 
 class GeminiCapabilities(StrictConfigModel):
+    vision: bool = False
     reasoning: "GeminiReasoningCapabilities"
 
 
