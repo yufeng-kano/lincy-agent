@@ -397,6 +397,33 @@ def test_retired_llm_paths_in_override_are_rewritten(
     assert "Rewriting retired LLM profile" in caplog.text
 
 
+def test_existing_custom_profile_under_retired_dir_is_preserved(
+    monkeypatch, tmp_path: Path
+):
+    """deepseek/gemini/heyroute/litellm are still supported providers; a
+    user-created profile under a retired shipped dir must load untouched."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "deepseek" / "custom.yaml",
+        {
+            "provider": "deepseek",
+            "model": "deepseek-custom",
+            "api_key": "k",
+            "thinking": {"enabled": False},
+        },
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": "cfgs/llm/deepseek/custom.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "deepseek"
+    assert config.agents["brain"].llm.model == "deepseek-custom"
+
+
 def test_retired_keys_in_base_config_are_dropped(monkeypatch, tmp_path: Path):
     _write_base_agent_config(tmp_path)
     raw = yaml.safe_load((tmp_path / "agent.yaml").read_text())

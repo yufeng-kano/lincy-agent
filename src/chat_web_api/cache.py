@@ -19,10 +19,18 @@ from .session_reader import (
 
 logger = logging.getLogger(__name__)
 
+# Metrics-only classification of recorded session data. The claude_code /
+# codex / copilot / grok runtime adapters were removed, but sessions written
+# before that still carry those provider names with valid token counts, so
+# they stay listed here to keep historical cache rates computable.
 _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
     {
         "anthropic",
+        "claude_code",
+        "codex",
+        "copilot",
         "deepseek",
+        "grok",
         "heyroute",
         "kano_proxy",
         "openai",
@@ -30,7 +38,7 @@ _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
     }
 )
 _WRITE_CACHE_MEASURABLE_PROVIDERS = frozenset(
-    {"anthropic", "heyroute", "kano_proxy", "openrouter"}
+    {"anthropic", "claude_code", "heyroute", "kano_proxy", "openrouter"}
 )
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from ...core.config import CFGS_DIR
 from .base import Migration
 
 # Removed provider config directories under cfgs/llm/.
@@ -31,8 +32,19 @@ _LLM_PATH_MAP = {
 _FALLBACK_LLM_PATH = "cfgs/llm/kano-proxy/worker.yaml"
 
 
+def _profile_exists(value: str) -> bool:
+    relative = Path(value)
+    if relative.parts[:1] == ("cfgs",):
+        relative = Path(*relative.parts[1:])
+    return (CFGS_DIR / relative).exists()
+
+
 def _map_llm_path(value: object) -> object:
     if not isinstance(value, str):
+        return value
+    # A file that still exists is a user-created custom profile (deepseek,
+    # gemini, heyroute and litellm providers remain supported) -- keep it.
+    if _profile_exists(value):
         return value
     if value in _LLM_PATH_MAP:
         return _LLM_PATH_MAP[value]

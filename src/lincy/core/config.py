@@ -176,6 +176,11 @@ _RETIRED_LLM_FALLBACK_PATH = "cfgs/llm/kano-proxy/worker.yaml"
 def _map_retired_llm_path(value: object) -> object:
     if not isinstance(value, str):
         return value
+    # A file that exists is a user-created custom profile (deepseek, gemini,
+    # heyroute and litellm providers are still supported, only their shipped
+    # profiles were deleted) -- never reroute it.
+    if _resolve_cfg_relative_path(value).exists():
+        return value
     normalized = value if value.startswith("cfgs/") else f"cfgs/{value}"
     if normalized in _RETIRED_LLM_PATH_MAP:
         return _RETIRED_LLM_PATH_MAP[normalized]
