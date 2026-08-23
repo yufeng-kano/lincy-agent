@@ -42,10 +42,6 @@ class ProcessConfig(StrictModel):
     health_check_timeout: float = Field(default=30.0, ge=1)
     health_check_interval: float = Field(default=1.0, ge=0.1)
     auto_enable_when_any_agent_uses_provider: Literal[
-        "copilot",
-        "codex",
-        "claude_code",
-        "grok",
         "deepseek",
         "anthropic",
         "openai",

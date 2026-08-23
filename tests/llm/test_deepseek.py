@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from lincy.core.config import resolve_llm_config
 from lincy.core.schema import DeepSeekConfig, DeepSeekThinkingConfig
 from lincy.llm.providers.deepseek import DeepSeekClient
 from lincy.llm.schema import Message, ToolCall, ToolDefinition, ToolParameter
@@ -291,21 +290,3 @@ def test_image_content_is_rejected(monkeypatch):
         ])
 
     assert calls == []
-
-
-@pytest.mark.parametrize(
-    ("path", "model", "thinking_enabled"),
-    [
-        ("llm/deepseek/deepseek-v4-flash/no-thinking.yaml", "deepseek-v4-flash", False),
-        ("llm/deepseek/deepseek-v4-flash/thinking.yaml", "deepseek-v4-flash", True),
-        ("llm/deepseek/deepseek-v4-pro/no-thinking.yaml", "deepseek-v4-pro", False),
-        ("llm/deepseek/deepseek-v4-pro/thinking.yaml", "deepseek-v4-pro", True),
-    ],
-)
-def test_repo_deepseek_profiles_load(path: str, model: str, thinking_enabled: bool):
-    config = resolve_llm_config(path)
-
-    assert isinstance(config, DeepSeekConfig)
-    assert config.model == model
-    assert config.thinking.enabled is thinking_enabled
-    assert config.supports_response_schema() is False

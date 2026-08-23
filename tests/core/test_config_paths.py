@@ -133,7 +133,7 @@ def test_repo_agent_config_brain_uses_kano_proxy_with_expected_fallbacks():
     assert brain_llm.temperature == 1.0
 
     fallbacks = config.agents["brain"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["heyroute"]
+    assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
     assert [cfg.model for cfg in fallbacks] == ["claude-opus-5"]
     assert fallbacks[0].thinking.type == "adaptive"
 
@@ -148,27 +148,25 @@ def test_repo_agent_config_worker_uses_kano_proxy_with_expected_fallbacks():
     assert worker_llm.thinking.type == "adaptive"
 
     fallbacks = config.agents["worker"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["heyroute", "deepseek"]
-    assert [cfg.model for cfg in fallbacks] == ["claude-opus-5", "deepseek-v4-pro"]
+    assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
+    assert [cfg.model for cfg in fallbacks] == ["claude-opus-5"]
     assert fallbacks[0].thinking.type == "adaptive"
-    assert fallbacks[1].thinking.enabled is True
 
 
-def test_repo_agent_config_memory_editor_uses_deepseek_v4_flash_no_thinking():
+def test_repo_agent_config_memory_editor_uses_kano_proxy_utility():
     config = config_module.load_config("agent.yaml", apply_override=False)
 
     memory_editor_llm = config.agents["memory_editor"].llm
-    assert memory_editor_llm.provider == "deepseek"
-    assert memory_editor_llm.model == "deepseek-v4-flash"
+    assert memory_editor_llm.provider == "kano_proxy"
+    assert memory_editor_llm.model == "lincy-worker-agent"
     assert memory_editor_llm.thinking is not None
-    assert memory_editor_llm.thinking.enabled is False
+    assert memory_editor_llm.thinking.type == "adaptive"
+    assert memory_editor_llm.output_config is not None
+    assert memory_editor_llm.output_config.effort == "low"
 
     fallbacks = config.agents["memory_editor"].llm_fallbacks
-    assert [cfg.provider for cfg in fallbacks] == ["deepseek", "codex"]
-    assert [cfg.model for cfg in fallbacks] == ["deepseek-v4-pro", "gpt-5.5"]
-    assert fallbacks[0].thinking.enabled is False
-    assert fallbacks[1].reasoning.enabled is True
-    assert fallbacks[1].reasoning.effort == "low"
+    assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
+    assert [cfg.model for cfg in fallbacks] == ["claude-haiku-4-5-20251001"]
 
 
 def test_repo_kimi_k26_cloud_profile_loads():
@@ -193,76 +191,6 @@ def test_repo_deepseek_v4_flash_cloud_profile_loads():
     assert config.vision is False
     assert config.thinking.mode == "effort"
     assert config.thinking.effort == "max"
-
-
-def test_repo_claude_code_opus_47_and_48_profiles_load():
-    thinking = config_module.resolve_llm_config(
-        "cfgs/llm/claude_code/claude-opus-4.7/thinking.yaml"
-    )
-    no_thinking = config_module.resolve_llm_config(
-        "cfgs/llm/claude_code/claude-opus-4.7/no-thinking.yaml"
-    )
-
-    assert thinking.provider == "claude_code"
-    assert thinking.model == "claude-opus-4-7"
-    assert thinking.thinking is not None
-    assert thinking.thinking.type == "adaptive"
-    assert thinking.output_config is not None
-    assert thinking.output_config.effort == "high"
-
-    assert no_thinking.provider == "claude_code"
-    assert no_thinking.model == "claude-opus-4-7"
-    assert no_thinking.thinking is not None
-    assert no_thinking.thinking.type == "disabled"
-    assert no_thinking.output_config is not None
-    assert no_thinking.output_config.effort == "low"
-
-    thinking_48 = config_module.resolve_llm_config(
-        "cfgs/llm/claude_code/claude-opus-4.8/thinking.yaml"
-    )
-    no_thinking_48 = config_module.resolve_llm_config(
-        "cfgs/llm/claude_code/claude-opus-4.8/no-thinking.yaml"
-    )
-
-    assert thinking_48.provider == "claude_code"
-    assert thinking_48.model == "claude-opus-4-8"
-    assert thinking_48.thinking is not None
-    assert thinking_48.thinking.type == "adaptive"
-    assert thinking_48.output_config is not None
-    assert thinking_48.output_config.effort == "high"
-
-    assert no_thinking_48.provider == "claude_code"
-    assert no_thinking_48.model == "claude-opus-4-8"
-    assert no_thinking_48.thinking is not None
-    assert no_thinking_48.thinking.type == "disabled"
-    assert no_thinking_48.output_config is not None
-    assert no_thinking_48.output_config.effort == "low"
-
-
-def test_repo_claude_code_opus_5_profiles_load():
-    thinking = config_module.resolve_llm_config(
-        "cfgs/llm/claude_code/claude-opus-5/thinking.yaml"
-    )
-    no_thinking = config_module.resolve_llm_config(
-        "cfgs/llm/claude_code/claude-opus-5/no-thinking.yaml"
-    )
-
-    assert thinking.provider == "claude_code"
-    assert thinking.model == "claude-opus-5"
-    assert thinking.vision is True
-    assert thinking.thinking is not None
-    assert thinking.thinking.type == "adaptive"
-    assert thinking.output_config is not None
-    assert thinking.output_config.effort == "xhigh"
-
-    assert no_thinking.provider == "claude_code"
-    assert no_thinking.model == "claude-opus-5"
-    assert no_thinking.vision is True
-    assert no_thinking.thinking is not None
-    assert no_thinking.thinking.type == "disabled"
-    # Upstream rejects disabled thinking above effort high.
-    assert no_thinking.output_config is not None
-    assert no_thinking.output_config.effort == "low"
 
 
 def test_load_app_timezone_reads_only_timezone(monkeypatch, tmp_path: Path):
@@ -427,6 +355,121 @@ def test_retired_keys_in_override_do_not_block_startup(
     assert config.agents["brain"].llm.model == "gpt-4o"
     assert retired_key.rsplit(".", 1)[-1] not in config.agents
     assert retired_key in caplog.text
+
+
+def test_retired_llm_paths_in_override_are_rewritten(
+    monkeypatch, tmp_path: Path, caplog
+):
+    """An override pointing at a deleted provider profile must not wedge
+    startup: the migrator cannot reach the untracked override file, so the
+    loader rewrites retired profile paths to kept ones."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "kano-proxy" / "worker.yaml",
+        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "llm" / "anthropic" / "claude-opus-5" / "thinking.yaml",
+        {"provider": "anthropic", "model": "claude-opus-5", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {
+            "agents": {
+                "brain": {
+                    "llm": "cfgs/llm/codex/gpt-5.5/thinking.yaml",
+                    "llm_fallbacks": [
+                        "cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml"
+                    ],
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "kano_proxy"
+    assert config.agents["brain"].llm.model == "lincy-worker-agent"
+    fallbacks = config.agents["brain"].llm_fallbacks
+    assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
+    assert "Rewriting retired LLM profile" in caplog.text
+
+
+def test_existing_custom_profile_under_retired_dir_is_preserved(
+    monkeypatch, tmp_path: Path
+):
+    """deepseek/gemini/heyroute/litellm are still supported providers; a
+    user-created profile under a retired shipped dir must load untouched."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "deepseek" / "custom.yaml",
+        {
+            "provider": "deepseek",
+            "model": "deepseek-custom",
+            "api_key": "k",
+            "thinking": {"enabled": False},
+        },
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": "cfgs/llm/deepseek/custom.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "deepseek"
+    assert config.agents["brain"].llm.model == "deepseek-custom"
+
+
+def test_inline_removed_provider_config_is_rewritten(
+    monkeypatch, tmp_path: Path, caplog
+):
+    """An inline {provider: codex, ...} entry no longer validates against
+    LLMConfig, so the loader reroutes it to a kept profile."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "kano-proxy" / "worker.yaml",
+        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": {"provider": "codex", "model": "gpt-5.5"}}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "kano_proxy"
+    assert "Rewriting retired LLM profile" in caplog.text
+
+
+def test_existing_profile_under_removed_provider_dir_is_still_rewritten(
+    monkeypatch, tmp_path: Path
+):
+    """A custom file under cfgs/llm/codex/ cannot validate (the provider is
+    gone), so it must be rerouted even though the file exists."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "kano-proxy" / "worker.yaml",
+        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "llm" / "codex" / "custom.yaml",
+        {"provider": "codex", "model": "gpt-custom"},
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"llm": "cfgs/llm/codex/custom.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "kano_proxy"
 
 
 def test_retired_keys_in_base_config_are_dropped(monkeypatch, tmp_path: Path):

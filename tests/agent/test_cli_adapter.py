@@ -76,7 +76,7 @@ def test_compact_command_delegates_to_agent(tmp_path):
     adapter._agent.run_manual_compact.return_value = ContextCompactionResult(
         changed=True,
         removed_messages=3,
-        source="codex_remote",
+        source="compactor",
         trigger="manual",
     )
     adapter._commands = MagicMock()
@@ -95,7 +95,7 @@ def test_compact_command_delegates_to_agent(tmp_path):
     assert should_stop is False
     adapter._agent.run_manual_compact.assert_called_once_with()
     adapter._commands._console.print_info.assert_called_once_with(
-        "Context compacted via codex remote: 3 messages removed."
+        "Context compacted via compactor agent: 3 messages removed."
     )
 
 

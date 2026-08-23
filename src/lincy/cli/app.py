@@ -3,8 +3,6 @@ import logging
 import os
 import sys
 import threading
-from collections.abc import Callable
-from datetime import datetime
 
 from dotenv import dotenv_values
 
@@ -27,7 +25,7 @@ from ..context.cache_breakpoints import (
     resolve_breakpoint_cache_ttl,
 )
 from ..core import load_config
-from ..core.schema import CodexConfig, CopilotConfig, GrokConfig, OpenAIConfig
+from ..core.schema import OpenAIConfig
 from ..llm import create_agent_client
 from ..memory import (
     BM25MemorySearch,
@@ -45,7 +43,6 @@ from ..gui import (
     GUISessionStore,
     GUIWorker,
 )
-
 from .commands import CommandHandler
 from ..session import SessionManager, pick_session
 from ..session.debug_client import wrap_llm_client_with_session_debug
@@ -56,7 +53,6 @@ from ..tui import (
     TurnCancelController,
     UiSink,
 )
-from ..timezone_utils import now as tz_now
 
 
 logger = logging.getLogger(__name__)
@@ -95,87 +91,6 @@ def _agent_supports_response_schema(agent_config) -> bool:
         llm_config.supports_response_schema()
         for llm_config in [agent_config.llm, *agent_config.llm_fallbacks]
     )
-
-
-def _codex_cache_bucket(ttl: str, *, current_time: datetime | None = None) -> str | None:
-    now = current_time or tz_now()
-    if ttl == "24h":
-        return now.strftime("%Y%m%d")
-    if ttl == "1h":
-        return now.strftime("%Y%m%d%H")
-    if ttl == "ephemeral":
-        return f"{now.strftime('%Y%m%d%H')}{now.minute // 5:02d}"
-    return None
-
-
-def _make_codex_cache_key_provider(
-    *,
-    session_id_getter: Callable[[], str | None],
-    namespace: str,
-    enabled: bool,
-    ttl: str,
-) -> Callable[[], str | None] | None:
-    if not enabled:
-        return None
-
-    bucket = _codex_cache_bucket(ttl)
-    if bucket is None:
-        logging.getLogger(__name__).warning(
-            "codex cache.ttl %r is unsupported; prompt cache key disabled",
-            ttl,
-        )
-        return None
-
-    def _provider() -> str | None:
-        session_id = session_id_getter()
-        if not session_id:
-            return None
-        # Official Codex CLI uses conversation_id as prompt_cache_key:
-        # https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs
-        # This project adds a namespace + TTL bucket so agent.yaml cache.ttl
-        # changes the key lifetime instead of being silently ignored.
-        next_bucket = _codex_cache_bucket(ttl)
-        if next_bucket is None:
-            return None
-        return f"{session_id}:{namespace}:{next_bucket}"
-
-    return _provider
-
-
-def _make_grok_conv_id_provider(
-    *,
-    session_id_getter: Callable[[], str | None],
-    namespace: str,
-    enabled: bool,
-    ttl: str,
-) -> Callable[[], str | None]:
-    """Build sticky ``x-grok-conv-id`` values for xAI prompt-cache routing.
-
-    xAI auto-caches shared prefixes, but hits are per-server. The official
-    Chat Completions recommendation is to always set ``x-grok-conv-id`` so
-    consecutive turns land on the same host.
-
-    - Always sticky on session + agent namespace when a session exists.
-    - When cache.enabled, also rotate a TTL bucket (same buckets as codex)
-      so ``cache.ttl`` actually changes key lifetime instead of being ignored.
-    """
-
-    def _provider() -> str | None:
-        session_id = session_id_getter()
-        if not session_id:
-            return None
-        if not enabled:
-            return f"{session_id}:{namespace}"
-        bucket = _codex_cache_bucket(ttl)
-        if bucket is None:
-            logging.getLogger(__name__).warning(
-                "grok cache.ttl %r is unsupported; sticky conv id without TTL bucket",
-                ttl,
-            )
-            return f"{session_id}:{namespace}"
-        return f"{session_id}:{namespace}:{bucket}"
-
-    return _provider
 
 
 def _emit_pre_tui_message(console, level: str, message: str) -> None:
@@ -275,64 +190,22 @@ def main(user: str, resume: str | None = None) -> None:
     def _provider_kwargs(
         llm_config,
         *,
-        dispatch_mode: str,
         cache_retention: str | None = None,
-        cache_enabled: bool = False,
-        cache_ttl: str = "ephemeral",
-        cache_namespace: str | None = None,
     ):
         """Build provider-specific kwargs for create_client."""
         kwargs: dict[str, object] = {}
-        if isinstance(llm_config, CopilotConfig):
-            kwargs["dispatch_mode"] = dispatch_mode
         if isinstance(llm_config, OpenAIConfig) and cache_retention:
             kwargs["prompt_cache_retention"] = cache_retention
-        if isinstance(llm_config, GrokConfig) and cache_namespace is not None:
-            # Always sticky-route for max xAI cache hits; TTL bucket when enabled.
-            kwargs["conv_id_provider"] = _make_grok_conv_id_provider(
-                session_id_getter=(
-                    lambda: session_mgr.current_session_id if session_mgr is not None else None
-                ),
-                namespace=cache_namespace,
-                enabled=cache_enabled,
-                ttl=cache_ttl,
-            )
-        if isinstance(llm_config, CodexConfig):
-            kwargs["session_id_provider"] = (
-                lambda: session_mgr.current_session_id if session_mgr is not None else None
-            )
-            kwargs["turn_id_provider"] = (
-                lambda: session_mgr.current_turn_id if session_mgr is not None else None
-            )
-            if cache_namespace is not None:
-                cache_key_provider = _make_codex_cache_key_provider(
-                    session_id_getter=(
-                        lambda: session_mgr.current_session_id if session_mgr is not None else None
-                    ),
-                    namespace=cache_namespace,
-                    enabled=cache_enabled,
-                    ttl=cache_ttl,
-                )
-                if cache_key_provider is not None:
-                    kwargs["cache_key_provider"] = cache_key_provider
         return kwargs
 
     def _provider_kwargs_factory(
         *,
-        dispatch_mode: str,
         cache_retention: str | None = None,
-        cache_enabled: bool = False,
-        cache_ttl: str = "ephemeral",
-        cache_namespace: str | None = None,
     ):
         def _factory(llm_config):
             return _provider_kwargs(
                 llm_config,
-                dispatch_mode=dispatch_mode,
                 cache_retention=cache_retention,
-                cache_enabled=cache_enabled,
-                cache_ttl=cache_ttl,
-                cache_namespace=cache_namespace,
             )
 
         return _factory
@@ -341,7 +214,6 @@ def main(user: str, resume: str | None = None) -> None:
         name: str,
         agent_config,
         *,
-        dispatch_mode: str = "always_agent",
         cache_retention: str | None = None,
         session_debug_label: str | None = None,
     ):
@@ -350,11 +222,7 @@ def main(user: str, resume: str | None = None) -> None:
             agent_config,
             retry_label=name,
             provider_kwargs_factory=_provider_kwargs_factory(
-                dispatch_mode=dispatch_mode,
                 cache_retention=cache_retention,
-                cache_enabled=agent_config.cache.enabled,
-                cache_ttl=agent_config.cache.ttl,
-                cache_namespace=name,
             ),
         )
         if session_debug_label is not None and session_mgr is not None:
@@ -388,7 +256,6 @@ def main(user: str, resume: str | None = None) -> None:
     client = _build_subagent_client(
         "brain",
         brain_agent_config,
-        dispatch_mode="first_user_then_agent",
         cache_retention=_brain_cache_retention,
     )
     memory_sync_client = None
@@ -396,7 +263,6 @@ def main(user: str, resume: str | None = None) -> None:
         memory_sync_client = _build_subagent_client(
             "memory_sync",
             brain_agent_config,
-            dispatch_mode="first_user_then_agent",
         )
 
     if "memory_editor" not in config.agents:
@@ -885,16 +751,8 @@ def main(user: str, resume: str | None = None) -> None:
     )
 
     # === Build AgentCore ===
-    conversation_compaction_client = None
-    if (
-        getattr(config.features.codex_remote_compaction, "enabled", False)
-        and brain_agent_config.llm.provider == "codex"
-        and hasattr(client, "compact_messages")
-    ):
-        conversation_compaction_client = client
-
-    # Tier 2 conversation compaction: summarizing sub-agent used when codex
-    # remote compaction is unavailable (non-codex provider) or fails.
+    # Conversation compaction: summarizing sub-agent used before the local
+    # deterministic fallback.
     compactor_agent_instance: CompactorAgent | None = None
     compactor_config = config.agents.get("compactor")
     if compactor_config and compactor_config.enabled:
@@ -926,7 +784,6 @@ def main(user: str, resume: str | None = None) -> None:
         scope_resolver=DEFAULT_SCOPE_RESOLVER,
         memory_sync_client=memory_sync_client,
         worker_runner=_worker_runner,
-        conversation_compaction_client=conversation_compaction_client,
         compactor_agent=compactor_agent_instance,
         brain_prompt_policy=brain_prompt_policy,
         ui_debug=debug,

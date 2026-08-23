@@ -417,8 +417,7 @@ def analyze_latest_brain_request(sessions_dir: Path, soft_max_prompt_tokens: int
     Reads requests.jsonl / responses.jsonl directly (never cached: see module
     docstring). Returns a JSON-safe dict; on any expected failure mode
     (no sessions, no completed brain request) returns {"available": False,
-    "reason": ...} instead of raising, matching the /api/claude-accounts
-    convention.
+    "reason": ...} instead of raising.
     """
     session_id, request, reported = _find_latest_brain_request(sessions_dir)
     if session_id is None or request is None:

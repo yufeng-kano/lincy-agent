@@ -23,8 +23,6 @@ class WebApiSettings:
     web_chat_events_path: Path = Path()
     ui_events_path: Path = Path()
     control_base_url: str = "http://127.0.0.1:9001"
-    claude_proxy_base_url: str = "http://127.0.0.1:4142"
-    codex_proxy_base_url: str = "http://127.0.0.1:4143"
     soft_limit_tokens: int = 128_000
     pricing_url: str = _PRICING_URL
     pricing_cache_path: Path = Path()

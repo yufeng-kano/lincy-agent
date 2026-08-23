@@ -59,7 +59,6 @@ def _make_core(tmp_path, *, provider: str, preserve_turns: int = 2, soft_limit: 
     core.turn_cancel = None
     core.shared_state_store = None
     core.scope_resolver = None
-    core.conversation_compaction_client = None
     core._maintenance_scheduler = None
     core._turns_since_memory_sync = 0
     core.adapters = {}
@@ -101,83 +100,8 @@ def test_soft_limit_compacts_to_preserve_turns(monkeypatch, tmp_path):
     assert "soft-over" in core.get_token_status_text()
 
 
-def test_copilot_missing_usage_shows_unavailable_and_skips_compaction(monkeypatch, tmp_path):
-    from lincy.agent import core as core_module
-
-    core = _make_core(tmp_path, provider="copilot", preserve_turns=2, soft_limit=128_000)
-    _seed_turns(core.conversation, 3)
-
-    def _fake_run_responder(**kwargs):
-        response = LLMResponse(content="ok", tool_calls=[], usage_available=False)
-        cb = kwargs.get("on_model_response")
-        if cb is not None:
-            cb(response)
-        return response
-
-    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
-    monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
-
-    core.run_turn("copilot turn", output_fn=lambda _text: None, channel="cli", sender="tester")
-
-    user_count = sum(1 for m in core.conversation.get_messages() if m.role == "user")
-    assert user_count > 2
-    assert core.get_token_status_text() == "tok unavailable/128,000 (copilot no usage)"
-
-
-def test_soft_limit_uses_remote_codex_compaction_when_injected(monkeypatch, tmp_path):
-    from lincy.agent import core as core_module
-    from lincy.llm.schema import Message
-
-    core = _make_core(tmp_path, provider="codex", preserve_turns=2, soft_limit=128_000)
-    _seed_turns(core.conversation, 4)
-
-    class _CompactionClient:
-        def compact_messages(self, messages, tools=None):
-            assert messages
-            assert tools == []
-            return [
-                Message(
-                    role="assistant",
-                    content="[Codex compaction checkpoint]",
-                    codex_compaction_encrypted_content="enc_123",
-                )
-            ]
-
-    core.conversation_compaction_client = _CompactionClient()
-
-    def _fake_run_responder(**kwargs):
-        response = LLMResponse(
-            content="ok",
-            tool_calls=[],
-            prompt_tokens=140_000,
-            completion_tokens=80,
-            total_tokens=140_080,
-            usage_available=True,
-        )
-        cb = kwargs.get("on_model_response")
-        if cb is not None:
-            cb(response)
-        return response
-
-    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
-    monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
-
-    core.run_turn("new message", output_fn=lambda _text: None, channel="cli", sender="tester")
-
-    messages = core.conversation.get_messages()
-    assert len(messages) == 1
-    assert messages[0].codex_compaction_encrypted_content == "enc_123"
-    assert messages[0].metadata == {"rendered_static": True}
-    soft_limit_warnings = [
-        call.args[0]
-        for call in core.console.print_warning.call_args_list
-        if call.args
-    ]
-    assert any("via codex remote" in message for message in soft_limit_warnings)
-
-
 def test_token_status_text_includes_cache_breakdown(tmp_path):
-    core = _make_core(tmp_path, provider="claude_code", soft_limit=128_000)
+    core = _make_core(tmp_path, provider="kano_proxy", soft_limit=128_000)
 
     core._record_brain_response_usage(
         LLMResponse(
@@ -200,7 +124,7 @@ def test_token_status_text_includes_cache_breakdown(tmp_path):
 
 
 def test_token_status_text_shows_zero_cache_rate_on_miss(tmp_path):
-    core = _make_core(tmp_path, provider="codex", soft_limit=128_000)
+    core = _make_core(tmp_path, provider="openai", soft_limit=128_000)
 
     core._record_brain_response_usage(
         LLMResponse(
@@ -254,7 +178,7 @@ def test_ollama_token_status_text_shows_cache_unavailable_and_skips_warning(tmp_
 
 
 def test_token_status_text_keeps_best_cache_read_within_turn(tmp_path):
-    core = _make_core(tmp_path, provider="codex", soft_limit=128_000)
+    core = _make_core(tmp_path, provider="openai", soft_limit=128_000)
 
     core._record_brain_response_usage(
         LLMResponse(

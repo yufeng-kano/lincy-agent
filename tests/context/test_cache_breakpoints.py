@@ -14,9 +14,9 @@ from lincy.tools.registry import ToolRegistry
 from lincy.worker.runner import WorkerRunner
 
 
-def test_resolve_breakpoint_cache_ttl_clamps_for_claude_code():
+def test_resolve_breakpoint_cache_ttl_clamps_for_kano_proxy():
     assert resolve_breakpoint_cache_ttl(
-        provider="claude_code",
+        provider="kano_proxy",
         enabled=True,
         configured_ttl="24h",
     ) == "1h"
@@ -24,7 +24,7 @@ def test_resolve_breakpoint_cache_ttl_clamps_for_claude_code():
 
 def test_resolve_breakpoint_cache_ttl_disabled_or_non_breakpoint():
     assert resolve_breakpoint_cache_ttl(
-        provider="claude_code",
+        provider="kano_proxy",
         enabled=False,
         configured_ttl="1h",
     ) is None
@@ -38,7 +38,7 @@ def test_resolve_breakpoint_cache_ttl_disabled_or_non_breakpoint():
 def test_resolve_breakpoint_cache_ttl_rejects_unknown_ttl():
     with pytest.raises(ValueError, match="unsupported cache.ttl"):
         resolve_breakpoint_cache_ttl(
-            provider="claude_code",
+            provider="kano_proxy",
             enabled=True,
             configured_ttl="7d",
         )

@@ -2,7 +2,6 @@
 
 import pytest
 
-from lincy.core import config as config_module
 from lincy.core.schema import HeyrouteConfig
 from lincy.llm.providers.heyroute import HeyrouteClient
 from lincy.llm.schema import Message
@@ -51,20 +50,6 @@ def _make_client(**kwargs) -> HeyrouteClient:
             **kwargs,
         )
     )
-
-
-def test_all_heyroute_profiles_load_through_real_loader(monkeypatch):
-    monkeypatch.setenv("HEYROUTE_API_KEY", "test-key")
-    profile_paths = sorted(
-        path.relative_to(config_module.CFGS_DIR).as_posix()
-        for path in (config_module.CFGS_DIR / "llm" / "heyroute").rglob("*.yaml")
-    )
-
-    assert profile_paths
-    for profile_path in profile_paths:
-        config = config_module.resolve_llm_config(profile_path)
-        assert config.provider == "heyroute"
-        assert config.api_key == "test-key"
 
 
 def test_heyroute_url_has_no_double_slash(monkeypatch):

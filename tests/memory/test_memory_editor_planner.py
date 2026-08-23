@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from lincy.core.schema import (
-    ClaudeCodeConfig,
-    CopilotConfig,
+    AnthropicConfig,
     DeepSeekConfig,
     DeepSeekThinkingConfig,
+    OllamaNativeConfig,
+    OllamaNativeToggleThinkingConfig,
 )
 from lincy.memory.editor.planner import MemoryEditPlanner
 from lincy.memory.editor.schema import MemoryEditRequest
@@ -40,8 +41,11 @@ def _request() -> MemoryEditRequest:
 
 
 def test_provider_response_schema_capabilities_match_adapter_support():
-    assert ClaudeCodeConfig(model="claude-sonnet-4-6").supports_response_schema() is False
-    assert CopilotConfig(model="gpt-4.1").supports_response_schema() is True
+    assert AnthropicConfig(model="claude-sonnet-4-6").supports_response_schema() is False
+    assert OllamaNativeConfig(
+        model="qwen3.5:9b",
+        thinking=OllamaNativeToggleThinkingConfig(mode="toggle", enabled=False),
+    ).supports_response_schema() is True
     assert DeepSeekConfig(
         model="deepseek-v4-flash",
         thinking=DeepSeekThinkingConfig(enabled=False),

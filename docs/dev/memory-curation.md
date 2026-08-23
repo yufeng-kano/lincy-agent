@@ -115,26 +115,24 @@ maintenance:
 ## 對話 compaction（同一套蒸餾紀律，另一條路徑）
 
 檔案端做零損失的同時，對話端一直在「整段丟訊息」：
-`compact_local` 只做 `conversation.compact(preserve_turns)`，無 LLM、無摘要，
-而 codex remote 失敗時就 fallback 到它。這是實際存在的記憶損失。
+`compact_local` 只做 `conversation.compact(preserve_turns)`，無 LLM、無摘要。
+這是實際存在的記憶損失。
 
-改為三層，依 provider 能力分流：
+改為兩層：
 
 | 順位 | 條件 | 行為 |
 |------|------|------|
-| 1 | brain client 是 codex（有 `compact_messages`） | codex remote compaction（維持現行） |
-| 2 | 非 codex，或第 1 層失敗 | `compactor` agent 摘要式壓縮（保留教訓、約定、情感脈絡、待追事項） |
-| 3 | 第 2 層失敗 | `compact_local` 原始行為（丟訊息）作為最後保底 |
+| 1 | `agents.compactor` 已啟用 | `compactor` agent 摘要式壓縮（保留教訓、約定、情感脈絡、待追事項） |
+| 2 | 第 1 層失敗或未啟用 | `compact_local` 原始行為（丟訊息）作為最後保底 |
 
-- 第 1 層的判定沿用現行 `cli/app.py` 的 wiring（`features.codex_remote_compaction.enabled` + client 具備 `compact_messages`），行為不變
-- 第 2 層由新的 `agents.compactor`（`CompactorAgent`）執行：保留最新 `context.preserve_turns` 輪不動，
+- 第 1 層由 `agents.compactor`（`CompactorAgent`）執行：保留最新 `context.preserve_turns` 輪不動，
   將更早的訊息轉成單一摘要文字訊息（`role=assistant`、標記 `rendered_static`）插在最前面，
   取代 `compact_local` 直接丟棄的部分；prompt 沿用「保留教訓、約定、情感脈絡、待追事項」的蒸餾紀律，並要求輸出語言與對話一致
-- 第 2 層在 turn 關鍵路徑上（soft limit 觸發），模型選型需考慮延遲，與檔案治理的 03:00 批次不同；
-  預設沿用 `agents.memory_editor` 同款快速模型（`deepseek-v4-flash`），不開額外 timeout/retry
-- 三層皆以 exception 判定失敗並逐層 fallback；`fallback` flag 標記「因上一層失敗才落到此層」，
-  三層皆失敗不得讓 turn 崩潰（`compact_local` 本身是純確定性操作，不會拋錯，是保證不崩潰的最終防線）
-- 第 2 層的 LLM 呼叫會走 `session_debug_label="compactor"`，落在 session debug log 的
+- 第 1 層在 turn 關鍵路徑上（soft limit 觸發），模型選型需考慮延遲，與檔案治理的 03:00 批次不同；
+  預設沿用 `agents.memory_editor` 同款快速 profile（`cfgs/llm/kano-proxy/utility.yaml`），不開額外 timeout/retry
+- 各層以 exception 判定失敗並逐層 fallback；`fallback` flag 標記「因上一層失敗才落到此層」，
+  各層皆失敗不得讓 turn 崩潰（`compact_local` 本身是純確定性操作，不會拋錯，是保證不崩潰的最終防線）
+- 第 1 層的 LLM 呼叫會走 `session_debug_label="compactor"`，落在 session debug log 的
   `requests.jsonl`/`responses.jsonl`（見 `session-debug-logs.md`），可稽核
 
 ## 相關檔案
@@ -149,8 +147,8 @@ maintenance:
   - `worker_dispatch.py`：`digest_day_via_worker` / `curate_queue_via_worker`（驅動既有 `agents.worker`）
 - `src/lincy/agent/core.py`：`_perform_maintenance`（curate 步驟插入點，持有 `worker_runner`）
 - `src/lincy/core/schema.py`：`MemoryEditWarningsConfig`、`MaintenanceConfig`
-- `src/lincy/agent/compaction.py`：`ContextCompactor.compact`（三層路由）、`compact_via_compactor_agent`（第 2 層）
-- `src/lincy/agent/compactor_agent.py`：`CompactorAgent`（第 2 層摘要子代理）
+- `src/lincy/agent/compaction.py`：`ContextCompactor.compact`（兩層路由）、`compact_via_compactor_agent`（第 1 層）
+- `src/lincy/agent/compactor_agent.py`：`CompactorAgent`（第 1 層摘要子代理）
 - `src/lincy/cli/app.py`：`agents.compactor` wiring（含 session debug label）
-- `src/lincy/workspace/templates/kernel/agents/compactor/prompts/system.md`：第 2 層 prompt template
+- `src/lincy/workspace/templates/kernel/agents/compactor/prompts/system.md`：第 1 層 prompt template
 - `src/lincy/workspace/migrations/m0172_compactor_agent.py`：既有 workspace 補齊 `agents.compactor`

@@ -11,11 +11,8 @@ from pydantic import TypeAdapter
 from .schema import (
     AnthropicConfig,
     AppConfig,
-    CodexConfig,
-    CopilotConfig,
     DeepSeekConfig,
     GeminiConfig,
-    GrokConfig,
     HeyrouteConfig,
     KanoProxyConfig,
     LLMConfig,
@@ -35,9 +32,6 @@ logger = logging.getLogger(__name__)
 T = TypeVar(
     "T",
     OllamaNativeConfig,
-    CopilotConfig,
-    CodexConfig,
-    GrokConfig,
     DeepSeekConfig,
     OpenAIConfig,
     AnthropicConfig,
@@ -134,6 +128,8 @@ _RETIRED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("features", "copilot"),
     ("features", "format_reminders"),
     ("features", "decision_reminder"),
+    # Kernel 0.77.0: chat_proxy providers dropped
+    ("features", "codex_remote_compaction"),
 )
 
 
@@ -153,6 +149,109 @@ def _drop_retired_config_paths(raw: dict, *, source: Path) -> None:
         )
 
 
+# LLM providers and profile dirs removed in kernel 0.77.0 (chat_proxy
+# providers dropped). Same rationale as _RETIRED_CONFIG_PATHS: the migrator
+# cannot reach an untracked cfgs/agent.override.yaml, and load_config() would
+# otherwise exit on the missing profile file (or the removed provider
+# discriminator) before any migration runs. Kept in sync with
+# migrations/m0174_remove_chat_proxy_providers.py (that one rewrites workspace
+# copies on disk; this one keeps the merged runtime config loadable).
+_REMOVED_LLM_PROVIDERS = frozenset({"claude_code", "codex", "copilot", "grok"})
+# Dirs whose provider itself was removed: rewrite even if the file exists,
+# because LLMConfig can no longer validate it.
+_REMOVED_LLM_PROVIDER_DIRS = (
+    "cfgs/llm/claude_code/",
+    "cfgs/llm/codex/",
+    "cfgs/llm/copilot/",
+    "cfgs/llm/grok/",
+)
+# Dirs whose shipped profiles were deleted but whose provider is still
+# supported: an existing file there is a user-created custom profile and
+# must load untouched.
+_RETIRED_LLM_PROFILE_DIRS = (
+    "cfgs/llm/deepseek/",
+    "cfgs/llm/gemini/",
+    "cfgs/llm/heyroute/",
+    "cfgs/llm/litellm/",
+)
+_RETIRED_LLM_PATH_MAP = {
+    "cfgs/llm/heyroute/claude-opus-5/thinking.yaml": "cfgs/llm/anthropic/claude-opus-5/thinking.yaml",
+    "cfgs/llm/codex/gpt-5.5/thinking.yaml": "cfgs/llm/kano-proxy/worker.yaml",
+    "cfgs/llm/codex/gpt-5.5/low-thinking.yaml": "cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml",
+    "cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml": "cfgs/llm/kano-proxy/utility.yaml",
+    "cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml": "cfgs/llm/anthropic/claude-opus-5/thinking.yaml",
+    "cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml": "cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml",
+}
+_RETIRED_LLM_FALLBACK_PATH = "cfgs/llm/kano-proxy/worker.yaml"
+
+
+def _map_retired_llm_path(value: object) -> object:
+    if isinstance(value, dict):
+        # Inline provider config (previously valid): a removed provider no
+        # longer validates, so reroute the whole entry to a kept profile.
+        if value.get("provider") in _REMOVED_LLM_PROVIDERS:
+            return _RETIRED_LLM_FALLBACK_PATH
+        return value
+    if not isinstance(value, str):
+        return value
+    normalized = value if value.startswith("cfgs/") else f"cfgs/{value}"
+    if any(normalized.startswith(prefix) for prefix in _REMOVED_LLM_PROVIDER_DIRS):
+        # Removed provider: even an existing custom file cannot validate.
+        return _RETIRED_LLM_PATH_MAP.get(normalized, _RETIRED_LLM_FALLBACK_PATH)
+    # A file that exists is a user-created custom profile (deepseek, gemini,
+    # heyroute and litellm providers are still supported, only their shipped
+    # profiles were deleted) -- never reroute it.
+    if _resolve_cfg_relative_path(value).exists():
+        return value
+    if normalized in _RETIRED_LLM_PATH_MAP:
+        return _RETIRED_LLM_PATH_MAP[normalized]
+    if any(normalized.startswith(prefix) for prefix in _RETIRED_LLM_PROFILE_DIRS):
+        return _RETIRED_LLM_FALLBACK_PATH
+    return value
+
+
+def _rewrite_retired_llm_paths(raw: dict, *, source: Path) -> None:
+    """Rewrite retired LLM profile paths in place, warning for each one."""
+    agents = raw.get("agents")
+    if not isinstance(agents, dict):
+        return
+    for agent_name, agent_config in agents.items():
+        if not isinstance(agent_config, dict):
+            continue
+
+        def _replace(field: str, value: object) -> object:
+            mapped = _map_retired_llm_path(value)
+            if mapped != value:
+                logger.warning(
+                    "Rewriting retired LLM profile %s -> %s for agents.%s.%s "
+                    "in %s; update the file.",
+                    value,
+                    mapped,
+                    agent_name,
+                    field,
+                    source,
+                )
+            return mapped
+
+        if "llm" in agent_config:
+            agent_config["llm"] = _replace("llm", agent_config["llm"])
+        fallbacks = agent_config.get("llm_fallbacks")
+        if isinstance(fallbacks, list):
+            mapped_fallbacks = [
+                _replace("llm_fallbacks", item) for item in fallbacks
+            ]
+            if mapped_fallbacks != fallbacks:
+                # Only a rewritten list gets deduped: mapping several retired
+                # profiles can collapse onto the same kept profile (or the
+                # primary), which the failover chain must not repeat.
+                deduped: list[object] = []
+                for item in mapped_fallbacks:
+                    if item == agent_config.get("llm") or item in deduped:
+                        continue
+                    deduped.append(item)
+                agent_config["llm_fallbacks"] = deduped
+
+
 def load_raw_agent_config(
     config_path: str = "agent.yaml",
     *,
@@ -166,6 +265,7 @@ def load_raw_agent_config(
     full_path = _resolve_cfg_relative_path(config_path)
     raw = _load_yaml(full_path) or {}
     _drop_retired_config_paths(raw, source=full_path)
+    _rewrite_retired_llm_paths(raw, source=full_path)
 
     if not apply_override:
         return raw
@@ -181,6 +281,7 @@ def load_raw_agent_config(
         raise SystemExit(f"Config error: {override_path} must contain a YAML mapping")
 
     _drop_retired_config_paths(override, source=override_path)
+    _rewrite_retired_llm_paths(override, source=override_path)
     applied = _merge_override(raw, override)
     if applied:
         logger.info("Applied %s: %s", override_path.name, ", ".join(sorted(applied)))

@@ -15,35 +15,35 @@ def test_load_supervisor_config_resolves_auto_processes(monkeypatch, tmp_path: P
     (cfgs_dir / "supervisor.yaml").write_text(
         """
 processes:
-  copilot-proxy:
+  ollama-helper:
     enabled: auto
-    auto_enable_when_any_agent_uses_provider: copilot
-    command: ["uv", "run", "copilot-proxy", "serve"]
-  codex-proxy:
+    auto_enable_when_any_agent_uses_provider: ollama_native
+    command: ["uv", "run", "ollama-helper", "serve"]
+  gemini-helper:
     enabled: auto
-    auto_enable_when_any_agent_uses_provider: codex
-    command: ["uv", "run", "codex-proxy", "serve"]
-  claude-code-proxy:
+    auto_enable_when_any_agent_uses_provider: gemini
+    command: ["uv", "run", "gemini-helper", "serve"]
+  anthropic-helper:
     enabled: auto
-    auto_enable_when_any_agent_uses_provider: claude_code
-    command: ["uv", "run", "claude-code-proxy", "serve"]
+    auto_enable_when_any_agent_uses_provider: anthropic
+    command: ["uv", "run", "anthropic-helper", "serve"]
   chat-cli:
     enabled: true
     command: ["uv", "run", "chat-cli"]
-    depends_on: ["copilot-proxy", "codex-proxy", "claude-code-proxy"]
+    depends_on: ["ollama-helper", "gemini-helper", "anthropic-helper"]
 """
     )
     monkeypatch.setattr("chat_supervisor.config.CFGS_DIR", cfgs_dir)
     monkeypatch.setattr(
         "chat_supervisor.config._used_agent_llm_providers",
-        lambda _config_path="agent.yaml": {"claude_code"},
+        lambda _config_path="agent.yaml": {"anthropic"},
     )
 
     config = load_supervisor_config("supervisor.yaml")
 
-    assert config.processes["copilot-proxy"].enabled is False
-    assert config.processes["codex-proxy"].enabled is False
-    assert config.processes["claude-code-proxy"].enabled is True
+    assert config.processes["ollama-helper"].enabled is False
+    assert config.processes["gemini-helper"].enabled is False
+    assert config.processes["anthropic-helper"].enabled is True
     assert config.processes["chat-cli"].enabled is True
 
 
@@ -53,9 +53,9 @@ def test_load_supervisor_config_rejects_auto_without_provider(monkeypatch, tmp_p
     (cfgs_dir / "supervisor.yaml").write_text(
         """
 processes:
-  claude-code-proxy:
+  anthropic-helper:
     enabled: auto
-    command: ["uv", "run", "claude-code-proxy", "serve"]
+    command: ["uv", "run", "anthropic-helper", "serve"]
 """
     )
     monkeypatch.setattr("chat_supervisor.config.CFGS_DIR", cfgs_dir)

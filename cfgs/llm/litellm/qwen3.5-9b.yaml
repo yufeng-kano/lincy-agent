@@ -1,6 +1,0 @@
-provider: litellm
-model: qwen3.5-9b
-api_key_env: LITELLM_API_KEY
-base_url: https://api.yuufeng.com/litellm/v1
-request_timeout: 120.0
-temperature: 0.0

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 from ..context import ContextBuilder, Conversation
 from ..core.schema import AppConfig
 from ..llm import LLMResponse
-from ..llm.base import ConversationCompactionClient, LLMClient
+from ..llm.base import LLMClient
 from ..llm.schema import (
     ContextLengthExceededError,
     Message,
@@ -218,7 +218,6 @@ class AgentCore:
         scope_resolver: ScopeResolver | None = None,
         memory_sync_client: LLMClient | None = None,
         worker_runner: "WorkerRunner | None" = None,
-        conversation_compaction_client: ConversationCompactionClient | None = None,
         compactor_agent: "CompactorAgent | None" = None,
         brain_prompt_policy: "BrainPromptPolicy | None" = None,
         ui_debug: bool = False,
@@ -260,7 +259,6 @@ class AgentCore:
         self.turn_cancel = turn_cancel
         self.shared_state_store = shared_state_store
         self.scope_resolver = scope_resolver or DEFAULT_SCOPE_RESOLVER
-        self.conversation_compaction_client = conversation_compaction_client
         self.compactor_agent = compactor_agent
         self.brain_prompt_policy = brain_prompt_policy
         self.skill_registry = SkillGovernanceRegistry.load(

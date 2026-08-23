@@ -496,7 +496,6 @@ class ContextBuilder:
                 tool_calls=msg.tool_calls,
                 tool_call_id=msg.tool_call_id,
                 name=msg.name,
-                codex_compaction_encrypted_content=msg.codex_compaction_encrypted_content,
             )
             # Update render cache (extend or overwrite latest).
             if idx < len(self._rendered_conv):

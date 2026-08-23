@@ -13,18 +13,6 @@ from .provider_schema import (
     OllamaNativeEffortThinkingConfig as OllamaNativeEffortThinkingConfig,
     OllamaNativeThinkingConfig as OllamaNativeThinkingConfig,
     OllamaNativeConfig as OllamaNativeConfig,
-    CopilotReasoningConfig as CopilotReasoningConfig,
-    CopilotConfig as CopilotConfig,
-    CodexReasoningConfig as CodexReasoningConfig,
-    CodexConfig as CodexConfig,
-    ClaudeCodeAdaptiveThinkingConfig as ClaudeCodeAdaptiveThinkingConfig,
-    ClaudeCodeEnabledThinkingConfig as ClaudeCodeEnabledThinkingConfig,
-    ClaudeCodeDisabledThinkingConfig as ClaudeCodeDisabledThinkingConfig,
-    ClaudeCodeThinkingConfig as ClaudeCodeThinkingConfig,
-    ClaudeCodeOutputConfig as ClaudeCodeOutputConfig,
-    ClaudeCodeConfig as ClaudeCodeConfig,
-    GrokReasoningConfig as GrokReasoningConfig,
-    GrokConfig as GrokConfig,
     OpenAIReasoningConfig as OpenAIReasoningConfig,
     OpenAICapabilities as OpenAICapabilities,
     OpenAIReasoningCapabilities as OpenAIReasoningCapabilities,
@@ -488,18 +476,9 @@ class ICloudSyncAwarenessConfig(StrictConfigModel):
     enabled: bool = False
 
 
-class CodexRemoteCompactionConfig(StrictConfigModel):
-    """Runtime flag for Codex Responses compact routing."""
-
-    enabled: bool = False
-
-
 class FeaturesConfig(StrictConfigModel):
     """Feature flags."""
 
-    codex_remote_compaction: CodexRemoteCompactionConfig = Field(
-        default_factory=CodexRemoteCompactionConfig,
-    )
     icloud_sync_awareness: ICloudSyncAwarenessConfig = Field(
         default_factory=ICloudSyncAwarenessConfig,
     )

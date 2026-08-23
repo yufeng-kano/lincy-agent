@@ -58,7 +58,7 @@
 Copilot 若沒有回傳 usage，不做估算，也不報錯中止。  
 狀態列固定顯示：
 
-`tok unavailable/<soft_limit> (copilot no usage)`
+`tok unavailable/<soft_limit> (no usage)`
 
 ## 硬超限 fallback
 

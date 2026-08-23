@@ -21,12 +21,10 @@
 |------|------|
 | [skills-guide.md](skills-guide.md) | Skills 建立與修改指南（必讀） |
 | [skill-runtime-governance.md](skill-runtime-governance.md) | Skill prerequisite runtime 治理：`meta.yaml`、tool preflight、synthetic guide 注入 |
-| [copilot-agent-hint.md](copilot-agent-hint.md) | Copilot native proxy 與 initiator 靜態路由 |
 | [heartbeat.md](heartbeat.md) | 自主喚醒系統（Heartbeat + Scheduled Actions） |
 | [provider-api-spec.md](provider-api-spec.md) | LLM Provider API 規格盤點（官方事實 / adapter 規則 / 實測逆向） |
 | [provider-architecture.md](provider-architecture.md) | LLM Provider 自治架構準則（config/client/factory 邊界） |
 | [session-debug-logs.md](session-debug-logs.md) | Brain session debug-first 診斷檔案格式與目前 resume 邊界 |
-| [codex-cache-survival.md](codex-cache-survival.md) | Codex prompt cache 存活觀察：本地 key 旋轉、官方 CLI 行為、session 實測 |
 | [token-only-context-policy.md](token-only-context-policy.md) | Token-only 上下文策略（soft limit、Copilot usage 缺值、overflow fallback） |
 | [agent-task-system.md](agent-task-system.md) | Agent Task System：結構化待辦 + 排程重複 + heartbeat 注入 |
 | [macos-app-tools.md](macos-app-tools.md) | macOS 原生個人資料工具：Calendar / Reminders / Notes / Photos 的 tool 設計與使用規則 |
