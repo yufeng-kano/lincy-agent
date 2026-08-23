@@ -17,7 +17,7 @@ agents:
   brain:
     llm: cfgs/llm/kano-proxy/worker.yaml
     llm_fallbacks:
-      - cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml
+      - cfgs/llm/anthropic/claude-opus-5/thinking.yaml
 ```
 
 ## 合併規則

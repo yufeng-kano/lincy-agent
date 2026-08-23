@@ -357,6 +357,46 @@ def test_retired_keys_in_override_do_not_block_startup(
     assert retired_key in caplog.text
 
 
+def test_retired_llm_paths_in_override_are_rewritten(
+    monkeypatch, tmp_path: Path, caplog
+):
+    """An override pointing at a deleted provider profile must not wedge
+    startup: the migrator cannot reach the untracked override file, so the
+    loader rewrites retired profile paths to kept ones."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "llm" / "kano-proxy" / "worker.yaml",
+        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "llm" / "anthropic" / "claude-opus-5" / "thinking.yaml",
+        {"provider": "anthropic", "model": "claude-opus-5", "api_key": "k"},
+    )
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {
+            "agents": {
+                "brain": {
+                    "llm": "cfgs/llm/codex/gpt-5.5/thinking.yaml",
+                    "llm_fallbacks": [
+                        "cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml"
+                    ],
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.provider == "kano_proxy"
+    assert config.agents["brain"].llm.model == "lincy-worker-agent"
+    fallbacks = config.agents["brain"].llm_fallbacks
+    assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
+    assert "Rewriting retired LLM profile" in caplog.text
+
+
 def test_retired_keys_in_base_config_are_dropped(monkeypatch, tmp_path: Path):
     _write_base_agent_config(tmp_path)
     raw = yaml.safe_load((tmp_path / "agent.yaml").read_text())
