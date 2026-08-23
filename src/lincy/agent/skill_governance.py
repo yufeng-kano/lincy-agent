@@ -52,14 +52,6 @@ class InjectedSkillGuide:
 
 
 @dataclass(frozen=True)
-class SkillCatalogEntry:
-    """Minimal skill metadata exposed to the proactive selector."""
-
-    name: str
-    description: str
-
-
-@dataclass(frozen=True)
 class _RegisteredSkill:
     """Runtime registration for one skill package."""
 
@@ -263,52 +255,6 @@ class SkillGovernanceRegistry:
             if read_name is not None and entry.name == "read_file":
                 loaded.add(read_name)
         return loaded
-
-    def list_skill_catalog(
-        self,
-        *,
-        exclude_skill_names: set[str] | None = None,
-    ) -> list[SkillCatalogEntry]:
-        """Return stable metadata for proactive skill selection."""
-        excluded = exclude_skill_names or set()
-        catalog: list[SkillCatalogEntry] = []
-        for name in sorted(self._skills):
-            if name in excluded:
-                continue
-            skill = self._skills[name]
-            catalog.append(
-                SkillCatalogEntry(
-                    name=skill.metadata.name,
-                    description=skill.metadata.description,
-                )
-            )
-        return catalog
-
-    def requirements_for_skill_names(
-        self,
-        skill_names: list[str],
-        *,
-        loaded_skill_names: set[str] | None = None,
-    ) -> list[SkillRequirement]:
-        """Resolve exact skill names into injectable guide requirements."""
-        loaded = loaded_skill_names or set()
-        requirements: list[SkillRequirement] = []
-        seen: set[str] = set()
-        for skill_name in skill_names:
-            if skill_name in loaded or skill_name in seen:
-                continue
-            skill = self._skills.get(skill_name)
-            if skill is None:
-                continue
-            seen.add(skill_name)
-            requirements.append(
-                SkillRequirement(
-                    skill_name=skill.metadata.name,
-                    guide_path=skill.guide_path,
-                    guide_rel_path=skill.guide_rel_path,
-                )
-            )
-        return requirements
 
     # -- guide injection --------------------------------------------------
 

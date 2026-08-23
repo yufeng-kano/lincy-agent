@@ -80,7 +80,6 @@ def _make_core(tmp_path: Path) -> tuple[AgentCore, NoteStore, _FakeClient]:
             max_tool_iterations=5,
             memory_edit=SimpleNamespace(turn_retry_limit=1),
         ),
-        agents={"brain": SimpleNamespace(staged_planning=SimpleNamespace(enabled=False))},
         features=SimpleNamespace(
             send_message_batch_guidance=SimpleNamespace(enabled=False),
         ),
@@ -191,99 +190,3 @@ def test_dynamic_overlay_absent_when_no_boot_dir_no_notes_no_decision_reminder(
     )
 
     assert prepared.message_overlay is None
-
-
-class _ImmediateFakeClient:
-    """Always finishes immediately with plain content (no tool calls)."""
-
-    def __init__(self, content: str = "done") -> None:
-        self.calls: list[list[Message]] = []
-        self._content = content
-
-    def chat_with_tools(self, messages, tools, temperature=None):
-        del tools, temperature
-        self.calls.append(list(messages))
-        return LLMResponse(content=self._content, tool_calls=[])
-
-
-class _FakeConscienceAgent:
-    """Always reports feedback, forcing the brain re-run branch."""
-
-    def check(self, **kwargs):
-        del kwargs
-        return "add a warmer closing line"
-
-
-def test_conscience_rerun_reuses_turn_overlay_snapshot_and_includes_agent_notes(
-    tmp_path: Path, monkeypatch
-):
-    """The conscience re-run must see the same turn-start overlay snapshot
-    as the primary call (dynamic blocks + common ground), not a fresh
-    rebuild -- see agent/core.py:_maybe_run_conscience_check.
-    """
-    from lincy.agent import core as core_module
-
-    core, note_store, _ = _make_core(tmp_path)
-    # Dedicated client that always finishes in one round: the shared
-    # _FakeClient always opens with a tool call, which is irrelevant noise
-    # for this test (it only cares about the re-run's request content).
-    client = _ImmediateFakeClient()
-    core.client = client
-    core.registry = MagicMock()
-    core.registry.get_definitions.return_value = []
-    core.conscience_agent = _FakeConscienceAgent()
-
-    prepared = core._prepare_turn_attempt(
-        "hello",
-        channel="cli",
-        sender="tester",
-        timestamp=None,
-        turn_metadata={"turn_processing_started_at": "2026-03-12T09:11:00+08:00"},
-    )
-
-    captured_overlays = []
-    real_run_brain_responder = core_module._responder._run_brain_responder
-
-    def _spy_run_brain_responder(**kwargs):
-        captured_overlays.append(kwargs.get("message_overlay"))
-        return real_run_brain_responder(
-            **kwargs,
-            run_responder_fn=core_module._run_responder,
-            stage1_gather_fn=core_module.run_stage1_information_gathering,
-            stage2_plan_fn=core_module.run_stage2_brain_planning,
-        )
-
-    monkeypatch.setattr(core_module, "_run_brain_responder", _spy_run_brain_responder)
-
-    # The note store changes AFTER the primary call's overlay was snapshotted
-    # but BEFORE the conscience re-run. If the re-run reused the identical
-    # snapshot (no re-read of NoteStore), it must still show "original".
-    note_store.update(key="location", value="changed-after-primary")
-
-    primary_response = LLMResponse(content="hi there", tool_calls=[])
-    result = core._maybe_run_conscience_check(
-        response=primary_response,
-        prepared=prepared,
-        channel="cli",
-        sender="tester",
-        is_cancel_requested=None,
-        on_cancel_pending=None,
-    )
-
-    assert result.content == "done"
-    assert len(client.calls) == 1
-
-    # Same object as the primary call's overlay -- not a fresh rebuild.
-    assert len(captured_overlays) == 1
-    assert captured_overlays[0] is prepared.message_overlay
-
-    rerun_request = client.calls[0]
-    user_messages = [m for m in rerun_request if m.role == "user"]
-    latest = user_messages[-1]
-    assert "[conscience-check] add a warmer closing line" in latest.content
-    assert latest.content.count("[Agent Notes]") == 1
-    assert 'location: "original"' in latest.content
-    assert "changed-after-primary" not in latest.content
-
-    for historical in user_messages[:-1]:
-        assert "[Agent Notes]" not in (historical.content or "")

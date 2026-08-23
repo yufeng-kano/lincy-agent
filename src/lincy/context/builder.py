@@ -5,10 +5,7 @@ from pathlib import Path
 
 from ..llm.base import Message
 from ..llm.schema import ContentPart, ToolCall, make_tool_result_message
-from ..send_message_batch_guidance import (
-    all_channel_reminder_variants,
-    build_channel_reminders,
-)
+from ..send_message_batch_guidance import build_channel_reminders
 from ..timezone_utils import localise as tz_localise
 from .cache_breakpoints import build_cache_control
 from .conversation import Conversation
@@ -83,11 +80,6 @@ class ContextBuilder:
         # Parallel list of source SessionEntry objects for identity checks.
         # Used to detect truncation/replace without relying on content comparison.
         self._rendered_conv_sources: list[object] = []
-
-    @classmethod
-    def channel_reminder_variants(cls) -> tuple[str, ...]:
-        """Return all channel reminder variants used by runtime prompting."""
-        return all_channel_reminder_variants()
 
     @property
     def decision_reminder_enabled(self) -> bool:

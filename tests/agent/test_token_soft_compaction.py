@@ -76,7 +76,7 @@ def test_soft_limit_compacts_to_preserve_turns(monkeypatch, tmp_path):
     core = _make_core(tmp_path, provider="openrouter", preserve_turns=2, soft_limit=128_000)
     _seed_turns(core.conversation, 4)
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok",
             tool_calls=[],
@@ -90,7 +90,7 @@ def test_soft_limit_compacts_to_preserve_turns(monkeypatch, tmp_path):
             cb(response)
         return response
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
 
     core.run_turn("new message", output_fn=lambda _text: None, channel="cli", sender="tester")
@@ -107,14 +107,14 @@ def test_copilot_missing_usage_shows_unavailable_and_skips_compaction(monkeypatc
     core = _make_core(tmp_path, provider="copilot", preserve_turns=2, soft_limit=128_000)
     _seed_turns(core.conversation, 3)
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(content="ok", tool_calls=[], usage_available=False)
         cb = kwargs.get("on_model_response")
         if cb is not None:
             cb(response)
         return response
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
 
     core.run_turn("copilot turn", output_fn=lambda _text: None, channel="cli", sender="tester")
@@ -145,7 +145,7 @@ def test_soft_limit_uses_remote_codex_compaction_when_injected(monkeypatch, tmp_
 
     core.conversation_compaction_client = _CompactionClient()
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok",
             tool_calls=[],
@@ -159,7 +159,7 @@ def test_soft_limit_uses_remote_codex_compaction_when_injected(monkeypatch, tmp_
             cb(response)
         return response
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
 
     core.run_turn("new message", output_fn=lambda _text: None, channel="cli", sender="tester")
@@ -309,7 +309,7 @@ def test_context_length_overflow_retries_once_with_emergency_compaction(monkeypa
     _seed_turns(core.conversation, 5)
     calls = {"count": 0}
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             raise ContextLengthExceededError("context length exceeded")
@@ -326,7 +326,7 @@ def test_context_length_overflow_retries_once_with_emergency_compaction(monkeypa
             cb(response)
         return response
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
 
     core.run_turn("retry turn", output_fn=lambda _text: None, channel="cli", sender="tester")
@@ -350,7 +350,7 @@ def test_context_length_overflow_retry_preserves_original_timestamp(monkeypatch,
     calls = {"count": 0}
     original_timestamp = datetime(2024, 1, 2, 3, 4, 5)
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             raise ContextLengthExceededError("context length exceeded")
@@ -367,7 +367,7 @@ def test_context_length_overflow_retry_preserves_original_timestamp(monkeypatch,
             cb(response)
         return response
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
 
     core.run_turn(
@@ -441,7 +441,7 @@ def test_memory_sync_side_channel_uses_brain_client(monkeypatch, tmp_path):
 
     captured: dict[str, object] = {}
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok",
             tool_calls=[],
@@ -461,7 +461,7 @@ def test_memory_sync_side_channel_uses_brain_client(monkeypatch, tmp_path):
     def _fake_run_memory_sync_side_channel(client, *_args, **_kwargs):
         captured["client"] = client
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
     monkeypatch.setattr(
         core_module,
@@ -486,7 +486,7 @@ def test_soft_limit_exceeded_forces_memory_sync(monkeypatch, tmp_path):
 
     sync_called = {"count": 0}
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok", tool_calls=[],
             prompt_tokens=140_000, completion_tokens=80,
@@ -503,7 +503,7 @@ def test_soft_limit_exceeded_forces_memory_sync(monkeypatch, tmp_path):
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
     monkeypatch.setattr(core_module, "_run_memory_sync_side_channel", _fake_run_memory_sync_side_channel)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *a, **kw: None)
@@ -525,7 +525,7 @@ def test_soft_limit_exceeded_no_sync_when_targets_met(monkeypatch, tmp_path):
 
     sync_called = {"count": 0}
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok", tool_calls=[],
             prompt_tokens=140_000, completion_tokens=80,
@@ -542,7 +542,7 @@ def test_soft_limit_exceeded_no_sync_when_targets_met(monkeypatch, tmp_path):
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
     monkeypatch.setattr(core_module, "_run_memory_sync_side_channel", _fake_run_memory_sync_side_channel)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *a, **kw: None)
@@ -564,7 +564,7 @@ def test_below_soft_limit_uses_counter_only(monkeypatch, tmp_path):
 
     sync_called = {"count": 0}
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok", tool_calls=[],
             prompt_tokens=50_000, completion_tokens=80,
@@ -581,7 +581,7 @@ def test_below_soft_limit_uses_counter_only(monkeypatch, tmp_path):
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
     monkeypatch.setattr(core_module, "_run_memory_sync_side_channel", _fake_run_memory_sync_side_channel)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *a, **kw: None)
@@ -603,7 +603,7 @@ def test_counter_sync_failed_pre_compaction_retries(monkeypatch, tmp_path):
 
     sync_calls: list[str] = []
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok", tool_calls=[],
             prompt_tokens=140_000, completion_tokens=80,
@@ -625,7 +625,7 @@ def test_counter_sync_failed_pre_compaction_retries(monkeypatch, tmp_path):
             raise RuntimeError("LLM error")  # counter sync fails
         sync_calls.append("pre-compaction")  # pre-compaction retries
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
     monkeypatch.setattr(core_module, "_run_memory_sync_side_channel", _fake_run_memory_sync_side_channel)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *a, **kw: None)
@@ -647,7 +647,7 @@ def test_heartbeat_soft_over_no_accumulated_skips_sync(monkeypatch, tmp_path):
 
     sync_called = {"count": 0}
 
-    def _fake_run_brain_responder(**kwargs):
+    def _fake_run_responder(**kwargs):
         response = LLMResponse(
             content="ok", tool_calls=[],
             prompt_tokens=140_000, completion_tokens=80,
@@ -664,7 +664,7 @@ def test_heartbeat_soft_over_no_accumulated_skips_sync(monkeypatch, tmp_path):
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
 
-    monkeypatch.setattr(core_module, "_run_brain_responder", _fake_run_brain_responder)
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
     monkeypatch.setattr(core_module, "_run_memory_sync_side_channel", _fake_run_memory_sync_side_channel)
     monkeypatch.setattr(core_module, "_run_memory_archive", lambda *a, **kw: None)

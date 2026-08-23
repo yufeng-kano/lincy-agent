@@ -2,10 +2,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from types import SimpleNamespace
-
 from lincy.agent.core import _run_responder
-from lincy.agent.responder import _run_brain_responder
 from lincy.agent.skill_governance import (
     SKILL_PREREQUISITE_TOOL_NAME,
     SkillGovernanceRegistry,
@@ -14,7 +11,7 @@ from lincy.agent.skill_governance import (
 from lincy.agent.turn_context import TurnContext
 from lincy.context.builder import ContextBuilder
 from lincy.context.conversation import Conversation
-from lincy.core.schema import GovernanceRule, SkillGovernanceConfig, ToolsConfig
+from lincy.core.schema import GovernanceRule, SkillGovernanceConfig
 from lincy.llm.schema import LLMResponse, Message, ToolCall, ToolDefinition, ToolParameter
 from lincy.tools.registry import ToolResult
 
@@ -80,20 +77,6 @@ def _tool_definitions() -> list[ToolDefinition]:
     ]
 
 
-def _brain_config():
-    return SimpleNamespace(
-        agents={
-            "brain": SimpleNamespace(
-                staged_planning=SimpleNamespace(enabled=False),
-            ),
-        },
-        tools=ToolsConfig(),
-        features=SimpleNamespace(
-            send_message_batch_guidance=SimpleNamespace(enabled=False),
-        ),
-    )
-
-
 class _Client:
     def __init__(self, responses: list[LLMResponse]):
         self._responses = list(responses)
@@ -120,23 +103,6 @@ class _Registry:
         content = self._results[tool_call.name]
         is_error = isinstance(content, str) and content.startswith("Error")
         return ToolResult(content, is_error=is_error)
-
-
-class _SkillCheckAgent:
-    def __init__(self, selected: list[str]):
-        self.selected = selected
-        self.calls: list[dict[str, object]] = []
-
-    def pick_skill_names(self, *, latest_user_input, skills, loaded_skill_names=None, max_skills=1):
-        self.calls.append(
-            {
-                "latest_user_input": latest_user_input,
-                "skills": list(skills),
-                "loaded_skill_names": set(loaded_skill_names or set()),
-                "max_skills": max_skills,
-            }
-        )
-        return list(self.selected)
 
 
 # -- frontmatter parser tests -------------------------------------------
@@ -374,118 +340,6 @@ def test_run_responder_injects_required_skill_before_discord_send(tmp_path: Path
         and "discord guide body" in str(msg.content)
         for msg in client.calls[1]
     )
-
-
-def test_run_brain_responder_proactively_injects_selected_skill(tmp_path: Path):
-    skill_dir = tmp_path / "kernel" / "builtin-skills" / "skill-creator"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: skill-creator\n"
-        'description: "Create or modify skills."\n'
-        "---\n\n"
-        "skill creator guide body",
-        encoding="utf-8",
-    )
-    skill_registry = SkillGovernanceRegistry.load(
-        tmp_path,
-        governance_config=SkillGovernanceConfig(external_skills_dir=None),
-    )
-    conversation = Conversation()
-    conversation.add("user", "Fix SKILL.md format in personal-skills.", channel="cli")
-    builder = ContextBuilder(system_prompt="sys", agent_os_dir=tmp_path)
-    captured: dict[str, object] = {}
-    console = _console()
-
-    def _fake_run_responder(*args, **kwargs):
-        captured["messages"] = list(args[1])
-        return LLMResponse(content="ok", tool_calls=[])
-
-    result = _run_brain_responder(
-        client=MagicMock(),
-        messages=_base_messages(conversation, builder),
-        tools=_tool_definitions(),
-        conversation=conversation,
-        builder=builder,
-        registry=MagicMock(),
-        console=console,  # type: ignore[arg-type]
-        config=_brain_config(),
-        channel="cli",
-        sender=None,
-        run_responder_fn=_fake_run_responder,
-        skill_registry=skill_registry,
-        skill_check_agent=_SkillCheckAgent(["skill-creator"]),  # type: ignore[arg-type]
-    )
-
-    assert result.content == "ok"
-    injected_tools = [
-        entry for entry in conversation.get_messages()
-        if entry.role == "tool" and entry.name == SKILL_PREREQUISITE_TOOL_NAME
-    ]
-    assert len(injected_tools) == 1
-    assert "skill creator guide body" in str(injected_tools[0].content)
-    passed_messages = captured["messages"]
-    assert any(
-        msg.role == "tool"
-        and msg.name == SKILL_PREREQUISITE_TOOL_NAME
-        and "skill creator guide body" in str(msg.content)
-        for msg in passed_messages
-    )
-    console.print_info.assert_any_call("Loaded skill guide: skill-creator")
-
-
-def test_run_brain_responder_skips_proactive_skill_when_already_loaded(tmp_path: Path):
-    skill_dir = tmp_path / "kernel" / "builtin-skills" / "skill-creator"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: skill-creator\n"
-        'description: "Create or modify skills."\n'
-        "---\n\n"
-        "skill creator guide body",
-        encoding="utf-8",
-    )
-    skill_registry = SkillGovernanceRegistry.load(
-        tmp_path,
-        governance_config=SkillGovernanceConfig(external_skills_dir=None),
-    )
-    conversation = Conversation()
-    conversation.add("user", "Fix SKILL.md format in personal-skills.", channel="cli")
-    old_call = ToolCall(
-        id="old-skill",
-        name=SKILL_PREREQUISITE_TOOL_NAME,
-        arguments={
-            "skill_name": "skill-creator",
-            "path": "kernel/builtin-skills/skill-creator/SKILL.md",
-        },
-    )
-    conversation.add_assistant_with_tools(None, [old_call])
-    conversation.add_tool_result(old_call.id, old_call.name, "already loaded")
-    builder = ContextBuilder(system_prompt="sys", agent_os_dir=tmp_path)
-    console = _console()
-
-    _run_brain_responder(
-        client=MagicMock(),
-        messages=_base_messages(conversation, builder),
-        tools=_tool_definitions(),
-        conversation=conversation,
-        builder=builder,
-        registry=MagicMock(),
-        console=console,  # type: ignore[arg-type]
-        config=_brain_config(),
-        channel="cli",
-        sender=None,
-        run_responder_fn=lambda *args, **kwargs: LLMResponse(content="ok", tool_calls=[]),
-        skill_registry=skill_registry,
-        skill_check_agent=_SkillCheckAgent(["skill-creator"]),  # type: ignore[arg-type]
-    )
-
-    assert sum(
-        1
-        for entry in conversation.get_messages()
-        if entry.role == "tool" and entry.name == SKILL_PREREQUISITE_TOOL_NAME
-    ) == 1
-    console.print_info.assert_any_call("Skill guide already loaded: skill-creator")
 
 
 def test_read_file_of_skill_guide_marks_turn_as_loaded(tmp_path: Path):

@@ -1,16 +1,14 @@
-"""Brain responder loop and staged-planning orchestration."""
+"""Brain responder loop."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .note_store import NoteStore
-    from .skill_check import SkillCheckAgent
     from .shared_state import SharedStateStore
     from .skill_governance import SkillGovernanceRegistry
     from .turn_context import TurnContext
@@ -22,7 +20,7 @@ from ..context.cache_breakpoints import advance_cache_breakpoint
 from ..core.schema import AppConfig
 from ..llm import LLMResponse
 from ..llm.base import LLMClient
-from ..llm.schema import ContentPart, Message, ToolCall, ToolDefinition
+from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import is_failed_memory_edit_result, summarize_memory_edit_failure
 from ..tools import ToolRegistry
 from .tool_setup import should_skip_tool_spinner
@@ -30,27 +28,15 @@ from .run_helpers import (
     _debug_print_responder_output,
     _emit_reasoning_block_if_needed,
     _raise_if_cancel_requested,
-    _surface_error_message,
 )
 from .skill_governance import (
     build_skill_deferral_text,
     build_skill_prerequisite_messages,
 )
-from .staged_planning import (
-    STAGE1_SYNTHETIC_TOOL_NAME,
-    build_plan_context_message,
-    build_stage1_findings_for_conversation,
-    build_stage1_findings_overlay_message,
-    build_stage3_plan_overlay_message,
-    format_stage2_plan_for_tui,
-    run_stage1_information_gathering,
-    run_stage2_brain_planning,
-)
 from .turn_overlay import build_dynamic_turn_overlay_text
 from .ui_event_console import AgentUiPort
 
 logger = logging.getLogger(__name__)
-_PROACTIVE_SKILL_CHECK_MAX_SKILLS = 1
 _STATE_COMMIT_TOOLS = frozenset({"agent_note", "memory_edit", "schedule_action"})
 _READ_ONLY_STATE_TOOL_ACTIONS = {
     "agent_note": frozenset({"list"}),
@@ -192,18 +178,6 @@ def _format_memory_edit_failure_summaries(summaries: list[str]) -> str:
     return text
 
 
-def _make_synthetic_message_overlay(
-    extra_messages: list[Message] | tuple[Message, ...],
-) -> Callable[[list[Message]], list[Message]]:
-    """Return an overlay callback that appends synthetic context messages."""
-    extras = tuple(extra_messages)
-
-    def _overlay(messages: list[Message]) -> list[Message]:
-        return [*messages, *extras]
-
-    return _overlay
-
-
 def _append_text_block(content: str, block: str) -> str:
     """Append a stable note block to the current-turn user message."""
     if not content:
@@ -306,36 +280,6 @@ def _compose_message_overlays(
 _advance_responder_cache_breakpoint = advance_cache_breakpoint
 
 
-def _load_plan_context_files(
-    *,
-    rel_paths: list[str],
-    builder: ContextBuilder,
-    console: AgentUiPort,
-) -> list[tuple[str, str]]:
-    """Load plan_context_files from agent_os_dir and warn on failure."""
-    agent_os_dir = getattr(builder, "agent_os_dir", None)
-    if not isinstance(agent_os_dir, Path):
-        if rel_paths:
-            console.print_warning(
-                "plan_context_files unavailable: agent_os_dir is not set.",
-                indent=2,
-            )
-        return []
-
-    loaded: list[tuple[str, str]] = []
-    for rel_path in rel_paths:
-        try:
-            content = (agent_os_dir / rel_path).read_text(encoding="utf-8")
-            loaded.append((rel_path, content))
-        except Exception as error:
-            console.print_warning(
-                f"plan_context_files: skipping {rel_path}: "
-                f"{_surface_error_message(error)}",
-                indent=2,
-            )
-    return loaded
-
-
 def _maybe_defer_tool_round_for_skills(
     *,
     response: LLMResponse,
@@ -381,110 +325,6 @@ def _maybe_defer_tool_round_for_skills(
             result_msg.content or "",
         )
     return tool_results_this_round
-
-
-def _flatten_message_text(content: object) -> str:
-    """Return plain text from a message content payload."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            part.text
-            for part in content
-            if isinstance(part, ContentPart) and part.type == "text" and part.text
-        )
-    return ""
-
-
-def _latest_user_text_from_conversation(conversation: Conversation) -> str:
-    """Return the latest raw user text from conversation history."""
-    for entry in reversed(conversation.get_messages()):
-        if entry.role != "user":
-            continue
-        text = _flatten_message_text(entry.content).strip()
-        if text:
-            return text
-    return ""
-
-
-def _format_skill_guide_info(prefix: str, skill_names: list[str]) -> str:
-    """Format a concise info line for proactive skill-guide state."""
-    if not skill_names:
-        return prefix
-    return f"{prefix}: {', '.join(skill_names)}"
-
-
-def _maybe_inject_proactive_skill_guides(
-    *,
-    messages: list[Message],
-    conversation: Conversation,
-    builder: ContextBuilder,
-    console: AgentUiPort,
-    skill_registry: "SkillGovernanceRegistry | None",
-    skill_check_agent: "SkillCheckAgent | None",
-) -> list[Message]:
-    """Run the prompt-only skill checker before the first brain response."""
-    if skill_registry is None or skill_check_agent is None:
-        return messages
-
-    latest_user_text = _latest_user_text_from_conversation(conversation)
-    if not latest_user_text:
-        return messages
-
-    loaded_skill_names = skill_registry.loaded_skill_names_from_conversation(conversation)
-    catalog = skill_registry.list_skill_catalog()
-    if not catalog:
-        return messages
-
-    selected_skill_names = skill_check_agent.pick_skill_names(
-        latest_user_input=latest_user_text,
-        skills=catalog,
-        loaded_skill_names=loaded_skill_names,
-        max_skills=_PROACTIVE_SKILL_CHECK_MAX_SKILLS,
-    )
-    if not selected_skill_names:
-        if console.debug:
-            console.print_debug("skill-check", "no proactive skill injection")
-        return messages
-
-    requirements = skill_registry.requirements_for_skill_names(
-        selected_skill_names,
-        loaded_skill_names=loaded_skill_names,
-    )
-    requirement_names = {item.skill_name for item in requirements}
-    already_loaded_names = [
-        name for name in selected_skill_names
-        if name not in requirement_names
-    ]
-    if already_loaded_names:
-        console.print_info(
-            _format_skill_guide_info(
-                "Skill guide already loaded",
-                already_loaded_names,
-            )
-        )
-    injected = skill_registry.build_injected_guides(requirements)
-    if not injected:
-        return messages
-
-    for item in injected:
-        call_msg, result_msg = build_skill_prerequisite_messages(item)
-        conversation.add_assistant_with_tools(None, call_msg.tool_calls or [])
-        conversation.add_tool_result(
-            result_msg.tool_call_id or item.call.id,
-            result_msg.name or item.call.name,
-            result_msg.content or "",
-        )
-    console.print_info(
-        _format_skill_guide_info(
-            "Loaded skill guide",
-            [item.skill_name for item in injected],
-        )
-    )
-    if console.debug:
-        joined = ", ".join(item.skill_name for item in injected)
-        console.print_debug("skill-check", f"proactively injected: {joined}")
-    return builder.build(conversation)
 
 
 def _run_responder(
@@ -816,186 +656,6 @@ def _run_responder(
         response = _call_model(messages)
 
     return response
-
-
-def _run_brain_responder(
-    *,
-    client: LLMClient,
-    messages: list[Message],
-    tools: list[ToolDefinition],
-    conversation: Conversation,
-    builder: ContextBuilder,
-    registry: ToolRegistry,
-    console: AgentUiPort,
-    config: AppConfig,
-    channel: str,
-    sender: str | None,
-    on_before_tool_call: Callable[[ToolCall], None] | None = None,
-    memory_edit_allow_failure: bool = False,
-    max_iterations: int = 10,
-    memory_edit_turn_retry_limit: int = 3,
-    is_cancel_requested: Callable[[], bool] | None = None,
-    on_cancel_pending: Callable[[], None] | None = None,
-    message_overlay: Callable[[list[Message]], list[Message]] | None = None,
-    on_model_response: Callable[[LLMResponse], None] | None = None,
-    run_responder_fn: Callable[..., LLMResponse] | None = None,
-    stage1_gather_fn: Callable[..., object] = run_stage1_information_gathering,
-    stage2_plan_fn: Callable[..., object | None] = run_stage2_brain_planning,
-    skill_registry: "SkillGovernanceRegistry | None" = None,
-    skill_check_agent: "SkillCheckAgent | None" = None,
-    turn_context: "TurnContext | None" = None,
-    check_preempt: Callable[[], bool] | None = None,
-    max_preempts: int = 2,
-) -> LLMResponse:
-    """Run the brain responder, optionally using staged planning."""
-    if run_responder_fn is None:
-        run_responder_fn = _run_responder
-    messages = _maybe_inject_proactive_skill_guides(
-        messages=messages,
-        conversation=conversation,
-        builder=builder,
-        console=console,
-        skill_registry=skill_registry,
-        skill_check_agent=skill_check_agent,
-    )
-
-    responder_kwargs = dict(
-        on_before_tool_call=on_before_tool_call,
-        memory_edit_allow_failure=memory_edit_allow_failure,
-        max_iterations=max_iterations,
-        memory_edit_turn_retry_limit=memory_edit_turn_retry_limit,
-        is_cancel_requested=is_cancel_requested,
-        on_cancel_pending=on_cancel_pending,
-        on_model_response=on_model_response,
-        thinking_channel=channel,
-        thinking_sender=sender,
-        skill_registry=skill_registry,
-        turn_context=turn_context,
-        check_preempt=check_preempt,
-        max_preempts=max_preempts,
-    )
-
-    def run_responder_with_overlay(
-        overlay: Callable[[list[Message]], list[Message]] | None,
-    ) -> LLMResponse:
-        return run_responder_fn(
-            client,
-            messages,
-            tools,
-            conversation,
-            builder,
-            registry,
-            console,
-            message_overlay=overlay,
-            **responder_kwargs,
-        )
-
-    brain_cfg = config.agents.get("brain")
-    staged = getattr(brain_cfg, "staged_planning", None)
-    batch_guidance_enabled = bool(
-        getattr(config.features.send_message_batch_guidance, "enabled", False)
-    )
-    if staged is None or not staged.enabled:
-        return run_responder_with_overlay(message_overlay)
-
-    def raise_cancel() -> None:
-        _raise_if_cancel_requested(
-            is_cancel_requested,
-            on_pending=on_cancel_pending,
-        )
-
-    overlayed_messages = _prepare_turn_call_messages(messages, message_overlay)
-    stage1_max_iterations = max(1, min(staged.gather_max_iterations, max_iterations))
-    has_prior_findings = any(
-        getattr(entry, "name", None) == STAGE1_SYNTHETIC_TOOL_NAME
-        for entry in conversation.get_messages()
-    )
-
-    try:
-        console.print_info("Stage 1/3: gather")
-        stage1 = stage1_gather_fn(
-            client=client,
-            messages=overlayed_messages,
-            all_tools=tools,
-            registry=registry,
-            console=console,
-            raise_if_cancel_requested=raise_cancel,
-            max_iterations=stage1_max_iterations,
-            skip_memory_search_gate=has_prior_findings,
-        )
-        if console.debug:
-            console.print_debug(
-                "staged-plan",
-                f"stage1 tool_calls={stage1.tool_calls} "
-                f"transcript_chars={len(stage1.transcript)}",
-            )
-
-        if (
-            stage1.findings_text
-            and stage1.findings_text != "(no stage1 tools available)"
-        ):
-            stage1_call, stage1_content = build_stage1_findings_for_conversation(
-                stage1.findings_text,
-            )
-            conversation.add_assistant_with_tools(None, [stage1_call])
-            conversation.add_tool_result(
-                stage1_call.id,
-                stage1_call.name,
-                stage1_content,
-            )
-
-        console.print_info("Stage 2/3: plan")
-        stage2_messages = list(overlayed_messages)
-        plan_context_loaded = _load_plan_context_files(
-            rel_paths=staged.plan_context_files,
-            builder=builder,
-            console=console,
-        )
-        plan_context_msg = build_plan_context_message(plan_context_loaded)
-        if plan_context_msg is not None:
-            stage2_messages.append(plan_context_msg)
-        stage2 = stage2_plan_fn(
-            client=client,
-            messages=stage2_messages,
-            stage1=stage1,
-            all_tools=tools,
-            registry=registry,
-            console=console,
-            raise_if_cancel_requested=raise_cancel,
-            send_message_batch_guidance=batch_guidance_enabled,
-            max_iterations=max_iterations,
-        )
-        if stage2 is None:
-            console.print_warning(
-                "Stage 2 planning failed; falling back to legacy responder loop.",
-                indent=2,
-            )
-            return run_responder_with_overlay(message_overlay)
-    except KeyboardInterrupt:
-        raise
-    except Exception as error:
-        logger.warning("Staged planning failed; falling back to legacy responder", exc_info=True)
-        console.print_warning(
-            "Staged planning failed; falling back to legacy responder loop: "
-            f"{_surface_error_message(error)}",
-            indent=2,
-        )
-        return run_responder_with_overlay(message_overlay)
-
-    plan_text = format_stage2_plan_for_tui(stage2.plan_text)
-    console.print_inner_thoughts(channel, sender, f"[PLAN][Stage2]\n{plan_text}")
-
-    stage3_overlay_messages: list[Message] = [
-        build_stage1_findings_overlay_message(stage1.findings_text),
-        build_stage3_plan_overlay_message(stage2.plan_text),
-    ]
-    if plan_context_msg is not None:
-        stage3_overlay_messages.append(plan_context_msg)
-    stage3_extra = _make_synthetic_message_overlay(stage3_overlay_messages)
-    stage3_overlay = _compose_message_overlays(message_overlay, stage3_extra)
-
-    console.print_info("Stage 3/3: execute")
-    return run_responder_with_overlay(stage3_overlay)
 
 
 def _build_common_ground_overlay(

@@ -7,11 +7,9 @@ ContextBuilder's rendered/frozen conversation messages, where they would
 persist forever on every historical user message once frozen by the render
 cache.
 
-Kept in a standalone module rather than living directly in responder.py:
-staged_planning.py also needs DECISION_REMINDER_LABEL to scrub this block
-out of Stage 1 gathering messages, and responder.py already imports
-staged_planning.py, so putting these helpers in responder.py would create
-a circular import.
+Kept in a standalone module rather than living directly in responder.py so
+the block assembly stays testable on its own and responder.py stays focused
+on the tool loop.
 
 Runtime-context time always comes from turn metadata (parse_turn_timing_info),
 never a wall-clock read -- see docs/dev/token-only-context-policy.md.

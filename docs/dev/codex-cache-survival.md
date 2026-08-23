@@ -45,8 +45,7 @@
 
 - 範圍：`~/Library/Mobile Documents/com~apple~CloudDocs/Lincy/session/brain/*`
 - 指標：每個 turn 的**第一個有 usage 的 brain request**
-  - 在目前 session 格式裡，通常是 `round=2`
-  - `round=1` 常是 `skill_check`，沒有 prompt usage
+  - 舊 session 的 `round=1` 可能是子代理呼叫，沒有 prompt usage，要略過
 - gap 定義：`本 turn ts_started - 前一個 turn ts_finished`
 - 觀察目標：`cache_read_tokens / prompt_tokens`
 

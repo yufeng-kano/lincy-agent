@@ -7,14 +7,12 @@ import httpx
 import pymupdf
 
 from lincy.agent.tool_setup import setup_tools
-from lincy.agent.staged_planning import build_stage1_tools
 from lincy.core.schema import ToolsConfig
 from lincy.tools.builtin.web_fetch import (
     WEB_FETCH_DEFINITION,
     _url_cache,
     create_web_fetch,
 )
-from lincy.tools.builtin.web_search import WEB_SEARCH_DEFINITION
 
 
 class _FakeStreamResponse:
@@ -465,8 +463,3 @@ class TestWebFetchWiring:
         registry, _, _ = setup_tools(config, tmp_path)
 
         assert registry.has_tool("web_fetch")
-
-    def test_stage1_whitelist_includes_web_fetch(self):
-        tools = build_stage1_tools([WEB_SEARCH_DEFINITION, WEB_FETCH_DEFINITION])
-
-        assert [tool.name for tool in tools] == ["web_search", "web_fetch"]

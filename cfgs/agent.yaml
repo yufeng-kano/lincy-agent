@@ -288,13 +288,6 @@ agents:
     cache:
       enabled: true
       ttl: "24h"
-    staged_planning:
-      enabled: false
-      gather_max_iterations: 4
-      plan_context_files:
-        - "memory/agent/long-term.md"
-        - "kernel/builtin-skills/index.md"
-        - "personal-skills/index.md"
 
   init:
     llm: cfgs/llm/codex/gpt-5.5/thinking.yaml
@@ -312,20 +305,6 @@ agents:
   vision:
     enabled: true
     llm: cfgs/llm/openrouter/google-gemini-3-flash-preview/no-thinking.yaml
-    llm_request_timeout: 600
-    llm_transient_retries: 1
-    warn_on_failure: true
-
-  skill_checker:
-    enabled: false
-    llm: cfgs/llm/codex/gpt-5.4-mini/no-thinking.yaml
-    llm_request_timeout: 600
-    llm_transient_retries: 1
-    warn_on_failure: true
-
-  conscience:
-    enabled: false
-    llm: cfgs/llm/codex/gpt-5.4-mini/no-thinking.yaml
     llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
