@@ -165,15 +165,6 @@ class DiscordHistoryStore:
                 cursor["last_seen_message_id"] = message_id
             self._persist_cursors()
 
-    def set_channel_filter(self, channel_id: str, filter_mode: str) -> bool:
-        with self._lock:
-            if channel_id not in self._registry:
-                return False
-            self._registry[channel_id]["filter"] = filter_mode
-            self._registry[channel_id]["updated_at"] = _utc_now().isoformat()
-            self._persist_registry()
-            return True
-
     def _ensure_cursor(self, channel_id: str) -> dict[str, Any]:
         entry = self._cursors.get(channel_id)
         if not isinstance(entry, dict):

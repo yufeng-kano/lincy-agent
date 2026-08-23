@@ -337,7 +337,6 @@ class TestProcessInboundLifecycle:
         core.console = MagicMock()
         core.adapters = {}
         core.turn_context = None
-        core.copilot_runtime = None
         core.conversation = Conversation()
         core.run_turn = MagicMock(return_value="completed")
         core._last_proactive_yield = None

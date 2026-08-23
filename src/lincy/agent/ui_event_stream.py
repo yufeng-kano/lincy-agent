@@ -6,10 +6,8 @@ sink untouched and a fan-out wrapper mirrors every event into a per-run JSONL fi
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +31,7 @@ from ..tui.events import (
     UiEvent,
     WarningEvent,
 )
+from ..jsonl_store import JsonlStore
 from ..tui.sink import UiSink
 
 
@@ -123,12 +122,14 @@ def serialize_ui_event(event: UiEvent, *, seq: int) -> UiEventRecord:
     )
 
 
-class UiEventStore:
+class UiEventStore(JsonlStore[UiEventRecord]):
     """Append-only JSONL store for exported UI events, one file per chat-cli run."""
 
+    model_type = UiEventRecord
+    max_recent_limit = _MAX_RECENT_LIMIT
+
     def __init__(self, path: Path) -> None:
-        self.path = path
-        self._lock = threading.Lock()
+        super().__init__(path)
         self._seq = 0
 
     def rotate_on_start(self) -> None:
@@ -144,51 +145,8 @@ class UiEventStore:
             self._seq += 1
             return self._seq
 
-    def append(self, record: UiEventRecord) -> UiEventRecord:
-        """Validate and append one record atomically enough for local JSONL use."""
-        validated = UiEventRecord.model_validate(record)
-        line = validated.model_dump_json() + "\n"
-        with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line)
-        return validated
-
     def recent_events(self, limit: int = _DEFAULT_RECENT_LIMIT) -> list[UiEventRecord]:
-        """Return the most recent valid records in file order."""
-        if not self.path.exists():
-            return []
-        bounded_limit = max(1, min(limit, _MAX_RECENT_LIMIT))
-        records: list[UiEventRecord] = []
-        for raw in self.path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                records.append(UiEventRecord.model_validate_json(line))
-            except Exception:
-                continue
-        return records[-bounded_limit:]
-
-    def read_from_offset(self, offset: int) -> tuple[list[UiEventRecord], int]:
-        """Read valid records appended after *offset* and return the new byte offset."""
-        if not self.path.exists():
-            return [], 0
-        file_size = self.path.stat().st_size
-        start = offset if offset <= file_size else 0
-        records: list[UiEventRecord] = []
-        with self.path.open("r", encoding="utf-8") as fh:
-            fh.seek(start)
-            for raw in fh:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(UiEventRecord.model_validate(json.loads(line)))
-                except Exception:
-                    continue
-            new_offset = fh.tell()
-        return records, new_offset
+        return super().recent_events(limit)
 
 
 class UiEventExportSink:

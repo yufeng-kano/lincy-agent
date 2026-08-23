@@ -45,7 +45,6 @@ from ..gui import (
     GUISessionStore,
     GUIWorker,
 )
-from ..llm.providers.copilot_runtime import CopilotRuntime
 
 from .commands import CommandHandler
 from ..session import SessionManager, pick_session
@@ -271,7 +270,6 @@ def main(user: str, resume: str | None = None) -> None:
     # Surface LLM retry attempts in normal UI (not only debug mode).
     _install_llm_retry_ui_handler(console)
 
-    copilot_runtime = CopilotRuntime(config.features.copilot.initiator_policy)
     session_mgr: SessionManager | None = None
 
     def _provider_kwargs(
@@ -286,10 +284,7 @@ def main(user: str, resume: str | None = None) -> None:
         """Build provider-specific kwargs for create_client."""
         kwargs: dict[str, object] = {}
         if isinstance(llm_config, CopilotConfig):
-            kwargs.update({
-                "runtime": copilot_runtime,
-                "dispatch_mode": dispatch_mode,
-            })
+            kwargs["dispatch_mode"] = dispatch_mode
         if isinstance(llm_config, OpenAIConfig) and cache_retention:
             kwargs["prompt_cache_retention"] = cache_retention
         if isinstance(llm_config, GrokConfig) and cache_namespace is not None:
@@ -565,9 +560,6 @@ def main(user: str, resume: str | None = None) -> None:
         preserve_turns=config.context.preserve_turns,
         provider=brain_agent_config.llm.provider,
         cache_ttl=cache_ttl,
-        format_reminders=config.features.format_reminders.model_dump(),
-        decision_reminder=config.features.decision_reminder.model_dump(),
-        send_message_batch_guidance=config.features.send_message_batch_guidance.enabled,
         fingerprint_boot_files=brain_cache.fingerprint.boot_files,
         fingerprint_boot_files_as_tool=brain_cache.fingerprint.boot_files_as_tool,
     )
@@ -937,7 +929,6 @@ def main(user: str, resume: str | None = None) -> None:
         conversation_compaction_client=conversation_compaction_client,
         compactor_agent=compactor_agent_instance,
         brain_prompt_policy=brain_prompt_policy,
-        copilot_runtime=copilot_runtime if brain_agent_config.llm.provider == "copilot" else None,
         ui_debug=debug,
         ui_show_tool_use=config.tui.show_tool_use,
         ui_timezone=timezone,

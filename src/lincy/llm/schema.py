@@ -400,14 +400,6 @@ class AnthropicMessagePayload(BaseModel):
     content: str | list[AnthropicContent | dict[str, Any]]
 
 
-class AnthropicRequest(BaseModel):
-    model: str
-    messages: list[AnthropicMessagePayload]
-    max_tokens: int
-    system: str | None = None
-    tools: list[AnthropicTool] | None = None
-
-
 class ClaudeCodeMessagePayload(BaseModel):
     role: str
     content: str | list[dict[str, Any]]
@@ -531,12 +523,6 @@ class GeminiContent(BaseModel):
 
 class GeminiSystemInstruction(BaseModel):
     parts: list[GeminiPart] = Field(default_factory=list)
-
-
-class GeminiRequest(BaseModel):
-    contents: list[GeminiContent]
-    system_instruction: GeminiSystemInstruction | None = None
-    tools: list[GeminiToolConfig] | None = None
 
 
 class GeminiCandidate(BaseModel):

@@ -73,6 +73,19 @@ def localise(dt: datetime) -> datetime:
     return dt.astimezone(get_tz())
 
 
+_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def format_local_stamp(dt: datetime) -> str:
+    """Localise and render the repo's standard prompt timestamp.
+
+    Format: ``%Y-%m-%d (Ddd) %H:%M``, e.g. ``2026-03-12 (Thu) 09:11``.
+    """
+    local = localise(dt)
+    day = _DAY_NAMES[local.weekday()]
+    return local.strftime(f"%Y-%m-%d ({day}) %H:%M")
+
+
 # ------------------------------------------------------------------
 # Generic parsing (not tied to the singleton)
 # ------------------------------------------------------------------

@@ -64,7 +64,7 @@ provider kwargs 應由組裝層決定是否傳入，並由對應 provider 的 `c
 
 ## 分層責任（目前實作）
 
-### `src/lincy/core/schema.py`
+### `src/lincy/core/provider_schema.py`
 - 定義 provider-specific config 類型（含各自 reasoning/thinking config）
 - 提供每個 config 的 `validate_reasoning()` / `get_vision()` / `create_client()`
 - 不提供跨 provider 的中央 reasoning 分發

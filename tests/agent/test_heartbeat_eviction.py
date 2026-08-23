@@ -63,7 +63,6 @@ def _make_core(tmp_path, *, turn_context=None):
     core.builder = MagicMock()
     core.config = MagicMock(app=SimpleNamespace(timezone="UTC+8"))
     core.adapters = {}
-    core.copilot_runtime = None
     core.run_turn = MagicMock(return_value="completed")
     return core, q, conv, tc
 

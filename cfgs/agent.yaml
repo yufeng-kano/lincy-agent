@@ -70,34 +70,12 @@ maintenance:
 
 # Feature flags
 features:
-  copilot:
-    initiator_policy:
-      use_default_human_entry_rules: false
-      human_entry_rules:
-        - channel: cli
-        - channel: gmail
-        - channel: line
-        - channel: web
-        - channel: discord
-          metadata_equals:
-            source: dm_immediate
   codex_remote_compaction:
     enabled: true
   icloud_sync_awareness:
     enabled: false
   send_message_batch_guidance:
     enabled: false
-  format_reminders:
-    discord: false
-    gmail: false
-    memory: false
-  decision_reminder:
-    enabled: false
-    inline_section:
-      file: "memory/agent/long-term.md"
-      header: "## 核心價值"
-    files:
-      - "memory/agent/long-term.md"
 
 # Channel adapters
 channels:

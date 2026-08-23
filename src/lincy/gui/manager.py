@@ -336,9 +336,6 @@ MANAGER_TOOLS = MCP_TOOL_DEFS + [
     _REPORT_PROBLEM_DEF,
 ]
 
-_MCP_TOOL_NAMES = {t.name for t in MCP_TOOL_DEFS}
-
-
 class GUITaskResult(BaseModel):
     """Result of a GUI task execution."""
 
