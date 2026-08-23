@@ -395,3 +395,61 @@ def test_web_api_settings_rejects_unknown_override_key(monkeypatch, tmp_path: Pa
 
     with pytest.raises(ValidationError, match="soft_max_prompt_token"):
         WebApiSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    "override, retired_key",
+    [
+        (
+            {"agents": {"brain": {"staged_planning": {"enabled": True}}}},
+            "agents.brain.staged_planning",
+        ),
+        ({"agents": {"skill_checker": {"enabled": False}}}, "agents.skill_checker"),
+        ({"agents": {"conscience": {"enabled": False}}}, "agents.conscience"),
+    ],
+)
+def test_retired_keys_in_override_do_not_block_startup(
+    monkeypatch, tmp_path: Path, caplog, override: dict, retired_key: str
+):
+    """A stale override must not wedge startup.
+
+    load_config() runs before the kernel migrator, and the untracked
+    cfgs/agent.override.yaml sits outside the workspace the migrator scans,
+    so nothing else can repair these keys for an existing install.
+    """
+    _write_base_agent_config(tmp_path)
+    _write_yaml(tmp_path / "agent.override.yaml", override)
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = config_module.load_config("agent.yaml")
+
+    assert config.agents["brain"].llm.model == "gpt-4o"
+    assert retired_key.rsplit(".", 1)[-1] not in config.agents
+    assert retired_key in caplog.text
+
+
+def test_retired_keys_in_base_config_are_dropped(monkeypatch, tmp_path: Path):
+    _write_base_agent_config(tmp_path)
+    raw = yaml.safe_load((tmp_path / "agent.yaml").read_text())
+    raw["agents"]["brain"]["staged_planning"] = {"enabled": True}
+    raw["agents"]["conscience"] = {"enabled": False}
+    _write_yaml(tmp_path / "agent.yaml", raw)
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml", apply_override=False)
+
+    assert "conscience" not in config.agents
+
+
+def test_unknown_override_key_still_fails_loudly(monkeypatch, tmp_path: Path):
+    """Only the explicit retired list is dropped; typos must still fail."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"agents": {"brain": {"stagd_planning": {"enabled": True}}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(ValidationError, match="stagd_planning"):
+        config_module.load_config("agent.yaml")

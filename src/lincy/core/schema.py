@@ -1268,14 +1268,6 @@ LLMConfig = Annotated[
 ]
 
 
-class StagedPlanningConfig(StrictConfigModel):
-    """Brain staged planning (gather -> plan -> execute)."""
-
-    enabled: bool = False
-    gather_max_iterations: int = Field(default=4, ge=1)
-    plan_context_files: list[str] = Field(default_factory=list)
-
-
 class CacheFingerprintConfig(StrictConfigModel):
     """Controls which content is included in the render-cache fingerprint.
 
@@ -1351,8 +1343,6 @@ class AgentConfig(StrictConfigModel):
     # Tools hidden from this agent's tool loop (schema + execution);
     # validated against the registry at startup.
     excluded_tools: list[str] = Field(default_factory=list)
-    # Brain staged planning
-    staged_planning: StagedPlanningConfig = Field(default_factory=StagedPlanningConfig)
     # Prompt caching for cost optimization
     cache: CacheConfig = Field(default_factory=CacheConfig)
 

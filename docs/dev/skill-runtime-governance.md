@@ -85,23 +85,8 @@ Registry 載入後，檢查每個 governance rule 引用的 skill 是否存在�
 
 ## Preflight 機制
 
-掛點在 `responder.py` 的 tool loop（共用路徑，不分 channel 或 staged_planning）。
-
-## Proactive Skill Check
-
-除了 tool governance preflight，brain 在每輪第一次推理前還會先跑一次 prompt-only `skill_checker` 子代理：
-
-1. 取 latest user turn 原始文字
-2. 取所有尚未載入 skill 的 metadata（`name` + `description`）
-3. 讓 `skill_checker` 從 metadata 中挑出少量高信心 skill（目前保守 top-1）
-4. 若命中，沿用同一套 synthetic `_load_skill_prerequisite` assistant/tool pair 先把 guide 注入 conversation
-5. 主 brain 之後才開始正式回應 / tool loop
-
-邊界：
-
-- `skill_checker` 只看 metadata，不讀完整 `SKILL.md`
-- 已在目前 conversation 載入過的 skill 不重複注入
-- 這一步是為了解決 model under-trigger skills；後續 tool governance 仍保留作為兜底
+掛點在 `responder.py` 的 tool loop，是唯一的 guide 注入路徑（不分 channel）。
+模型第一次要求受管工具時才注入 guide；沒有事前的 skill 預測步驟。
 
 ### 缺 prerequisite 時的行為
 

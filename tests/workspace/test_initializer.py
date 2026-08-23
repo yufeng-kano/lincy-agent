@@ -33,7 +33,6 @@ class TestWorkspaceInitializer:
             / "icloud-sync-awareness.md"
         ).exists()
         assert (agent_os_dir / "kernel" / "agents" / "init" / "prompts" / "system.md").exists()
-        assert (agent_os_dir / "kernel" / "agents" / "skill_checker" / "prompts" / "system.md").exists()
         assert (agent_os_dir / "kernel" / "builtin-skills" / "index.md").exists()
         assert (agent_os_dir / "kernel" / "builtin-skills" / "discord-messaging" / "SKILL.md").exists()
         assert (agent_os_dir / "kernel" / "builtin-skills" / "memory-maintenance" / "SKILL.md").exists()

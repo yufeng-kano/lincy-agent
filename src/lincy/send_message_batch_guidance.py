@@ -40,16 +40,6 @@ _DISCORD_REMINDER_BATCH = (
 _GMAIL_REMINDER_BASE = "(one send_message = one email"
 _GMAIL_REMINDER_BATCH = "; do NOT split into multiple calls)"
 
-_STAGE2_MESSAGE_ECONOMY_RULE = (
-    "- Message economy: prefer fewer send_message calls; casual replies "
-    "usually fit in 1-2 messages; if multiple lines serve the same immediate "
-    "ask, reminder, or action, merge them into one send_message; repeated "
-    "rephrasings of the same point should be merged; and Discord DM "
-    "schedule/reminder replies should be split into multiple one-line "
-    "messages only when the points are truly distinct.\n"
-)
-
-
 def build_prompt_fragment_spec(
     *,
     enabled: bool,
@@ -82,16 +72,3 @@ def build_channel_reminders(*, enabled: bool) -> dict[str, str]:
     return reminders
 
 
-def all_channel_reminder_variants() -> tuple[str, ...]:
-    """Return all reminder variants that Stage 1 scrubbing should remove."""
-    variants: list[str] = []
-    for enabled in (False, True):
-        for reminder in build_channel_reminders(enabled=enabled).values():
-            if reminder not in variants:
-                variants.append(reminder)
-    return tuple(variants)
-
-
-def build_stage2_message_economy_rule(*, enabled: bool) -> str:
-    """Build Stage 2 message-economy planning guidance."""
-    return _STAGE2_MESSAGE_ECONOMY_RULE if enabled else ""

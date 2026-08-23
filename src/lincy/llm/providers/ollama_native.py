@@ -67,6 +67,8 @@ def _map_thinking(config: OllamaNativeConfig) -> bool | str:
     return thinking.effort
 
 
+# `_stage1_gather` is no longer produced (staged planning was removed) but
+# stays listed: sessions recorded before the removal still replay those pairs.
 _SYNTHETIC_TOOL_CONTEXT_NAMES = frozenset(
     {
         "read_startup_context",

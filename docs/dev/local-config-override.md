@@ -37,6 +37,7 @@ list 不做元素級合併：`llm_fallbacks`、`excluded_tools`、`boot_files` �
 ## 邊界
 
 - 經 `load_config()` 的讀取路徑（agent 進程與 Web API）以 schema 的 `extra="forbid"` 驗證：override 打錯 key 會在啟動時報錯，不會 silent ignore。
+- 例外是**已退場的 key**（`_RETIRED_CONFIG_PATHS`，`src/lincy/core/config.py`）：這些 key 會被丟棄並印 warning，不讓舊 override 擋住啟動。`load_config()` 在 kernel migration 之前跑，而 `cfgs/agent.override.yaml` 不在 migrator 掃描的 workspace 範圍內，所以沒有其他機制能修它。清單只含實際移除過的 key，打錯字仍然照舊報錯。
 - 不支援「刪除 key」語義（沒有 null sentinel）。
 - **不覆蓋 `cfgs/llm/**`**。本機要用不同的 provider profile，就在 `cfgs/llm/` 下自建檔案再由
   override 指過去；多一層 provider config override 只會讓實際生效值難以追查。

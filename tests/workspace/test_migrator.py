@@ -1382,6 +1382,95 @@ class TestM0172CompactorAgent:
         M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
 
 
+class TestM0173RemoveStagedPlanningAgents:
+    def test_removes_retired_agents_and_staged_planning(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0173_remove_staged_planning_agents import (
+            M0173RemoveStagedPlanningAgents,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "agents:\n"
+            "  brain:\n"
+            "    llm:\n"
+            "      provider: claude_code\n"
+            "      model: test-model\n"
+            "    staged_planning:\n"
+            "      enabled: true\n"
+            "      gather_max_iterations: 4\n"
+            "  skill_checker:\n"
+            "    enabled: false\n"
+            "    llm:\n"
+            "      provider: deepseek\n"
+            "      model: test-model\n"
+            "      thinking:\n"
+            "        enabled: false\n"
+            "  conscience:\n"
+            "    enabled: false\n"
+            "    llm:\n"
+            "      provider: deepseek\n"
+            "      model: test-model\n"
+            "      thinking:\n"
+            "        enabled: false\n",
+            encoding="utf-8",
+        )
+
+        M0173RemoveStagedPlanningAgents().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert "skill_checker" not in config["agents"]
+        assert "conscience" not in config["agents"]
+        assert "staged_planning" not in config["agents"]["brain"]
+        # Validates cleanly against strict AppConfig after the keys are gone.
+        from lincy.core.schema import AppConfig
+
+        AppConfig.model_validate(config)
+
+    def test_removes_stale_skill_checker_prompt_directory(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0173_remove_staged_planning_agents import (
+            M0173RemoveStagedPlanningAgents,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        prompt_dir = kernel_dir / "agents" / "skill_checker"
+        (prompt_dir / "prompts").mkdir(parents=True)
+        (prompt_dir / "prompts" / "system.md").write_text("old skill checker prompt")
+
+        M0173RemoveStagedPlanningAgents().upgrade(kernel_dir, tmp_path / "templates")
+
+        assert not prompt_dir.exists()
+
+    def test_missing_config_files_are_noop(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0173_remove_staged_planning_agents import (
+            M0173RemoveStagedPlanningAgents,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+
+        # Should not raise even though no workspace config exists yet.
+        M0173RemoveStagedPlanningAgents().upgrade(kernel_dir, tmp_path / "templates")
+
+    def test_workspace_without_retired_keys_is_untouched(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0173_remove_staged_planning_agents import (
+            M0173RemoveStagedPlanningAgents,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text("agents:\n  worker:\n    enabled: true\n", encoding="utf-8")
+
+        M0173RemoveStagedPlanningAgents().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config == {"agents": {"worker": {"enabled": True}}}
+
+
 class TestM0169MemoryCurationWarnings:
     """Tests for the memory warning config migration."""
 

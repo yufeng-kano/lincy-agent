@@ -11,7 +11,6 @@ from dotenv import dotenv_values
 from ..agent import AgentCore, setup_tools
 from ..agent.tool_setup import validate_excluded_tools
 from ..agent.compactor_agent import CompactorAgent
-from ..agent.skill_check import SkillCheckAgent
 from ..agent.adapters.cli import CLIAdapter
 from ..agent.contact_map import ContactMap
 from ..agent.thread_registry import ThreadRegistry
@@ -645,30 +644,6 @@ def main(user: str, resume: str | None = None) -> None:
                 model_fingerprint=model_fingerprint,
             )
 
-    skill_check_agent_instance: SkillCheckAgent | None = None
-    skill_check_config = config.agents.get("skill_checker")
-    if skill_check_config and skill_check_config.enabled:
-        skill_check_client = _build_subagent_client(
-            "skill_checker", skill_check_config, session_debug_label="skill_check"
-        )
-        skill_check_prompt = _load_agent_prompt("skill_checker")
-        if skill_check_prompt is not None:
-            skill_check_agent_instance = SkillCheckAgent(
-                skill_check_client,
-                skill_check_prompt,
-            )
-
-    # Conscience agent initialization (post-turn tool-use auditor)
-    from lincy.agent.conscience import ConscienceAgent
-
-    conscience_agent_instance: ConscienceAgent | None = None
-    conscience_config = config.agents.get("conscience")
-    if conscience_config and conscience_config.enabled:
-        conscience_client = _build_subagent_client(
-            "conscience", conscience_config, session_debug_label="conscience"
-        )
-        conscience_agent_instance = ConscienceAgent(conscience_client)
-
     # GUI automation agent initialization
     gui_manager_instance: GUIManager | None = None
     gui_worker_instance: GUIWorker | None = None
@@ -968,8 +943,6 @@ def main(user: str, resume: str | None = None) -> None:
         ui_timezone=timezone,
         task_store=task_store,
         note_store=note_store,
-        skill_check_agent=skill_check_agent_instance,
-        conscience_agent=conscience_agent_instance,
     )
 
     def _token_status_text() -> str:

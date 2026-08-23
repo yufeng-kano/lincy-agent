@@ -136,7 +136,7 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 - 取「目前最新 turn 的 brain responses 的 `max(prompt_tokens)`」，直接讀 `responses.jsonl`，**不等 `turns.jsonl` 落地**
   - `turns.jsonl` 只在 `finish_turn()` 才 append，若以它為來源，turn 進行中整條 bar 會停在**上一輪**的數字，直到本輪結束才跳一次——這正是「不是當下 turn 的真實消耗」的來源
   - 取 max 而非最後一筆，是為了與 TUI 的 `_TurnTokenUsage` 完全一致（turn 內若發生 compaction，prompt 不保證單調遞增）
-- `client_label != "brain"` 的 response（worker-N / memory_sync / skill_check / conscience / web_fetch_summarizer）**不計入**：它們是獨立的 context，不佔 brain 的 context window
+- `client_label != "brain"` 的 response（worker-N / memory_sync / compactor / web_fetch_summarizer）**不計入**：它們是獨立的 context，不佔 brain 的 context window
 - `hard_limit` 由**最後一筆 brain response** 的 provider/model 解析；不得用 `responses[-1]`，那可能是剛結束的 worker，會讓 bar 的天花板莫名跳動
 
 ## Agent 活動流

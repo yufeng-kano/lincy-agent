@@ -5,7 +5,6 @@ from pathlib import Path
 import httpx
 
 from lincy.agent.tool_setup import setup_tools
-from lincy.agent.staged_planning import build_stage1_tools
 from lincy.core.schema import ToolsConfig
 from lincy.tools.builtin.web_search import (
     WEB_SEARCH_DEFINITION,
@@ -190,8 +189,3 @@ class TestWebSearchWiring:
         registry, _, _ = setup_tools(config, tmp_path)
 
         assert not registry.has_tool("web_search")
-
-    def test_stage1_whitelist_includes_web_search(self):
-        tools = build_stage1_tools([WEB_SEARCH_DEFINITION])
-
-        assert [tool.name for tool in tools] == ["web_search"]

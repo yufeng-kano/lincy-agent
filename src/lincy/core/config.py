@@ -119,6 +119,36 @@ def _merge_override(base: dict, override: dict, *, prefix: str = "") -> list[str
     return applied
 
 
+# Config paths removed in kernel 0.76.8 (staged planning, skill_checker,
+# conscience). Kernel migrations cannot repair these: load_config() runs at
+# startup before the migrator, and an untracked cfgs/agent.override.yaml is
+# outside the workspace the migrator scans. Stripping them here keeps an
+# existing install bootable. Unknown keys outside this list still fail strict
+# validation, so typos are not silently ignored -- see
+# docs/dev/local-config-override.md.
+_RETIRED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+    ("agents", "brain", "staged_planning"),
+    ("agents", "skill_checker"),
+    ("agents", "conscience"),
+)
+
+
+def _drop_retired_config_paths(raw: dict, *, source: Path) -> None:
+    """Delete config keys retired by a past release, warning for each one."""
+    for path in _RETIRED_CONFIG_PATHS:
+        node: object = raw
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+        if not isinstance(node, dict) or path[-1] not in node:
+            continue
+        del node[path[-1]]
+        logger.warning(
+            "Ignoring retired config key %s in %s; remove it from the file.",
+            ".".join(path),
+            source,
+        )
+
+
 def load_raw_agent_config(
     config_path: str = "agent.yaml",
     *,
@@ -131,6 +161,7 @@ def load_raw_agent_config(
     """
     full_path = _resolve_cfg_relative_path(config_path)
     raw = _load_yaml(full_path) or {}
+    _drop_retired_config_paths(raw, source=full_path)
 
     if not apply_override:
         return raw
@@ -145,6 +176,7 @@ def load_raw_agent_config(
     if not isinstance(override, dict):
         raise SystemExit(f"Config error: {override_path} must contain a YAML mapping")
 
+    _drop_retired_config_paths(override, source=override_path)
     applied = _merge_override(raw, override)
     if applied:
         logger.info("Applied %s: %s", override_path.name, ", ".join(sorted(applied)))
