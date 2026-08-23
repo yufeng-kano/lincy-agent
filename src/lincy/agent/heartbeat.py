@@ -15,7 +15,7 @@ from .schema import InboundMessage
 logger = logging.getLogger(__name__)
 
 _INTERVAL_RE = re.compile(r"^(\d+)([hm])-(\d+)([hm])$")
-_STARTUP_CONTENT = (
+STARTUP_CONTENT = (
     "[STARTUP]\n"
     "You just woke up. Check your memory for anything important.\n"
     "Greet the user if appropriate, or stay silent."
@@ -66,7 +66,7 @@ def make_heartbeat_message(
 ) -> InboundMessage:
     """Create one recurring heartbeat inbound message."""
     if is_startup:
-        content = _STARTUP_CONTENT
+        content = STARTUP_CONTENT
     else:
         heartbeat_time = tz_localise(not_before) if not_before else tz_now()
         content = _HEARTBEAT_TEMPLATE.format(time=heartbeat_time.strftime("%Y-%m-%d %H:%M"))

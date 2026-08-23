@@ -115,61 +115,6 @@ class _TurnMemorySnapshot:
         return resolve_memory_path(raw_path, self._agent_os_dir)
 
 
-@dataclass
-class TurnTokenUsage:
-    """Per-turn usage aggregation for brain responses."""
-
-    usage_available: bool = False
-    max_prompt_tokens: int | None = None
-    completion_tokens_for_max_prompt: int | None = None
-    total_tokens_for_max_prompt: int | None = None
-    cache_prompt_tokens_for_display: int | None = None
-    cache_read_tokens_for_display: int = 0
-    cache_write_tokens_for_display: int = 0
-    saw_missing_usage: bool = False
-
-    def record(self, response: LLMResponse) -> None:
-        """Track max prompt usage and best cache-read sample separately."""
-        if not response.usage_available:
-            self.saw_missing_usage = True
-            return
-        self.usage_available = True
-        if response.prompt_tokens is None:
-            return
-        if (
-            self.max_prompt_tokens is None
-            or response.prompt_tokens >= self.max_prompt_tokens
-        ):
-            self.max_prompt_tokens = response.prompt_tokens
-            self.completion_tokens_for_max_prompt = response.completion_tokens
-            self.total_tokens_for_max_prompt = response.total_tokens
-        if (
-            self.cache_prompt_tokens_for_display is None
-            or response.cache_read_tokens > self.cache_read_tokens_for_display
-            or (
-                response.cache_read_tokens == self.cache_read_tokens_for_display
-                and response.prompt_tokens >= self.cache_prompt_tokens_for_display
-            )
-        ):
-            self.cache_prompt_tokens_for_display = response.prompt_tokens
-            self.cache_read_tokens_for_display = response.cache_read_tokens
-            self.cache_write_tokens_for_display = response.cache_write_tokens
-
-
-@dataclass
-class LatestTokenStatus:
-    """Latest token usage shown in the status bar."""
-
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
-    cache_prompt_tokens: int | None = None
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    usage_available: bool = False
-    missing_usage: bool = False
-
-
 def _build_memory_sync_reminder(
     missing_targets: list[str],
     turns_accumulated: int = 1,

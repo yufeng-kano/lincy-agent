@@ -210,10 +210,6 @@ class DiscordAdapter:
         return str(self._history.media_dir)
 
     @property
-    def history_base_dir(self) -> str:
-        return str(self._history.base_dir)
-
-    @property
     def history_store(self) -> DiscordHistoryStore:
         return self._history
 

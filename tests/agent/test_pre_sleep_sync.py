@@ -6,10 +6,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from lincy.agent.adapters.scheduler import (
-    SchedulerAdapter,
-    make_pre_sleep_sync_message,
-)
+from lincy.agent.adapters.scheduler import SchedulerAdapter
+from lincy.agent.heartbeat import make_pre_sleep_sync_message
 from lincy.agent.schema import InboundMessage
 from lincy.agent.turn_context import TurnContext
 from lincy.context.conversation import Conversation
@@ -43,7 +41,6 @@ def _make_core(tmp_path, *, turns_since_sync: int = 0):
         ),
     )
     core.adapters = {}
-    core.copilot_runtime = None
     core.run_turn = MagicMock()
     core.client = MagicMock()
     core.registry = MagicMock()

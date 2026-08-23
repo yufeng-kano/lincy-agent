@@ -1,4 +1,4 @@
-# GitHub Copilot Initiator Routing 與 Native Proxy
+# GitHub Copilot Native Proxy
 
 ## 背景
 
@@ -7,36 +7,18 @@ GitHub Copilot 的請求會區分兩種 initiator：
 - `user`: 視為使用者主動發起，會消耗 premium request
 - `agent`: 視為 agent 在同一個工作流中的後續行為，不應重複計費
 
-真正需要控制的不是 message shape，而是「這一發請求在目前 inbound turn 中扮演什麼角色」。
+## 現行架構
 
-## 舊機制為何移除
+### 1. initiator 由 dispatch mode 靜態決定
 
-舊的 `features.copilot_agent_hint` 會對 sub-agent 注入假的 `assistant` message，讓外部 `copilot-api` proxy 以 message history 猜出 `X-Initiator: agent`。
+原本的 turn-scoped `CopilotRuntime`（inbound 分類 + `features.copilot.initiator_policy`
+allowlist）已移除。現在 initiator 在組裝層由 client 的 dispatch mode 靜態決定：
 
-這個做法有兩個問題：
+- brain（`first_user_then_agent`）: `initiator=user`、`interaction_type=conversation-agent`
+- sub-agent / one-shot client（`always_agent`，如 memory editor、vision、GUI worker）:
+  `initiator=agent`、`interaction_type=conversation-subagent`
 
-- 它依賴 message history 猜測，對 one-shot sub-agent 與各種 side-channel 不夠穩
-- 它把計費路由偽裝成 prompt/message hack，不是正式契約
-
-因此新版移除 `copilot_agent_hint`，改成明確的 initiator routing。
-
-## 新架構
-
-### 1. chat-agent 端負責分類 inbound
-
-`AgentCore._process_inbound()` 進入一個 turn-scoped `CopilotRuntime` scope。
-
-每個 inbound 先被分類成：
-
-- `human_entry`: 此 inbound 允許一次 `initiator=user`
-- `agent_entry`: 此 inbound 從頭到尾都必須是 `initiator=agent`
-
-brain agent 在 `human_entry` inbound 中：
-
-- 第一次 Copilot 請求送 `user`
-- 同一個 inbound 之後所有請求都送 `agent`
-
-sub-agent / one-shot client（memory editor、vision、GUI worker 等）固定使用 `always_agent` dispatch mode。`memory_search` 現在是本地 BM25 tool，不再走 sub-agent。
+`interaction_id` 與 `request_id` 每發請求各自產生新的 UUID。
 
 ### 2. Native proxy 接受明確欄位
 
@@ -88,52 +70,14 @@ proxy 支援：
 3. `GITHUB_TOKEN`
 4. token store 檔案
 
-## Inbound policy
-
-runtime 有內建的 agent-only 安全規則，以下 inbound 永遠走 `agent`：
-
-- `channel in {"system", "gui", "shell_task"}`
-- `metadata.system == true`
-- `pre_sleep_sync`
-- `scheduled_reason`
-- `turn_failure_requeue_count`
-- `yield_reschedule_count`
-- Discord review 類來源：`guild_review`、`guild_mention_review`
-
-此外，`InboundMessage.metadata["copilot_entry"]` 可顯式指定：
-
-- `"human"` -> `human_entry`
-- `"agent"` -> `agent_entry`
-
-`cfgs/agent.yaml` 的 `features.copilot.initiator_policy` 只負責 human-entry allowlist，不負責 provider payload：
-
-```yaml
-features:
-  copilot:
-    initiator_policy:
-      use_default_human_entry_rules: false
-      human_entry_rules:
-        - channel: cli
-        - channel: gmail
-        - channel: line
-        - channel: discord
-          metadata_equals:
-            source: dm_immediate
-```
-
-重點是 allowlist。沒有被允許的 inbound，預設都走 `agent_entry`。
-
 ## 相關程式碼
 
 | 檔案 | 說明 |
 |------|------|
-| `src/lincy/llm/providers/copilot_runtime.py` | inbound 分類、turn-scoped request counter、initiator 決策 |
-| `src/lincy/agent/core.py` | 以 inbound scope 包住整個 turn |
 | `src/lincy/cli/app.py` | 在組裝層把 brain/sub-agent 對應到不同 dispatch mode |
-| `src/lincy/llm/providers/copilot.py` | native proxy client，直接送 `/chat` |
+| `src/lincy/llm/providers/copilot.py` | native proxy client，直接送 `/chat`；由 dispatch mode 決定 initiator |
 | `src/copilot_proxy/service.py` | native request -> GitHub Copilot upstream payload / headers |
 | `src/copilot_proxy/__main__.py` | `copilot-proxy` executable |
-| `src/lincy/core/schema.py` | Copilot proxy config 與 initiator policy schema |
-| `cfgs/agent.yaml` | app-level initiator policy |
+| `src/lincy/core/provider_schema.py` | Copilot proxy config schema |
 | `cfgs/llm/copilot/*` | Copilot model profiles，`base_url` 指向 proxy root |
 | `cfgs/supervisor.yaml` | 啟動 `copilot-proxy` process |

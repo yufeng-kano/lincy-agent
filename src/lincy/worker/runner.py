@@ -33,10 +33,6 @@ class WorkerResult:
     error: str | None = None
 
 
-class _DebugSinkProtocol:
-    """Minimal type hint for the session debug sink."""
-
-
 def run_simple_tool_loop(
     client: LLMClient,
     *,

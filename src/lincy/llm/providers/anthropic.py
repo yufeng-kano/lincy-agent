@@ -40,17 +40,20 @@ class AnthropicClient:
         self.has_active_thinking = has_active_thinking(self.thinking)
 
     def _convert_tools(self, tools: list[ToolDefinition]) -> list[AnthropicTool]:
-        return [
-            AnthropicTool(
-                name=tool.name,
-                description=tool.description,
-                input_schema=AnthropicToolInputSchema(
-                    properties=tool.to_json_schema()["properties"],
-                    required=tool.to_json_schema()["required"],
-                ),
+        converted: list[AnthropicTool] = []
+        for tool in tools:
+            schema = tool.to_json_schema()
+            converted.append(
+                AnthropicTool(
+                    name=tool.name,
+                    description=tool.description,
+                    input_schema=AnthropicToolInputSchema(
+                        properties=schema["properties"],
+                        required=schema["required"],
+                    ),
+                )
             )
-            for tool in tools
-        ]
+        return converted
 
     def _convert_messages(
         self, messages: list[Message]

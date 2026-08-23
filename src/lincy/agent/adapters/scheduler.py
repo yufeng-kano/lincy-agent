@@ -10,7 +10,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ..heartbeat import apply_quiet_hours, make_heartbeat_message, random_delay
+from ..heartbeat import (
+    STARTUP_CONTENT,
+    apply_quiet_hours,
+    make_heartbeat_message,
+    random_delay,
+)
 from ..schema import InboundMessage, OutboundMessage
 from ...timezone_utils import now as tz_now
 
@@ -18,13 +23,6 @@ if TYPE_CHECKING:
     from ..core import AgentCore
 
 logger = logging.getLogger(__name__)
-
-_STARTUP_CONTENT = (
-    "[STARTUP]\n"
-    "You just woke up. Check your memory for anything important.\n"
-    "Greet the user if appropriate, or stay silent."
-)
-
 
 def make_upgrade_notice_message(
     *,
@@ -41,27 +39,6 @@ def make_upgrade_notice_message(
             "system": True,
             "upgrade_notice": True,
         },
-        not_before=not_before,
-    )
-
-
-_PRE_SLEEP_SYNC_CONTENT = (
-    "[PRE-SLEEP SYNC]\n"
-    "Memory sync before quiet hours dormancy."
-)
-
-
-def make_pre_sleep_sync_message(
-    *,
-    not_before,
-) -> InboundMessage:
-    """Create a pre-sleep sync InboundMessage (no ``recurring`` flag)."""
-    return InboundMessage(
-        channel="system",
-        content=_PRE_SLEEP_SYNC_CONTENT,
-        priority=5,
-        sender="system",
-        metadata={"system": True, "pre_sleep_sync": True},
         not_before=not_before,
     )
 
@@ -178,7 +155,7 @@ class SchedulerAdapter:
         if self._upgrade_message and self._enqueue_upgrade_notice:
             content = self._upgrade_message
         else:
-            content = _STARTUP_CONTENT
+            content = STARTUP_CONTENT
 
         now = tz_now()
         startup_at = self._apply_quiet_hours(now)

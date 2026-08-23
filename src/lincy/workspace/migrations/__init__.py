@@ -181,6 +181,7 @@ from .m0170_memory_curation import M0170MemoryCuration
 from .m0171_remove_memory_curator_agent import M0171RemoveMemoryCuratorAgent
 from .m0172_compactor_agent import M0172CompactorAgent
 from .m0173_remove_staged_planning_agents import M0173RemoveStagedPlanningAgents
+from .m0174_remove_reminder_copilot_features import M0174RemoveReminderCopilotFeatures
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -354,4 +355,5 @@ ALL_MIGRATIONS = [
     M0171RemoveMemoryCuratorAgent(),
     M0172CompactorAgent(),
     M0173RemoveStagedPlanningAgents(),
+    M0174RemoveReminderCopilotFeatures(),
 ]

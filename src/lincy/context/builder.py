@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..json_store import load_json
 from ..llm.base import Message
 from ..llm.schema import ContentPart, ToolCall, make_tool_result_message
-from ..send_message_batch_guidance import build_channel_reminders
-from ..timezone_utils import localise as tz_localise
+from ..timezone_utils import format_local_stamp
 from .cache_breakpoints import build_cache_control
 from .conversation import Conversation
 
@@ -16,17 +16,11 @@ _TOOL_BOOT_NAME = "read_startup_context"
 _PINNED_CALL_ID = "pinned_ctx_0"
 _PINNED_TOOL_NAME = "read_pinned_context"
 
-_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _RENDERED_STATIC_METADATA_KEY = "rendered_static"
 
 
 class ContextBuilder:
     """Assembles context to send to LLM."""
-
-    # Channel-agnostic reminders keyed by feature name.
-    _GENERAL_REMINDERS: dict[str, str] = {
-        "memory": "(memory: search before answering from memory; edit to save new information)",
-    }
 
     def __init__(
         self,
@@ -37,9 +31,6 @@ class ContextBuilder:
         preserve_turns: int = 6,
         provider: str = "openai",
         cache_ttl: str | None = None,
-        format_reminders: dict[str, bool] | None = None,
-        decision_reminder: dict[str, object] | None = None,
-        send_message_batch_guidance: bool = False,
         fingerprint_boot_files: bool = False,
         fingerprint_boot_files_as_tool: bool = False,
     ):
@@ -52,25 +43,9 @@ class ContextBuilder:
         self.cache_ttl = cache_ttl
         self._fingerprint_boot_files = fingerprint_boot_files
         self._fingerprint_boot_files_as_tool = fingerprint_boot_files_as_tool
-        self._format_reminders = format_reminders or {}
-        self._channel_reminders = build_channel_reminders(
-            enabled=send_message_batch_guidance,
-        )
-        cfg = decision_reminder or {}
-        self._decision_reminder_enabled = bool(cfg.get("enabled"))
-        self._decision_reminder_files = [
-            str(path)
-            for path in (cfg.get("files") or [])
-            if isinstance(path, str) and path
-        ]
-        inline_raw = cfg.get("inline_section")
-        inline = inline_raw if isinstance(inline_raw, dict) else {}
-        self._inline_section_file: str = str(inline.get("file", ""))
-        self._inline_section_header: str = str(inline.get("header", ""))
         self._boot_content_cache: str | None = None
         self._tool_boot_segments: list[tuple[str, str]] = []
         self._pinned_segments: list[tuple[str, str]] = []
-        self._core_values_cache: str | None = None
         # Render cache: frozen rendered content for conversation messages.
         # Keyed by position in conversation.get_messages(). Once a message
         # is no longer the latest user message, its rendered content is
@@ -80,27 +55,6 @@ class ContextBuilder:
         # Parallel list of source SessionEntry objects for identity checks.
         # Used to detect truncation/replace without relying on content comparison.
         self._rendered_conv_sources: list[object] = []
-
-    @property
-    def decision_reminder_enabled(self) -> bool:
-        """Whether the (responder-applied) decision reminder block is enabled."""
-        return self._decision_reminder_enabled
-
-    @property
-    def decision_reminder_files(self) -> list[str]:
-        """Anchor files listed in the decision reminder text."""
-        return self._decision_reminder_files
-
-    @property
-    def decision_reminder_core_values(self) -> str | None:
-        """Core-values section extracted from boot files at reload time.
-
-        Cached by reload_boot_files() (see _extract_section_from_disk) so
-        it stays stable across a turn without re-reading disk; exposed here
-        because the actual decision-reminder text is now assembled by the
-        responder overlay (see agent/turn_overlay.py), not by build().
-        """
-        return self._core_values_cache
 
     def reload_boot_files(self) -> None:
         """Read boot files from disk and cache the result.
@@ -118,10 +72,6 @@ class ContextBuilder:
         )
         self._pinned_segments = self._read_file_segments(
             self._load_pinned_paths(),
-        )
-        self._core_values_cache = self._extract_section_from_disk(
-            self._inline_section_file,
-            self._inline_section_header,
         )
         if self.boot_fingerprint() != old_fingerprint:
             self._rendered_conv.clear()
@@ -301,119 +251,76 @@ class ContextBuilder:
             segments.append((rel_path, content))
         return segments
 
-    def _extract_section_from_disk(
-        self,
-        rel_path: str,
-        header: str,
-    ) -> str | None:
-        """Extract a markdown section from a boot file and cache it.
-
-        Called at reload time so the result is stable across turns.
-        Returns the bullet-list body of the section (without the header),
-        or None if the file/section is not found.
-        """
-        if not self.agent_os_dir or not rel_path or not header:
-            return None
-        full_path = self.agent_os_dir / rel_path
-        try:
-            content = full_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return None
-
-        lines = content.splitlines()
-        collecting = False
-        section_lines: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped == header:
-                collecting = True
-                continue
-            if collecting and stripped.startswith("## "):
-                break
-            if collecting and stripped and not stripped.startswith("<!--"):
-                section_lines.append(stripped)
-
-        return "\n".join(section_lines) if section_lines else None
-
     def _load_pinned_paths(self) -> list[str] | None:
-        """Load pinned context paths from the registry file."""
+        """Load pinned context paths from the registry file.
+
+        A corrupt registry logs a warning (via load_json) instead of
+        silently dropping every pinned file from the prompt.
+        """
         if not self.agent_os_dir:
             return None
         registry = self.agent_os_dir / "state" / "pinned_context.json"
         if not registry.exists():
             return None
-        try:
-            import json
+        data = load_json(registry, default={})
+        pins = data.get("pins", []) if isinstance(data, dict) else []
+        return [p["path"] for p in pins if isinstance(p, dict) and p.get("path")]
 
-            data = json.loads(registry.read_text(encoding="utf-8"))
-            pins = data.get("pins", [])
-            return [p["path"] for p in pins if isinstance(p, dict) and p.get("path")]
-        except Exception:
-            return None
-
-    def _build_tool_boot_messages(self) -> list[Message]:
-        """Build synthetic tool-call/result messages for tool-tier boot files.
+    @staticmethod
+    def _build_synthetic_file_messages(
+        segments: list[tuple[str, str]],
+        *,
+        call_id_prefix: str,
+        tool_name: str,
+    ) -> list[Message]:
+        """Build a synthetic tool-call/result pair for injected files.
 
         Each file gets its own tool result so Anthropic's backward prefix
         checking can cache unchanged files independently.
         """
-        segments = self._tool_boot_segments
         if not segments:
             return []
 
         # One assistant message with parallel tool calls
-        tool_calls = [
-            ToolCall(
-                id=f"{_TOOL_BOOT_CALL_ID}_{i}",
-                name=_TOOL_BOOT_NAME,
-                arguments={"file": rel_path},
-            )
-            for i, (rel_path, _content) in enumerate(segments)
-        ]
         call_msg = Message(
             role="assistant",
             content=None,
-            tool_calls=tool_calls,
+            tool_calls=[
+                ToolCall(
+                    id=f"{call_id_prefix}_{i}",
+                    name=tool_name,
+                    arguments={"file": rel_path},
+                )
+                for i, (rel_path, _content) in enumerate(segments)
+            ],
         )
 
         # One tool result per file (separate cache blocks)
         result_msgs = [
             make_tool_result_message(
-                tool_call_id=f"{_TOOL_BOOT_CALL_ID}_{i}",
-                name=_TOOL_BOOT_NAME,
+                tool_call_id=f"{call_id_prefix}_{i}",
+                name=tool_name,
                 content=f'<file path="{rel_path}">\n{content}\n</file>',
             )
             for i, (rel_path, content) in enumerate(segments)
         ]
         return [call_msg] + result_msgs
 
-    def _build_pinned_context_messages(self) -> list[Message]:
-        """Build synthetic tool-call/result messages for pinned context files."""
-        segments = self._pinned_segments
-        if not segments:
-            return []
-        tool_calls = [
-            ToolCall(
-                id=f"{_PINNED_CALL_ID}_{i}",
-                name=_PINNED_TOOL_NAME,
-                arguments={"file": rel_path},
-            )
-            for i, (rel_path, _content) in enumerate(segments)
-        ]
-        call_msg = Message(
-            role="assistant",
-            content=None,
-            tool_calls=tool_calls,
+    def _build_tool_boot_messages(self) -> list[Message]:
+        """Build synthetic tool messages for tool-tier boot files."""
+        return self._build_synthetic_file_messages(
+            self._tool_boot_segments,
+            call_id_prefix=_TOOL_BOOT_CALL_ID,
+            tool_name=_TOOL_BOOT_NAME,
         )
-        result_msgs = [
-            make_tool_result_message(
-                tool_call_id=f"{_PINNED_CALL_ID}_{i}",
-                name=_PINNED_TOOL_NAME,
-                content=f'<file path="{rel_path}">\n{content}\n</file>',
-            )
-            for i, (rel_path, content) in enumerate(segments)
-        ]
-        return [call_msg] + result_msgs
+
+    def _build_pinned_context_messages(self) -> list[Message]:
+        """Build synthetic tool messages for pinned context files."""
+        return self._build_synthetic_file_messages(
+            self._pinned_segments,
+            call_id_prefix=_PINNED_CALL_ID,
+            tool_name=_PINNED_TOOL_NAME,
+        )
 
     @staticmethod
     def _inject_conversation_cache_breakpoint(
@@ -520,8 +427,8 @@ class ContextBuilder:
 
         # Process conversation messages with render cache. Non-latest
         # messages reuse their frozen rendered content (channel/sender tag,
-        # format reminders, timestamp prefix) so re-rendering stays stable
-        # and cheap across turns.
+        # timestamp prefix) so re-rendering stays stable and cheap across
+        # turns.
         all_msgs = conversation.get_messages()
         last_user_idx = self._find_last_user_message_index(all_msgs)
 
@@ -561,17 +468,8 @@ class ContextBuilder:
                     content = f"[{channel}, from {sender}] {content}"
                 elif channel:
                     content = f"[{channel}] {content}"
-                # Append per-channel format reminder
-                if channel and self._format_reminders.get(channel):
-                    reminder = self._channel_reminders.get(channel)
-                    if reminder:
-                        content = f"{content}\n{reminder}"
-                # Append general reminders
-                for key, text in self._GENERAL_REMINDERS.items():
-                    if self._format_reminders.get(key):
-                        content = f"{content}\n{text}"
                 # Per-turn dynamic blocks ([Runtime Context], [Timing Notice],
-                # [Decision Reminder], [Agent Notes]) are NOT injected here.
+                # [Agent Notes]) are NOT injected here.
                 # They used to be appended to the latest user message and,
                 # once frozen by the render cache, would persist forever on
                 # every historical user message. They are now applied only
@@ -588,10 +486,7 @@ class ContextBuilder:
                 and isinstance(content, str)
                 and content
             ):
-                local_time = tz_localise(msg.timestamp)
-                day = _DAY_NAMES[local_time.weekday()]
-                ts = local_time.strftime(f"%Y-%m-%d ({day}) %H:%M")
-                content = f"[{ts}] {content}"
+                content = f"[{format_local_stamp(msg.timestamp)}] {content}"
 
             rendered = Message(
                 role=msg.role,

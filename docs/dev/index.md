@@ -21,7 +21,7 @@
 |------|------|
 | [skills-guide.md](skills-guide.md) | Skills 建立與修改指南（必讀） |
 | [skill-runtime-governance.md](skill-runtime-governance.md) | Skill prerequisite runtime 治理：`meta.yaml`、tool preflight、synthetic guide 注入 |
-| [copilot-agent-hint.md](copilot-agent-hint.md) | Copilot premium request 省費機制 |
+| [copilot-agent-hint.md](copilot-agent-hint.md) | Copilot native proxy 與 initiator 靜態路由 |
 | [heartbeat.md](heartbeat.md) | 自主喚醒系統（Heartbeat + Scheduled Actions） |
 | [provider-api-spec.md](provider-api-spec.md) | LLM Provider API 規格盤點（官方事實 / adapter 規則 / 實測逆向） |
 | [provider-architecture.md](provider-architecture.md) | LLM Provider 自治架構準則（config/client/factory 邊界） |

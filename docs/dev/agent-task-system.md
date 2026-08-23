@@ -258,7 +258,7 @@ def make_heartbeat_message(
 | `src/lincy/agent/tool_setup.py` | 修改：註冊 `agent_task` tool |
 | `src/lincy/tools/builtin/agent_note.py` | agent_note tool 實作 + guardrail enforcement |
 | `src/lincy/agent/note_store.py` | NoteStore：CRUD + trigger matching + 持久化 |
-| `src/lincy/agent/turn_overlay.py` | `[Runtime Context]` / `[Decision Reminder]` 文字組裝（純函式） |
+| `src/lincy/agent/turn_overlay.py` | `[Runtime Context]` / `[Timing Notice]` 文字組裝（純函式） |
 | `src/lincy/agent/responder.py` | `_build_dynamic_turn_overlay`：組出 notes block 等並疊加到 outgoing request |
 | `src/lincy/tools/registry.py` | 修改：`add_side_effect_tools` method |
 | `src/lincy/cli/app.py` | 修改：初始化 stores、late tool registration |
@@ -331,7 +331,7 @@ location: "新竹" | updated_at 03-29 14:00
 schedule_today: "14:00 開會" | updated_at 03-29 09:00
 ```
 
-注入位置：**responder overlay**，不是 `ContextBuilder.build()`。實際組裝在 `agent/turn_overlay.py:build_dynamic_turn_overlay_text()`（純函式，組出 `[Runtime Context]` + `[Timing Notice]` + `[Decision Reminder]` + `[Agent Notes]`），再由 `agent/responder.py:_build_dynamic_turn_overlay()` 包成 overlay callable，接在 common-ground overlay 之前一起疊加到 outgoing request 的 latest user message（`core.py:_prepare_turn_attempt` 每個 turn attempt 只組裝一次並快取；同一 turn 內的每次 LLM call、包含 tool loop 重建與 overflow retry，都重複套用同一份快取文字，確保 prompt cache 的 BP4 仍然命中）。
+注入位置：**responder overlay**，不是 `ContextBuilder.build()`。實際組裝在 `agent/turn_overlay.py:build_dynamic_turn_overlay_text()`（純函式，組出 `[Runtime Context]` + `[Timing Notice]` + `[Agent Notes]`），再由 `agent/responder.py:_build_dynamic_turn_overlay()` 包成 overlay callable，接在 common-ground overlay 之前一起疊加到 outgoing request 的 latest user message（`core.py:_prepare_turn_attempt` 每個 turn attempt 只組裝一次並快取；同一 turn 內的每次 LLM call、包含 tool loop 重建與 overflow retry，都重複套用同一份快取文字，確保 prompt cache 的 BP4 仍然命中）。
 
 `Conversation`、`ContextBuilder` 的 render cache、以及 session 的 `messages.jsonl` **永遠不會**含有這個 block——只有送給 LLM 的 request（`requests.jsonl` 記錄的內容）才看得到。
 
