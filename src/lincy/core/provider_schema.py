@@ -424,7 +424,7 @@ class KanoProxyConfig(AnthropicConfig):
     provider: Literal["kano_proxy"] = "kano_proxy"
     api_key_env: str | None = "KANO_PROXY_API_KEY"
     base_url: str = Field(
-        default="https://kano-proxy.yuufeng.com/anthropic",
+        default="https://kano-proxy.yuufeng.com/g/lincy/anthropic",
         validate_default=True,
     )
 

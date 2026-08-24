@@ -75,7 +75,7 @@ def test_kano_proxy_url_has_no_double_slash(monkeypatch):
     result = _make_client().chat([Message(role="user", content="hi")])
 
     assert result == "ok"
-    assert calls[0]["url"] == "https://kano-proxy.yuufeng.com/anthropic/v1/messages"
+    assert calls[0]["url"] == "https://kano-proxy.yuufeng.com/g/lincy/anthropic/v1/messages"
     assert "//v1/messages" not in calls[0]["url"]
 
 

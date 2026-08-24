@@ -5,7 +5,7 @@ model: init-agent
 # Dedicated Kano Proxy key. Do not fall back to ANTHROPIC_API_KEY.
 api_key_env: KANO_PROXY_API_KEY
 # Kano Proxy gateway root. The client appends /v1/messages.
-base_url: https://kano-proxy.yuufeng.com/anthropic
+base_url: https://kano-proxy.yuufeng.com/g/lincy/anthropic
 # Output token cap for this profile.
 max_tokens: 32000
 # HTTP timeout in seconds.

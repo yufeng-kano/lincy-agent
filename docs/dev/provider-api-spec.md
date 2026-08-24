@@ -193,7 +193,7 @@
 
 | 項目 | 事實 | 來源類型 | 可信度 | 備註 |
 |------|------|---------|--------|------|
-| Endpoint | `POST /v1/messages` | 假設 Anthropic-compatible / 未驗證 | 低 | 使用者指定 gateway root 為 `https://kano-proxy.yuufeng.com/anthropic`；client 依既有 Anthropic joining convention 附加 `/v1/messages` |
+| Endpoint | `POST /v1/messages` | 假設 Anthropic-compatible / 未驗證 | 低 | 使用者指定 gateway root 為 `https://kano-proxy.yuufeng.com/g/lincy/anthropic`；client 依既有 Anthropic joining convention 附加 `/v1/messages` |
 | Auth | `x-api-key: {api_key}` + `anthropic-version: 2023-06-01` | 假設 Anthropic-compatible / 未驗證 | 低 | 與 Anthropic/Heyroute adapter 相同；key 必須走獨立 env，不可共用 `ANTHROPIC_API_KEY` |
 | Request / response shape | Anthropic Messages API native shape | 假設 Anthropic-compatible / 未驗證 | 低 | 不新增 gateway-specific 欄位 |
 | Thinking | `thinking: {"type": "adaptive"|"enabled"|"disabled"}`；enabled 可帶 `budget_tokens` | 假設 Anthropic-compatible / 未驗證 | 低 | 完全沿用本專案 Anthropic adapter shape |
@@ -205,7 +205,7 @@
 |------|------|---------|------|
 | Provider 名稱 | 使用獨立 `provider: kano_proxy` 與 `KanoProxyConfig` / `KanoProxyClient` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/kano_proxy.py` | 獨立 gateway 路徑；不把 `anthropic` config 改成多個 API 形狀 |
 | Client 實作 | `KanoProxyClient` 繼承 `AnthropicClient`，不複製 payload / response mapping | `src/lincy/llm/providers/kano_proxy.py` | 與 Heyroute 同一模式 |
-| Base URL | 預設 `https://kano-proxy.yuufeng.com/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/anthropic/v1/messages` |
+| Base URL | 預設 `https://kano-proxy.yuufeng.com/g/lincy/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/g/lincy/anthropic/v1/messages` |
 | API key env | 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` + `src/lincy/core/config.py` | 依既有 `api_key_env` 解析規則；不可 fallback 到 `ANTHROPIC_API_KEY` |
 | Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 與 Anthropic adapter 相同而納入 |
 
