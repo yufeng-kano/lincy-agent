@@ -120,53 +120,70 @@ class Conversation:
         self._on_message = on_message
 
     def remove_dangling_tool_calls(self) -> int:
-        """Drop tool-call records whose results never arrived, and orphans.
+        """Drop tool-call records without an adjacent matching result, and orphans.
 
-        A hard interruption (process kill, crash) can persist an assistant
-        tool-call entry without its tool results; provider APIs reject such
-        history outright. Remove the result-less tool calls (dropping the
-        entry entirely when nothing else remains) plus any tool result whose
-        call no longer exists. Returns the number of repaired entries.
+        A hard interruption can persist an assistant tool-call entry without
+        its results. A result in a later turn does not repair that entry:
+        provider APIs require tool results to immediately follow the assistant
+        tool-call turn. Returns the number of repaired entries.
         """
-        result_ids = {
-            entry.message.tool_call_id
-            for entry in self._messages
-            if entry.role == "tool" and entry.message.tool_call_id
-        }
+        result_indexes_by_call: dict[int, set[int]] = {}
+        kept_calls_by_index: dict[int, list[ToolCall]] = {}
 
-        repaired: list[SessionEntry] = []
-        kept_call_ids: set[str] = set()
-        changed = 0
-        for entry in self._messages:
+        for index, entry in enumerate(self._messages):
             msg = entry.message
+            if msg.role != "assistant" or not msg.tool_calls:
+                continue
+            call_ids = {call.id for call in msg.tool_calls}
+            result_ids: set[str] = set()
+            result_indexes: set[int] = set()
+            for result_index in range(index + 1, len(self._messages)):
+                result_entry = self._messages[result_index]
+                if result_entry.role != "tool":
+                    break
+                result_id = result_entry.message.tool_call_id
+                if result_id in call_ids:
+                    result_ids.add(result_id)
+                    result_indexes.add(result_index)
+            kept_calls_by_index[index] = [
+                call for call in msg.tool_calls if call.id in result_ids
+            ]
+            result_indexes_by_call[index] = result_indexes
+
+        permitted_result_indexes = {
+            result_index
+            for indexes in result_indexes_by_call.values()
+            for result_index in indexes
+        }
+        repaired: list[SessionEntry] = []
+        changed = 0
+        for index, entry in enumerate(self._messages):
+            msg = entry.message
+            if msg.role == "tool":
+                if index not in permitted_result_indexes:
+                    changed += 1
+                    continue
+                repaired.append(entry)
+                continue
             if msg.role != "assistant" or not msg.tool_calls:
                 repaired.append(entry)
                 continue
-            kept_calls = [tc for tc in msg.tool_calls if tc.id in result_ids]
+
+            kept_calls = kept_calls_by_index[index]
             if len(kept_calls) == len(msg.tool_calls):
-                kept_call_ids.update(tc.id for tc in msg.tool_calls)
                 repaired.append(entry)
                 continue
             changed += 1
             if not kept_calls and not msg.content:
                 continue
-            kept_call_ids.update(tc.id for tc in kept_calls)
-            new_msg = msg.model_copy(update={"tool_calls": kept_calls or None})
-            repaired.append(entry.model_copy(update={"message": new_msg}))
-
-        final: list[SessionEntry] = []
-        for entry in repaired:
-            if (
-                entry.role == "tool"
-                and entry.message.tool_call_id
-                and entry.message.tool_call_id not in kept_call_ids
-            ):
-                changed += 1
-                continue
-            final.append(entry)
+            repaired.append(
+                entry.model_copy(
+                    update={"message": msg.model_copy(update={"tool_calls": kept_calls or None})}
+                )
+            )
 
         if changed:
-            self._messages = final
+            self._messages = repaired
         return changed
 
     def compact(self, preserve_turns: int) -> int:

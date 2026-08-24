@@ -157,3 +157,25 @@ class TestRemoveDanglingToolCalls:
         roles = [entry.role for entry in entries]
         assert roles == ["user", "user", "assistant", "tool", "assistant"]
         assert entries[2].message.tool_calls[0].id == "t2"
+
+    def test_removes_late_tool_result_and_its_call(self):
+        conversation = Conversation()
+        conversation.add("user", "first")
+        conversation.add_assistant_with_tools(None, [_tool_call("t1")])
+        conversation.add("user", "intervening turn")
+        conversation.add_tool_result("t1", "echo", "late result")
+
+        assert conversation.remove_dangling_tool_calls() == 2
+        entries = conversation.get_messages()
+        assert [entry.role for entry in entries] == ["user", "user"]
+
+    def test_keeps_parallel_results_directly_after_their_call(self):
+        conversation = Conversation()
+        conversation.add("user", "hi")
+        conversation.add_assistant_with_tools(None, [_tool_call("t1"), _tool_call("t2")])
+        conversation.add_tool_result("t2", "echo", "second")
+        conversation.add_tool_result("t1", "echo", "first")
+
+        assert conversation.remove_dangling_tool_calls() == 0
+        entries = conversation.get_messages()
+        assert [entry.message.tool_call_id for entry in entries[2:]] == ["t2", "t1"]
