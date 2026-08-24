@@ -129,7 +129,7 @@ maintenance:
   將更早的訊息轉成單一摘要文字訊息（`role=assistant`、標記 `rendered_static`）插在最前面，
   取代 `compact_local` 直接丟棄的部分；prompt 沿用「保留教訓、約定、情感脈絡、待追事項」的蒸餾紀律，並要求輸出語言與對話一致
 - 第 1 層在 turn 關鍵路徑上（soft limit 觸發），模型選型需考慮延遲，與檔案治理的 03:00 批次不同；
-  預設沿用 `agents.memory_editor` 同款快速 profile（`cfgs/llm/kano-proxy/utility.yaml`），不開額外 timeout/retry
+  但摘要失真的代價高於延遲，故 `cfgs/llm/kano-proxy/compactor.yaml` 採深度 tier，慢的情況交給 fallback，不開額外 timeout/retry
 - 各層以 exception 判定失敗並逐層 fallback；`fallback` flag 標記「因上一層失敗才落到此層」，
   各層皆失敗不得讓 turn 崩潰（`compact_local` 本身是純確定性操作，不會拋錯，是保證不崩潰的最終防線）
 - 第 1 層的 LLM 呼叫會走 `session_debug_label="compactor"`，落在 session debug log 的

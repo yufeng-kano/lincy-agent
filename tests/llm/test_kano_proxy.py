@@ -46,7 +46,7 @@ def _make_client(**kwargs) -> KanoProxyClient:
     return KanoProxyClient(
         KanoProxyConfig(
             provider="kano_proxy",
-            model="lincy-brain-agent",
+            model="brain-agent",
             api_key="test-key",
             **kwargs,
         )
@@ -119,5 +119,5 @@ def test_kano_proxy_effort_and_beta_header(monkeypatch):
 
 
 def test_kano_proxy_default_api_key_env_is_dedicated():
-    config = KanoProxyConfig(provider="kano_proxy", model="lincy-brain-agent")
+    config = KanoProxyConfig(provider="kano_proxy", model="brain-agent")
     assert config.api_key_env == "KANO_PROXY_API_KEY"

@@ -430,7 +430,7 @@ class TestDebugArtifacts:
         pending = mgr.begin_llm_request(
             client_label="brain",
             provider="kano_proxy",
-            model="lincy-brain-agent",
+            model="brain-agent",
             call_type="chat_with_tools",
             messages=[Message(role="user", content="hi")],
             tools=None,
@@ -456,7 +456,7 @@ class TestDebugArtifacts:
         )
         # The intended profile stays untouched; the served fields are additive.
         assert response.provider == "kano_proxy"
-        assert response.model == "lincy-brain-agent"
+        assert response.model == "brain-agent"
         assert response.served_provider == "heyroute"
         assert response.served_model == "deepseek-v3"
         assert response.served_candidate_index == 1
@@ -480,7 +480,7 @@ class TestDebugArtifacts:
         pending = mgr.begin_llm_request(
             client_label="brain",
             provider="kano_proxy",
-            model="lincy-brain-agent",
+            model="brain-agent",
             call_type="chat",
             messages=[Message(role="user", content="hi")],
             tools=None,

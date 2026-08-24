@@ -1,7 +1,7 @@
 # Kano Proxy Anthropic-compatible Messages API profile, not a Claude Code native proxy.
 provider: kano_proxy
 # Gateway model id used by this Kano Proxy profile.
-model: worker-agent
+model: compactor-agent
 # Dedicated Kano Proxy key. Do not fall back to ANTHROPIC_API_KEY.
 api_key_env: KANO_PROXY_API_KEY
 # Kano Proxy gateway root. The client appends /v1/messages.
@@ -19,8 +19,8 @@ vision: true
 thinking:
   type: adaptive
 
-# xhigh is the recommended tier for agentic tool loops on Opus 5. max is left
-# for latency-insensitive one-off work: it overthinks conversational turns and
-# burns the subscription Opus quota faster for little gain here.
+# Compaction rewrites a whole conversation window without losing commitments
+# or open threads, so it gets a deep tier despite running in the turn's
+# critical path.
 output_config:
   effort: xhigh

@@ -74,10 +74,10 @@ def _failover_client(primary, fallback):
         [
             FailoverCandidate(
                 key="kano-primary",
-                label="kano_proxy:lincy-brain-agent",
+                label="kano_proxy:brain-agent",
                 client=primary,
                 provider="kano_proxy",
-                model="lincy-brain-agent",
+                model="brain-agent",
             ),
             FailoverCandidate(
                 key="heyroute-fallback",
@@ -127,7 +127,7 @@ def test_debug_wrapper_records_the_fallback_that_served():
         sink=sink,
         client_label="brain",
         provider="kano_proxy",
-        model="lincy-brain-agent",
+        model="brain-agent",
     )
 
     wrapped.chat_with_tools([Message(role="user", content="hi")], [])
@@ -153,7 +153,7 @@ def test_debug_wrapper_records_served_candidate_on_failure():
         sink=sink,
         client_label="brain",
         provider="kano_proxy",
-        model="lincy-brain-agent",
+        model="brain-agent",
     )
 
     with pytest.raises(httpx.HTTPStatusError):

@@ -125,7 +125,7 @@ def test_repo_agent_config_brain_uses_kano_proxy_with_expected_fallbacks():
 
     brain_llm = config.agents["brain"].llm
     assert brain_llm.provider == "kano_proxy"
-    assert brain_llm.model == "lincy-brain-agent"
+    assert brain_llm.model == "brain-agent"
     assert brain_llm.thinking is not None
     assert brain_llm.thinking.type == "adaptive"
     assert brain_llm.output_config is not None
@@ -143,7 +143,7 @@ def test_repo_agent_config_worker_uses_kano_proxy_with_expected_fallbacks():
 
     worker_llm = config.agents["worker"].llm
     assert worker_llm.provider == "kano_proxy"
-    assert worker_llm.model == "lincy-worker-agent"
+    assert worker_llm.model == "worker-agent"
     assert worker_llm.thinking is not None
     assert worker_llm.thinking.type == "adaptive"
 
@@ -153,16 +153,16 @@ def test_repo_agent_config_worker_uses_kano_proxy_with_expected_fallbacks():
     assert fallbacks[0].thinking.type == "adaptive"
 
 
-def test_repo_agent_config_memory_editor_uses_kano_proxy_utility():
+def test_repo_agent_config_memory_editor_uses_kano_proxy_profile():
     config = config_module.load_config("agent.yaml", apply_override=False)
 
     memory_editor_llm = config.agents["memory_editor"].llm
     assert memory_editor_llm.provider == "kano_proxy"
-    assert memory_editor_llm.model == "lincy-worker-agent"
+    assert memory_editor_llm.model == "memory-editor-agent"
     assert memory_editor_llm.thinking is not None
     assert memory_editor_llm.thinking.type == "adaptive"
     assert memory_editor_llm.output_config is not None
-    assert memory_editor_llm.output_config.effort == "low"
+    assert memory_editor_llm.output_config.effort == "high"
 
     fallbacks = config.agents["memory_editor"].llm_fallbacks
     assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
@@ -366,7 +366,7 @@ def test_retired_llm_paths_in_override_are_rewritten(
     _write_base_agent_config(tmp_path)
     _write_yaml(
         tmp_path / "llm" / "kano-proxy" / "worker.yaml",
-        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+        {"provider": "kano_proxy", "model": "worker-agent", "api_key": "k"},
     )
     _write_yaml(
         tmp_path / "llm" / "anthropic" / "claude-opus-5" / "thinking.yaml",
@@ -391,7 +391,7 @@ def test_retired_llm_paths_in_override_are_rewritten(
         config = config_module.load_config("agent.yaml")
 
     assert config.agents["brain"].llm.provider == "kano_proxy"
-    assert config.agents["brain"].llm.model == "lincy-worker-agent"
+    assert config.agents["brain"].llm.model == "worker-agent"
     fallbacks = config.agents["brain"].llm_fallbacks
     assert [cfg.provider for cfg in fallbacks] == ["anthropic"]
     assert "Rewriting retired LLM profile" in caplog.text
@@ -432,7 +432,7 @@ def test_inline_removed_provider_config_is_rewritten(
     _write_base_agent_config(tmp_path)
     _write_yaml(
         tmp_path / "llm" / "kano-proxy" / "worker.yaml",
-        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+        {"provider": "kano_proxy", "model": "worker-agent", "api_key": "k"},
     )
     _write_yaml(
         tmp_path / "agent.override.yaml",
@@ -455,7 +455,7 @@ def test_existing_profile_under_removed_provider_dir_is_still_rewritten(
     _write_base_agent_config(tmp_path)
     _write_yaml(
         tmp_path / "llm" / "kano-proxy" / "worker.yaml",
-        {"provider": "kano_proxy", "model": "lincy-worker-agent", "api_key": "k"},
+        {"provider": "kano_proxy", "model": "worker-agent", "api_key": "k"},
     )
     _write_yaml(
         tmp_path / "llm" / "codex" / "custom.yaml",

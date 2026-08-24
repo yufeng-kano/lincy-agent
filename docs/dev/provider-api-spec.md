@@ -211,7 +211,7 @@
 
 ### 3. 實測 / 逆向資訊
 
-無。repo 內 curated profiles 使用 gateway 自訂 model id（`lincy-brain-agent`、`lincy-worker-agent`、`lincy-gui-manager`），不是 Anthropic 官方 model id。
+無。repo 內 curated profiles 使用 gateway 自訂 model id（`brain-agent`、`worker-agent`、`gui-manager-agent`），不是 Anthropic 官方 model id。
 
 ---
 

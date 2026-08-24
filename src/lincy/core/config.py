@@ -178,7 +178,7 @@ _RETIRED_LLM_PATH_MAP = {
     "cfgs/llm/heyroute/claude-opus-5/thinking.yaml": "cfgs/llm/anthropic/claude-opus-5/thinking.yaml",
     "cfgs/llm/codex/gpt-5.5/thinking.yaml": "cfgs/llm/kano-proxy/worker.yaml",
     "cfgs/llm/codex/gpt-5.5/low-thinking.yaml": "cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml",
-    "cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml": "cfgs/llm/kano-proxy/utility.yaml",
+    "cfgs/llm/deepseek/deepseek-v4-flash/no-thinking.yaml": "cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml",
     "cfgs/llm/deepseek/deepseek-v4-pro/thinking.yaml": "cfgs/llm/anthropic/claude-opus-5/thinking.yaml",
     "cfgs/llm/deepseek/deepseek-v4-pro/no-thinking.yaml": "cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml",
 }

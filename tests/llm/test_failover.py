@@ -419,10 +419,10 @@ def _served_chain(primary: _StubClient, fallback: _StubClient):
         [
             FailoverCandidate(
                 key="kano-primary",
-                label="kano_proxy:lincy-brain-agent",
+                label="kano_proxy:brain-agent",
                 client=primary,
                 provider="kano_proxy",
-                model="lincy-brain-agent",
+                model="brain-agent",
             ),
             FailoverCandidate(
                 key="heyroute-fallback",
@@ -449,7 +449,7 @@ def test_served_candidate_reports_primary_when_it_answers():
 
     assert served is not None
     assert served.provider == "kano_proxy"
-    assert served.model == "lincy-brain-agent"
+    assert served.model == "brain-agent"
     assert served.index == 0
     assert served.is_fallback is False
 
@@ -512,10 +512,10 @@ def test_served_candidate_is_unknown_without_a_failover_chain():
         [
             FailoverCandidate(
                 key="only",
-                label="kano_proxy:lincy-brain-agent",
+                label="kano_proxy:brain-agent",
                 client=_StubClient(chat_effects=["ok"]),
                 provider="kano_proxy",
-                model="lincy-brain-agent",
+                model="brain-agent",
             )
         ],
         cooldown_seconds=1800,

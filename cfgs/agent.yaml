@@ -266,21 +266,21 @@ agents:
       ttl: "24h"
 
   init:
-    llm: cfgs/llm/kano-proxy/worker.yaml
+    llm: cfgs/llm/kano-proxy/init.yaml
     llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   web_fetch_summarizer:
     enabled: true
-    llm: cfgs/llm/kano-proxy/utility.yaml
+    llm: cfgs/llm/kano-proxy/web-fetch-summarizer.yaml
     llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
 
   vision:
     enabled: true
-    llm: cfgs/llm/openrouter/google-gemini-3-flash-preview/no-thinking.yaml
+    llm: cfgs/llm/kano-proxy/vision.yaml
     llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true
@@ -306,11 +306,12 @@ agents:
 
   # Conversation compaction (see docs/dev/memory-curation.md "對話
   # compaction"): summarizes older turns before the deterministic local
-  # fallback. Runs in the turn's critical path, so pick a fast profile
-  # over a deep-thinking one.
+  # fallback. Runs in the turn's critical path, but a lossy summary costs
+  # more than the latency, so the profile buys depth and the fallback
+  # covers the slow case.
   compactor:
     enabled: true
-    llm: cfgs/llm/kano-proxy/utility.yaml
+    llm: cfgs/llm/kano-proxy/compactor.yaml
     llm_fallbacks:
       - cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml
     llm_request_timeout: 600
@@ -319,7 +320,7 @@ agents:
 
   memory_editor:
     enabled: true
-    llm: cfgs/llm/kano-proxy/utility.yaml
+    llm: cfgs/llm/kano-proxy/memory-editor.yaml
     llm_fallbacks:
       - cfgs/llm/anthropic/claude-haiku-4.5/no-thinking.yaml
     llm_request_timeout: 600
@@ -355,7 +356,7 @@ agents:
   # GUI 任務 loop（gui_manager）已改為 AX-first，不再依賴 worker
   gui_worker:
     enabled: true
-    llm: cfgs/llm/openrouter/google-gemini-3-flash-preview/no-thinking.yaml
+    llm: cfgs/llm/kano-proxy/gui-worker.yaml
     llm_request_timeout: 600
     llm_transient_retries: 1
     warn_on_failure: true

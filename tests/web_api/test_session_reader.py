@@ -37,7 +37,7 @@ def _legacy_response_row() -> dict:
         "round": 1,
         "client_label": "brain",
         "provider": "kano_proxy",
-        "model": "lincy-brain-agent",
+        "model": "brain-agent",
         "call_type": "chat_with_tools",
         "latency_ms": 1200,
         "response": {"content": "ok", "tool_calls": []},

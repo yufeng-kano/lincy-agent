@@ -1,7 +1,7 @@
 # Kano Proxy Anthropic-compatible Messages API profile, not a Claude Code native proxy.
 provider: kano_proxy
 # Gateway model id used by this Kano Proxy profile.
-model: lincy-gui-manager
+model: gui-manager-agent
 # Dedicated Kano Proxy key. Do not fall back to ANTHROPIC_API_KEY.
 api_key_env: KANO_PROXY_API_KEY
 # Kano Proxy gateway root. The client appends /v1/messages.

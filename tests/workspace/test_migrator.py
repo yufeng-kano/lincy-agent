@@ -1325,10 +1325,13 @@ class TestM0172CompactorAgent:
         ).read_text() == "compactor prompt"
 
     def test_upgraded_workspace_config_loads_cleanly(self, tmp_path: Path):
-        """m0172 + m0175 output must validate once llm: <path> refs are resolved."""
+        """m0172 + m0175 + m0176 output must validate once llm: <path> refs resolve."""
         from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent
         from lincy.workspace.migrations.m0175_remove_chat_proxy_providers import (
             M0175RemoveChatProxyProviders,
+        )
+        from lincy.workspace.migrations.m0176_split_kano_proxy_utility_profile import (
+            M0176SplitKanoProxyUtilityProfile,
         )
         from lincy.core.config import load_config
 
@@ -1346,14 +1349,19 @@ class TestM0172CompactorAgent:
         )
 
         M0172CompactorAgent().upgrade(kernel_dir, tmp_path / "templates")
-        # m0172 wrote retired provider paths; m0175 rewrites them in the real
-        # upgrade chain, so validate the chained result.
+        # m0172 wrote retired provider paths; m0175 rewrites them onto the
+        # shared utility profile and m0176 splits that per agent, so validate
+        # the chained result.
         M0175RemoveChatProxyProviders().upgrade(kernel_dir, tmp_path / "templates")
+        M0176SplitKanoProxyUtilityProfile().upgrade(kernel_dir, tmp_path / "templates")
 
         config = load_config(str(config_path))
         assert config.agents["compactor"].enabled is True
         assert config.agents["compactor"].llm.provider == "kano_proxy"
-        assert config.agents["compactor"].llm.model == "lincy-worker-agent"
+        assert config.agents["compactor"].llm.model == "compactor-agent"
+        assert config.agents["memory_editor"].llm.model == "memory-editor-agent"
+        # brain has no dedicated utility replacement: it takes the default.
+        assert config.agents["brain"].llm.model == "web-fetch-summarizer-agent"
 
     def test_existing_compactor_key_is_untouched(self, tmp_path: Path):
         from lincy.workspace.migrations.m0172_compactor_agent import M0172CompactorAgent

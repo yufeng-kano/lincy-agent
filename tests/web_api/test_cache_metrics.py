@@ -333,7 +333,7 @@ def _response(**overrides) -> ResponseMetrics:
         ts=datetime(2026, 4, 11, 12, 0, tzinfo=UTC),
         round=1,
         provider="kano_proxy",
-        model="lincy-brain-agent",
+        model="brain-agent",
         prompt_tokens=1000,
         completion_tokens=100,
         cache_read_tokens=500,
@@ -361,7 +361,7 @@ def test_all_requests_exposes_the_serving_fallback():
 
     # The intended profile is unchanged; the served fields are additive.
     assert rows[0]["provider"] == "kano_proxy"
-    assert rows[0]["model"] == "lincy-brain-agent"
+    assert rows[0]["model"] == "brain-agent"
     assert rows[0]["served_provider"] == "heyroute"
     assert rows[0]["served_model"] == "deepseek-v3"
     assert rows[0]["served_by_fallback"] is True
@@ -373,7 +373,7 @@ def test_all_requests_marks_primary_served_rows_as_not_fallback():
     cache._responses["s1"] = [
         _response(
             served_provider="kano_proxy",
-            served_model="lincy-brain-agent",
+            served_model="brain-agent",
             served_candidate_index=0,
         )
     ]
