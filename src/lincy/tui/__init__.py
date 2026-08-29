@@ -2,7 +2,6 @@
 
 from .app import ChatTextualApp
 from .controller import TextualController, TurnCancelController
-from .history_modal import HistoryModal
 from .events import (
     AssistantTextEvent,
     CtxStatusEvent,
@@ -30,7 +29,6 @@ __all__ = [
     "ErrorEvent",
     "InboundMessageEvent",
     "InterruptStateEvent",
-    "HistoryModal",
     "OutboundMessageEvent",
     "ProcessingFinishedEvent",
     "ProcessingStartedEvent",

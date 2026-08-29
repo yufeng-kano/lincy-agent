@@ -18,7 +18,6 @@ from textual.widgets import Footer, Header, RichLog, Static, TextArea
 
 from .controller import TextualController
 from .events import CtxStatusEvent, InterruptStateEvent, UiEvent
-from .history_modal import HistoryModal
 from .state import UiLogEntry, UiState
 from .sink import QueueUiSink
 from ..timezone_utils import localise as tz_localise
@@ -69,7 +68,6 @@ class ChatTextualApp(App[None]):
 
     BINDINGS = [
         Binding("escape", "interrupt", "Interrupt"),
-        Binding("ctrl+r", "history", "History"),
         Binding("ctrl+c", "ctrl_c", "Clear / Exit"),
         Binding("ctrl+j", "insert_newline", "Newline", show=False),
         Binding("ctrl+s", "submit_input", "Send"),
@@ -362,13 +360,6 @@ class ChatTextualApp(App[None]):
             return
         self._ui.input.clear()
 
-    def _set_input_text(self, text: str) -> None:
-        if self._ui is None:
-            return
-        self._ui.input.clear()
-        if text:
-            self._ui.input.insert(text)
-
     def on_key(self, event) -> None:
         if event.key != "enter":
             return
@@ -397,35 +388,6 @@ class ChatTextualApp(App[None]):
     def action_interrupt(self) -> None:
         if self.controller is not None:
             self.controller.request_interrupt()
-
-    def action_history(self) -> None:
-        if self.controller is None:
-            return
-        options = self.controller.get_history_options()
-        if not options:
-            prefill = self.controller.request_history()
-            if prefill:
-                self._set_input_text(prefill)
-                return
-            self._append_info_line("No history item selected.")
-            return
-        self.push_screen(HistoryModal(options), self._on_history_modal_closed)
-
-    def _on_history_modal_closed(self, selected_index: int | None) -> None:
-        if self.controller is None:
-            return
-        if selected_index is None:
-            return
-        prefill = self.controller.select_history(selected_index)
-        if prefill:
-            self._set_input_text(prefill)
-            return
-        self._append_info_line("No history item selected.")
-
-    def _append_info_line(self, text: str) -> None:
-        if self._ui is None:
-            return
-        self._write_log_entry(UiLogEntry(kind="info", text=text))
 
     def action_ctrl_c(self) -> None:
         now = time.monotonic()

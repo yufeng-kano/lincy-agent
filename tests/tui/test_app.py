@@ -44,28 +44,6 @@ async def test_textual_app_ctrl_c_clears_input():
         assert input_widget.text == ""
 
 
-@pytest.mark.asyncio
-async def test_textual_app_ctrl_r_history_modal_prefills_selection():
-    sink = QueueUiSink()
-    selected: list[int] = []
-    controller = TextualController(
-        ui_sink=sink,
-        on_history_options=lambda: ["latest message", "older message"],
-        on_history_select=lambda idx: (selected.append(idx) or ["latest message", "older message"][idx]),
-    )
-    app = ChatTextualApp(controller=controller)
-
-    async with app.run_test() as pilot:
-        await pilot.press("ctrl+r")
-        await pilot.pause()
-        await pilot.press("down", "enter")
-        await pilot.pause()
-
-        input_widget = app.query_one("#input")
-        assert input_widget.text == "older message"
-        assert selected == [1]
-
-
 def test_textual_app_formats_left_timestamp_with_configured_timezone():
     captured = []
     app = ChatTextualApp()

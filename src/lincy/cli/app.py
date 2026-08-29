@@ -1067,9 +1067,6 @@ def main(user: str, resume: str | None = None) -> None:
         console.print_welcome()
 
     controller.on_submit = cli_adapter.submit_input
-    controller.on_history_request = cli_adapter.select_recent_input
-    controller.on_history_options = cli_adapter.list_recent_inputs
-    controller.on_history_select = cli_adapter.select_recent_input_by_index
     controller.on_exit_request = lambda: agent.request_shutdown(graceful=False)
 
     ui_sink.set_on_emit(app.wake_ui_event_drain)

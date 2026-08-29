@@ -188,12 +188,6 @@ def test_main_wires_bm25_memory_search(monkeypatch, tmp_path: Path):
             pass
         def submit_input(self, text: str) -> bool:
             return False
-        def select_recent_input(self):
-            return None
-        def list_recent_inputs(self, limit: int = 10):
-            return []
-        def select_recent_input_by_index(self, choice: int, limit: int = 10):
-            return None
 
     monkeypatch.setattr(app_module, "CLIAdapter", _DummyCliAdapter)
     monkeypatch.setattr(app_module, "PersistentPriorityQueue", lambda *a, **kw: None)
