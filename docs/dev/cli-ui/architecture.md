@@ -59,7 +59,7 @@
 
 ### Controller
 
-- 接收 UI action（submit / interrupt / history / exit）
+- 接收 UI action（submit / interrupt / exit）
 - 管理取消狀態（`TurnCancelController`）
 - 推送狀態事件（例如 `CtxStatusEvent` / `InterruptStateEvent`）
 
@@ -92,7 +92,6 @@
   - `execute_shell` 已支援 subprocess kill hook
   - `gui_task` manager loop 與 `wait` tool 已支援 cancel hook
   - GUI worker (`ask_worker`) 與其內部 LLM 呼叫仍未支援 in-flight 硬中止
-- `Ctrl+R` 已實作 Textual modal（最近 user turn 選擇與回退預填）
 
 ## SSH / tmux Resize 排障
 

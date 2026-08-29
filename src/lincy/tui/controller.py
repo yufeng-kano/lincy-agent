@@ -67,9 +67,6 @@ class TextualController:
 
     ui_sink: UiSink
     on_submit: Callable[[str], bool] | None = None
-    on_history_request: Callable[[], str | None] | None = None
-    on_history_options: Callable[[], list[str]] | None = None
-    on_history_select: Callable[[int], str | None] | None = None
     on_exit_request: Callable[[], None] | None = None
     cancel: TurnCancelController | None = None
     ctx_provider: Callable[[], str | None] | None = None
@@ -93,24 +90,6 @@ class TextualController:
             return
         self.cancel.request()
         self.cancel.mark_pending()
-
-    def request_history(self) -> str | None:
-        """Trigger history UI flow."""
-        if self.on_history_request is not None:
-            return self.on_history_request()
-        return None
-
-    def get_history_options(self) -> list[str]:
-        """Return selectable history labels for Ctrl+R UI."""
-        if self.on_history_options is None:
-            return []
-        return self.on_history_options() or []
-
-    def select_history(self, index: int) -> str | None:
-        """Apply a history rollback/selection and return prefill text."""
-        if self.on_history_select is not None:
-            return self.on_history_select(index)
-        return self.request_history()
 
     def request_exit(self) -> None:
         """Trigger application exit."""

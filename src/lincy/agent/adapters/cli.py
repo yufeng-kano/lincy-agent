@@ -29,7 +29,6 @@ class CLIAdapter:
     This adapter no longer owns terminal input rendering. It only:
     - validates/submits user text to the agent queue
     - executes slash commands locally
-    - provides history rollback/reuse data for the UI (`Ctrl+R`)
     - emits turn-complete signals back to the UI via `UiSink`
     """
 
@@ -156,53 +155,6 @@ class CLIAdapter:
         self._turn_done.clear()
         self._agent.enqueue(msg)
         return False
-
-    def select_recent_input(self) -> str | None:
-        """Rollback to a recent user turn and return prefill text for editing."""
-        return self.select_recent_input_by_index(0)
-
-    def list_recent_inputs(self, limit: int = 10) -> list[str]:
-        """Return recent user turn previews (most recent first)."""
-        msgs = self._conversation.get_messages()
-        user_turns = [(i, m) for i, m in enumerate(msgs) if m.role == "user"]
-        if not user_turns:
-            return []
-
-        previews: list[str] = []
-        for _idx, msg in reversed(user_turns[-limit:]):
-            content = msg.content or ""
-            if isinstance(content, list):
-                preview = "[non-text message]"
-            else:
-                preview = content.replace("\n", " ").strip()
-                if not preview:
-                    preview = "[empty]"
-            previews.append(preview)
-        return previews
-
-    def select_recent_input_by_index(self, choice: int, limit: int = 10) -> str | None:
-        """Rollback to a selected recent user turn and return prefill text."""
-        msgs = self._conversation.get_messages()
-        user_turns = [(i, m) for i, m in enumerate(msgs) if m.role == "user"]
-        if not user_turns:
-            self._commands._console.print_info("No user history to reuse.")
-            return None
-
-        recent = list(reversed(user_turns[-limit:]))  # most recent first
-        if choice < 0 or choice >= len(recent):
-            self._commands._console.print_warning("History selection out of range.")
-            return None
-
-        selected_idx, selected_msg = recent[choice]
-        prev_input = selected_msg.content or ""
-        if isinstance(prev_input, list):
-            # History reuse only supports text user messages.
-            return None
-
-        self._conversation.truncate_to(selected_idx)
-        self._session_mgr.rewrite_messages(self._conversation.get_messages())
-        self._commands._console.print_info("Rolled back to selected previous input.")
-        return prev_input
 
     # ------------------------------------------------------------------
     # Internal
