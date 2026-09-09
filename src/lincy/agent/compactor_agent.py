@@ -8,6 +8,7 @@ compression, and reply in the conversation's own language.
 
 from __future__ import annotations
 
+from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import ContentPart, Message
 from ..session.schema import SessionEntry
@@ -45,6 +46,7 @@ class CompactorAgent:
         self.client = client
         self.system_prompt = system_prompt
 
+    @llm_session("compactor")
     def summarize(self, entries: list[SessionEntry]) -> str:
         """Summarize a slice of conversation history into distilled text.
 

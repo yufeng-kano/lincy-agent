@@ -10,6 +10,7 @@ from pathlib import Path
 from ..context import ContextBuilder, Conversation
 from ..core.schema import MemoryArchiveConfig
 from ..llm import LLMResponse
+from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import extract_memory_edit_paths
@@ -256,6 +257,7 @@ def _inject_brain_failure_record(
     conversation.add("assistant", "\n".join(parts))
 
 
+@llm_session("memory_sync")
 def _run_memory_sync_side_channel(
     client: LLMClient,
     conversation: Conversation,
@@ -338,6 +340,7 @@ _EMPTY_RESPONSE_NUDGE = (
 )
 
 
+@llm_session("empty_response")
 def _run_empty_response_fallback(
     client: LLMClient,
     conversation: Conversation,

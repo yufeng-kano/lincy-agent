@@ -22,7 +22,7 @@
 | [skills-guide.md](skills-guide.md) | Skills 建立與修改指南（必讀） |
 | [skill-runtime-governance.md](skill-runtime-governance.md) | Skill prerequisite runtime 治理：`meta.yaml`、tool preflight、synthetic guide 注入 |
 | [heartbeat.md](heartbeat.md) | 自主喚醒系統（Heartbeat + Scheduled Actions） |
-| [provider-api-spec.md](provider-api-spec.md) | LLM Provider API 規格盤點（官方事實 / adapter 規則 / 實測逆向） |
+| [provider-api-spec.md](provider-api-spec.md) | LLM Provider API 規格盤點、Kano Proxy 各 agent 的快取 session 生命週期 |
 | [provider-architecture.md](provider-architecture.md) | LLM Provider 自治架構準則（config/client/factory 邊界） |
 | [session-debug-logs.md](session-debug-logs.md) | Brain session debug-first 診斷檔案格式與目前 resume 邊界 |
 | [token-only-context-policy.md](token-only-context-policy.md) | Token-only 上下文策略（soft limit、Copilot usage 缺值、overflow fallback） |

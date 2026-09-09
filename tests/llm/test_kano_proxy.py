@@ -121,3 +121,39 @@ def test_kano_proxy_effort_and_beta_header(monkeypatch):
 def test_kano_proxy_default_api_key_env_is_dedicated():
     config = KanoProxyConfig(provider="kano_proxy", model="brain-agent")
     assert config.api_key_env == "KANO_PROXY_API_KEY"
+
+
+def test_session_metadata_reaches_http_and_survives_retries(monkeypatch):
+    import httpx
+
+    from lincy.llm.retry import with_llm_retry
+    from lincy.llm.session import llm_session
+
+    calls = []
+    original_post = _FakeHttpxClient.post
+
+    def flaky_post(self, url, headers, json):
+        response = original_post(self, url, headers, json)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("test timeout")
+        return response
+
+    _patch_httpx_client(monkeypatch, {"content": [{"type": "text", "text": "ok"}]}, calls)
+    monkeypatch.setattr(_FakeHttpxClient, "post", flaky_post)
+    monkeypatch.setattr("lincy.llm.retry.time.sleep", lambda _: None)
+    client = with_llm_retry(_make_client(), 1)
+    messages = [Message(role="user", content="hi")]
+
+    with llm_session("brain", "saved-session"):
+        client.chat_with_tools(messages, [])
+        client.chat(messages)
+    with llm_session("brain", "saved-session"):
+        client.chat(messages)
+    with llm_session("brain", "new-session"):
+        client.chat(messages)
+    client.chat(messages)
+
+    keys = [call["json"]["metadata"]["user_id"] for call in calls[:5]]
+    assert len(set(keys[:4])) == 1  # Retry, tool loop, and resume.
+    assert keys[4] != keys[0]
+    assert "metadata" not in calls[5]["json"]

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+from uuid import uuid4
 from typing import TYPE_CHECKING, Literal
 
 
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 from ..context import ContextBuilder, Conversation
 from ..core.schema import AppConfig
 from ..llm import LLMResponse
+from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import (
     ContextLengthExceededError,
@@ -251,6 +253,7 @@ class AgentCore:
         self.agent_os_dir = agent_os_dir
         self.user_id = user_id
         self.session_mgr = session_mgr
+        self._llm_session_id = str(uuid4())
         self.display_name = display_name
         self.memory_edit_allow_failure = memory_edit_allow_failure
         self.memory_backup_mgr = memory_backup_mgr
@@ -582,33 +585,39 @@ class AgentCore:
         is_cancel_requested, on_cancel_pending = self._get_turn_cancel_callbacks()
 
         self._reset_turn_token_usage()
-        response = _run_responder(
-            client=self.client,
-            messages=prepared.messages,
-            tools=tools,
-            conversation=self.conversation,
-            builder=self.builder,
-            registry=self.registry,
-            console=self.console,
-            on_before_tool_call=prepared.turn_memory_snapshot.capture_from_tool_call,
-            memory_edit_allow_failure=self.memory_edit_allow_failure,
-            max_iterations=self.config.tools.max_tool_iterations,
-            memory_edit_turn_retry_limit=self.config.tools.memory_edit.turn_retry_limit,
-            is_cancel_requested=is_cancel_requested,
-            on_cancel_pending=on_cancel_pending,
-            message_overlay=prepared.message_overlay,
-            on_model_response=self._record_brain_response_usage,
-            thinking_channel=channel,
-            thinking_sender=sender,
-            skill_registry=getattr(self, "skill_registry", None),
-            turn_context=self.turn_context,
-            check_preempt=self._make_preempt_checker(
-                channel,
-                prepared.turn_metadata.get("scope_id")
-                if prepared.turn_metadata
-                else None,
-            ),
-        )
+        session_id = (
+            self.session_mgr.current_session_id
+            if self.session_mgr is not None
+            else None
+        ) or self._llm_session_id
+        with llm_session("brain", session_id):
+            response = _run_responder(
+                client=self.client,
+                messages=prepared.messages,
+                tools=tools,
+                conversation=self.conversation,
+                builder=self.builder,
+                registry=self.registry,
+                console=self.console,
+                on_before_tool_call=prepared.turn_memory_snapshot.capture_from_tool_call,
+                memory_edit_allow_failure=self.memory_edit_allow_failure,
+                max_iterations=self.config.tools.max_tool_iterations,
+                memory_edit_turn_retry_limit=self.config.tools.memory_edit.turn_retry_limit,
+                is_cancel_requested=is_cancel_requested,
+                on_cancel_pending=on_cancel_pending,
+                message_overlay=prepared.message_overlay,
+                on_model_response=self._record_brain_response_usage,
+                thinking_channel=channel,
+                thinking_sender=sender,
+                skill_registry=getattr(self, "skill_registry", None),
+                turn_context=self.turn_context,
+                check_preempt=self._make_preempt_checker(
+                    channel,
+                    prepared.turn_metadata.get("scope_id")
+                    if prepared.turn_metadata
+                    else None,
+                ),
+            )
 
         self._finalize_turn_token_status()
         final_content, used_fallback_content = _resolve_final_content(

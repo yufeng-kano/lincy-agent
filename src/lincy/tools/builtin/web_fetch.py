@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 from cachetools import TTLCache
+from ...llm.session import llm_session
 from ...llm.schema import Message, ToolDefinition, ToolParameter
 from .image import IMAGE_EXTENSIONS_BY_MIME, html_to_markdown
 
@@ -318,6 +319,7 @@ def _should_skip_summarize(raw: str) -> bool:
     return raw.startswith("Error") or "Image saved to:" in raw
 
 
+@llm_session("web_fetch_summarizer")
 def _summarize_with_llm(
     content: str,
     prompt: str,

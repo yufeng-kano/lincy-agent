@@ -475,3 +475,30 @@ class TestManagerToolDefinitions:
     def test_get_app_state_exposes_text_limit(self):
         get_state = next(t for t in MCP_TOOL_DEFS if t.name == "get_app_state")
         assert "text_limit" in get_state.parameters
+
+
+def test_gui_session_covers_loop_and_resume(tmp_path):
+    from lincy.llm.session import current_llm_session_key
+
+    client = FakeManagerClient([
+        LLMResponse(tool_calls=[ToolCall(id="state", name="get_app_state", arguments={"app": "test"})]),
+        done_response(), done_response(), done_response(),
+    ])
+    keys = []
+    original = client.chat_with_tools
+
+    def record(messages, tools, temperature=None):
+        keys.append(current_llm_session_key())
+        return original(messages, tools, temperature)
+
+    client.chat_with_tools = record
+    manager, _ = make_manager(client, session_store=GUISessionStore(tmp_path), step_delay_min=0, step_delay_max=0)
+    with patch("lincy.gui.manager.activate_app"), patch("lincy.gui.manager.time.sleep"):
+        first = manager.execute_task("first")
+        assert first.success
+        assert manager.execute_task("continue", session_id=first.session_id).success
+        assert manager.execute_task("new task").success
+    assert keys[0] is not None
+    assert keys[0] == keys[1] == keys[2]
+    assert keys[3] != keys[0]
+    assert current_llm_session_key() is None

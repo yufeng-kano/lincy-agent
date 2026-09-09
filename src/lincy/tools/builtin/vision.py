@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from ...llm.session import llm_session
 from ...llm.base import LLMClient
 from ...llm.schema import ContentPart, Message
 
@@ -30,6 +31,7 @@ class VisionAgent:
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
 
+    @llm_session("vision")
     def describe(self, image_parts: list[ContentPart]) -> str:
         """Send image parts to vision LLM and return text description."""
         cache_path = self._cache_path(image_parts)

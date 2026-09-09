@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from ..context.cache_breakpoints import advance_cache_breakpoint
+from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import (
     ContentPart,
@@ -433,8 +434,6 @@ class GUIManager:
         If app_prompt_text is provided, it is appended to the system prompt
         as app-specific context for this execution only.
         """
-        from .session import GUIStepRecord
-
         # Session handling
         gui_session_id = ""
         resume_context = ""
@@ -448,6 +447,27 @@ class GUIManager:
             else:
                 session_data = self.session_store.create(intent)
                 gui_session_id = session_data.session_id
+
+        with llm_session("gui_manager", gui_session_id or None):
+            return self._execute_task_loop(
+                intent=intent,
+                gui_session_id=gui_session_id,
+                resume_context=resume_context,
+                resume_last_app=resume_last_app,
+                app_prompt_text=app_prompt_text,
+            )
+
+    def _execute_task_loop(
+        self,
+        *,
+        intent: str,
+        gui_session_id: str,
+        resume_context: str,
+        resume_last_app: str,
+        app_prompt_text: str | None,
+    ) -> GUITaskResult:
+        """Run all model calls, including the final report, in the task session."""
+        from .session import GUIStepRecord
 
         system_content = self.system_prompt
         if app_prompt_text:

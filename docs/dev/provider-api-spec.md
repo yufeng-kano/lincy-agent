@@ -211,7 +211,17 @@
 
 ### 3. 實測 / 逆向資訊
 
-無。repo 內 curated profiles 使用 gateway 自訂 model id（`brain-agent`、`worker-agent`、`gui-manager-agent`），不是 Anthropic 官方 model id。
+2026-09-09 對照相鄰 kano-proxy repo 的 `docs/api.md`、`src/proxy/dispatch_anthropic_via_openai.ts` 與 `src/providers/codex.ts`：gateway 把 `metadata.user_id` 轉成 Codex `prompt_cache_key` 與 `session_id`。未傳識別時，每次產生新的上游 session。這是 gateway 實作事實，不是 Anthropic 官方快取保證。
+
+### 4. 對話與任務的快取識別
+
+- Kano Proxy adapter 在 request body 加入 `metadata.user_id`，取自呼叫端的 `llm_session` 範圍。識別由 agent 名稱與 session/task ID 雜湊成 64 個 ASCII 字元，不含使用者姓名、prompt 或金鑰。
+- Brain 使用現有持久化 session ID；續聊、resume、tool loop 與重試沿用，新 session 切換。沒有 session store 的 brain 使用 instance 內固定 UUID。
+- Worker 每次任務、init 每次初始化對話各自建立識別；GUI manager 使用 GUI session ID，resume 沿用，無 session store 時每次任務建立 UUID。
+- Memory editor 每次 plan（包含解析重試）、compactor 每次摘要、vision 每次辨識、GUI worker 每次觀察與 web-fetch summarizer 每次摘要各自建立識別。子任務結束後恢復外層識別，並行執行以 `ContextVar` 隔離，不修改共用 client 狀態。
+- 記憶同步（包含錯誤重試）、空回覆補答與 Apple Notes 摘要也各自建立範圍，避免沿用外層 agent 的識別或漏傳。
+- 未進入 session 範圍的直接 adapter 呼叫不自動猜測對話關係，也不送 metadata。所有正式 agent 進入點都須建立範圍；provider factory 不組裝 payload。
+- Claude 的 `cache_control` 保留既有行為。固定識別只修正 Codex session 路由，實際 cache hit 仍取決於相同 prompt 前綴及上游快取狀態；不承諾固定命中率。
 
 ---
 

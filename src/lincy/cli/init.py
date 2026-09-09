@@ -6,6 +6,7 @@ from ..agent.ui_event_console import UiEventConsole
 from ..context import ContextBuilder, Conversation
 from ..core import load_config
 from ..llm import create_agent_client
+from ..llm.session import llm_session
 from ..llm.schema import Message
 from ..tools import (
     ToolRegistry,
@@ -92,6 +93,7 @@ def _setup_tools(config) -> ToolRegistry:
     return registry
 
 
+@llm_session("init")
 def _run_init_agent(config, workspace: WorkspaceManager) -> None:
     """Run init agent conversation to set up persona."""
     if "init" not in config.agents:

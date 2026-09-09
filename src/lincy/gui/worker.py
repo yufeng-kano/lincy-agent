@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import ContentPart, Message
 from ..llm.json_extract import extract_json_object
@@ -97,6 +98,7 @@ class GUIWorker:
         self._screenshot_max_width = screenshot_max_width
         self._screenshot_quality = screenshot_quality
 
+    @llm_session("gui_worker")
     def observe(self, instruction: str) -> WorkerObservation:
         """Take screenshot, send to LLM with instruction, return observation."""
         t0 = time.monotonic()
@@ -120,6 +122,7 @@ class GUIWorker:
         obs.inference_sec = t2 - t1
         return obs
 
+    @llm_session("gui_worker")
     def scan_layout(self) -> str:
         """Capture screenshot and return a comprehensive GUI layout description.
 
@@ -151,6 +154,7 @@ class GUIWorker:
         )
         return raw.strip() if raw else ""
 
+    @llm_session("gui_worker")
     def describe_screen(
         self, context: str, *, save_dir: str | None = None,
     ) -> ScreenDescription:

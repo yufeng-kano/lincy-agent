@@ -157,3 +157,31 @@ def test_worker_runner_survives_console_failure():
 
     assert result.success is True
     assert result.text == "done"
+
+
+def test_worker_session_covers_tool_loop_and_is_new_for_each_task():
+    from lincy.llm.session import current_llm_session_key, llm_session
+
+    client = _FakeWorkerClient([
+        LLMResponse(tool_calls=[ToolCall(id="call", name="echo", arguments={"text": "hi"})]),
+        LLMResponse(content="done"),
+        LLMResponse(content="second task"),
+    ])
+    keys = []
+    original = client.chat_with_tools
+
+    def record(messages, tools, temperature=None):
+        keys.append(current_llm_session_key())
+        return original(messages, tools, temperature)
+
+    client.chat_with_tools = record
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+    with llm_session("brain", "parent"):
+        parent = current_llm_session_key()
+        assert runner.run("first").success
+        assert current_llm_session_key() == parent
+        assert runner.run("second").success
+    assert keys[0] is not None
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]
+    assert parent not in keys

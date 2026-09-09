@@ -10,6 +10,7 @@ from html import escape as html_escape
 import re
 from typing import Any
 
+from ....llm.session import llm_session
 from ....llm.schema import ContentPart, Message, ToolDefinition, ToolParameter
 from .notes_template import (
     _apple_notes_cache_filename,
@@ -470,6 +471,7 @@ return {
         )
         return markdown, image_hashes, has_images
 
+    @llm_session("notes_summarizer")
     def _summarize_note_content(self, *, title: str | None, content_markdown: str) -> str:
         """Generate a short search summary for one note."""
         fallback = _normalize_markdown(content_markdown)[:280]

@@ -11,6 +11,7 @@ from lincy.core.schema import (
 )
 from lincy.memory.editor.planner import MemoryEditPlanner
 from lincy.memory.editor.schema import MemoryEditRequest
+from lincy.llm.session import current_llm_session_key
 
 
 class _PlannerClient:
@@ -25,6 +26,7 @@ class _PlannerClient:
             {
                 "messages": messages,
                 "response_schema": response_schema,
+                "session_key": current_llm_session_key(),
             }
         )
         if not self._responses:
@@ -171,3 +173,6 @@ def test_memory_edit_planner_fallback_keeps_parse_retry_flow():
     retry_messages = client.calls[1]["messages"]
     assert retry_messages[-1].role == "user"
     assert retry_messages[-1].content == "Return valid JSON now."
+    assert client.calls[0]["session_key"] is not None
+    assert client.calls[0]["session_key"] == client.calls[1]["session_key"]
+    assert current_llm_session_key() is None

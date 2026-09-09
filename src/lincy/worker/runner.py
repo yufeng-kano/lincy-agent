@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..context.cache_breakpoints import advance_cache_breakpoint
+from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import Message, make_tool_result_message
 from ..session.debug_client import DebugLoggingLLMClient
@@ -260,6 +261,7 @@ class WorkerRunner:
         )
         return compacted
 
+    @llm_session("worker")
     def run(
         self,
         prompt: str,

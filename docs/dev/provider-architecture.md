@@ -93,6 +93,13 @@ runtime policy（計費/分類優化類的請求路由）不是靜態模型設�
 
 ## 文件同步規則
 
+### 呼叫期間的 session
+
+Agent 的對話／任務進入點以 `llm/session.py` 的 `llm_session` 建立呼叫範圍。
+`ContextVar` 讓重試沿用識別、巢狀子任務結束後恢復父層，並隔離並行任務。
+Provider adapter 自行把識別映射成 API 欄位；不把 session 塞進 YAML、message 內容或可變的共用 client 屬性。
+Kano Proxy 的生命週期規則見 [provider-api-spec.md](provider-api-spec.md)「對話與任務的快取識別」。
+
 當 provider 行為或 adapter 規則變更時：
 1. 先更新 `docs/dev/provider-api-spec.md`
    - 區分「官方 API 事實 / 本專案 adapter 規則 / 實測逆向資訊」

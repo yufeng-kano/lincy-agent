@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from ...llm.session import llm_session
 from ...llm.base import LLMClient
 from ...llm.schema import Message
 from ...llm.json_extract import extract_json_object
@@ -92,6 +93,7 @@ class MemoryEditPlanner:
         self.parse_retry_prompt = parse_retry_prompt or _DEFAULT_PARSE_RETRY_PROMPT
         self.last_raw_response: str | None = None
 
+    @llm_session("memory_editor")
     def plan(
         self,
         *,
