@@ -213,6 +213,8 @@
 
 2026-09-09 對照相鄰 kano-proxy repo 的 `docs/api.md`、`src/proxy/dispatch_anthropic_via_openai.ts` 與 `src/providers/codex.ts`：gateway 把 `metadata.user_id` 轉成 Codex `prompt_cache_key` 與 `session_id`。未傳識別時，每次產生新的上游 session。這是 gateway 實作事實，不是 Anthropic 官方快取保證。
 
+2026-09-14 實測：brain 的 boot files prefix 在 system 之後第一則就是 synthetic `assistant` tool_use（讀記憶檔），沒有前置 user turn。Anthropic 與 Claude 上游接受，但 gateway 把 `brain-agent` 導到 Antigravity Gemini 時，Gemini 對 `contents[0]` 為 model functionCall 一律回 `400 Please ensure that function call turn comes immediately after a user turn or after a function response turn`，整輪連續失敗。修正落在 kano-proxy 的 Gemini 轉換層（`proxy/gemini_wire.ts` 的 `openWithUserTurn`：第一則是 model 就補一個 user turn），本專案 prefix 不變；見 kano-proxy `docs/providers.md` § Antigravity。
+
 ### 4. 對話與任務的快取識別
 
 - Kano Proxy adapter 在 request body 加入 `metadata.user_id`，取自呼叫端的 `llm_session` 範圍。識別由 agent 名稱與 session/task ID 雜湊成 64 個 ASCII 字元，不含使用者姓名、prompt 或金鑰。
