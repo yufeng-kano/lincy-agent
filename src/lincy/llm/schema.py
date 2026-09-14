@@ -355,6 +355,11 @@ class AnthropicContentBlock(BaseModel):
     id: str | None = None
     name: str | None = None
     input: dict[str, Any] | None = None
+    # Extended thinking blocks: `thinking` + `signature`, or `data` for a
+    # redacted block. The signature is what must be replayed verbatim.
+    thinking: str | None = None
+    signature: str | None = None
+    data: str | None = None
 
 
 class AnthropicUsage(BaseModel):

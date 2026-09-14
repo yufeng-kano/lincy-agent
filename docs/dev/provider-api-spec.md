@@ -135,6 +135,7 @@
 | Opus 5 disabled thinking 驗證 | `thinking.type=disabled` + `effort` `xhigh`/`max` 在載入時直接報錯 | `src/lincy/core/schema.py` | 對齊官方 400 限制 |
 | Vision | YAML 使用 plain `vision: true` | `src/lincy/core/schema.py` | 統一為 plain boolean |
 | `provider_overrides` | Anthropic config 不提供 override escape hatch；native fields 已可直接表達 payload | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 舊 `anthropic_thinking*` override 已移除 |
+| Thinking block round-trip | 回應中的 `thinking`（含 `signature`）與 `redacted_thinking` block 原樣存進 `reasoning_details`；thinking 啟用時，重放 assistant 訊息會把有簽名的 thinking block 放在 content 最前面，再接 text 與 tool_use。無簽名的 thinking block 不重放 | `src/lincy/llm/providers/anthropic_messages.py` | Anthropic 要求 tool-use 輪的 thinking block 原樣送回；Kano Proxy 前接 Gemini 時 functionCall 的 `thoughtSignature` 也是掛在相鄰 thinking block 上 |
 
 ### 3. 逆向/實測資訊
 
@@ -214,6 +215,8 @@
 2026-09-09 對照相鄰 kano-proxy repo 的 `docs/api.md`、`src/proxy/dispatch_anthropic_via_openai.ts` 與 `src/providers/codex.ts`：gateway 把 `metadata.user_id` 轉成 Codex `prompt_cache_key` 與 `session_id`。未傳識別時，每次產生新的上游 session。這是 gateway 實作事實，不是 Anthropic 官方快取保證。
 
 2026-09-14 實測：brain 的 boot files prefix 在 system 之後第一則就是 synthetic `assistant` tool_use（讀記憶檔），沒有前置 user turn。Anthropic 與 Claude 上游接受，但 gateway 把 `brain-agent` 導到 Antigravity Gemini 時，Gemini 對 `contents[0]` 為 model functionCall 一律回 `400 Please ensure that function call turn comes immediately after a user turn or after a function response turn`，整輪連續失敗。修正落在 kano-proxy 的 Gemini 轉換層（`proxy/gemini_wire.ts` 的 `openWithUserTurn`：第一則是 model 就補一個 user turn），本專案 prefix 不變；見 kano-proxy `docs/providers.md` § Antigravity。
+
+2026-09-14 實測（續）：上一項修好後，同一輪第二次 request 回 `400 Function call is missing a thought_signature in functionCall parts`。Gemini 3 嚴格要求本輪 functionCall 帶回 `thoughtSignature`；kano-proxy 把它放在回應相鄰的 thinking block 上，但本專案 Anthropic adapter 原本把 thinking block 全部丟掉，重放的 tool_use 就沒簽名。修正為 adapter 保留並重放 thinking block（見 Anthropic adapter 規則）。
 
 ### 4. 對話與任務的快取識別
 

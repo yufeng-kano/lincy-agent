@@ -58,7 +58,9 @@ class AnthropicClient:
     def _convert_messages(
         self, messages: list[Message]
     ) -> tuple[str | list[dict[str, Any]] | None, list[AnthropicMessagePayload]]:
-        system_blocks, converted = convert_messages(messages, AnthropicMessagePayload)
+        system_blocks, converted = convert_messages(
+            messages, AnthropicMessagePayload, replay_thinking=self.has_active_thinking
+        )
         return system_blocks or None, converted
 
     @staticmethod

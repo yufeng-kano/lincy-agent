@@ -293,3 +293,84 @@ def test_active_thinking_omits_temperature(monkeypatch):
     assert result.total_tokens == 5684
     assert result.cache_read_tokens == 2500
     assert result.cache_write_tokens == 64
+
+
+def _thinking_client() -> AnthropicClient:
+    config = AnthropicConfig(
+        provider="anthropic",
+        model="claude-sonnet-test",
+        api_key="test-key",
+        thinking={"type": "adaptive"},
+    )
+    return AnthropicClient(config)
+
+
+def test_response_keeps_signed_thinking_blocks(monkeypatch):
+    payload = {
+        "content": [
+            {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+            {"type": "tool_use", "id": "tool-1", "name": "send_message", "input": {"body": "hi"}},
+        ]
+    }
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+
+    result = _thinking_client().chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert result.reasoning_content == "plan"
+    assert result.reasoning_details == [{"type": "thinking", "thinking": "plan", "signature": "sig-1"}]
+    assert result.tool_calls[0].id == "tool-1"
+
+
+def test_replays_signed_thinking_before_text_and_tool_use(monkeypatch):
+    payload = {"content": [{"type": "text", "text": "done"}]}
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+    history = [
+        Message(role="user", content="hi"),
+        Message(
+            role="assistant",
+            content="calling",
+            reasoning_details=[
+                {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+                {"type": "thinking", "thinking": "unsigned"},
+                {"type": "redacted_thinking", "data": "blob"},
+            ],
+            tool_calls=[ToolCall(id="tool-1", name="send_message", arguments={"body": "hi"})],
+        ),
+        Message(role="tool", content="OK", tool_call_id="tool-1", name="send_message"),
+    ]
+
+    _thinking_client().chat_with_tools(history, [])
+
+    assert calls[0]["json"]["messages"][1]["content"] == [
+        {"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+        {"type": "redacted_thinking", "data": "blob"},
+        {"type": "text", "text": "calling"},
+        {"type": "tool_use", "id": "tool-1", "name": "send_message", "input": {"body": "hi"}},
+    ]
+
+
+def test_disabled_thinking_does_not_replay_thinking_blocks(monkeypatch):
+    payload = {"content": [{"type": "text", "text": "done"}]}
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+    config = AnthropicConfig(
+        provider="anthropic",
+        model="claude-sonnet-test",
+        api_key="test-key",
+        thinking={"type": "disabled"},
+    )
+    history = [
+        Message(role="user", content="hi"),
+        Message(
+            role="assistant",
+            content="answer",
+            reasoning_details=[{"type": "thinking", "thinking": "plan", "signature": "sig-1"}],
+        ),
+        Message(role="user", content="more"),
+    ]
+
+    AnthropicClient(config).chat(history)
+
+    assert calls[0]["json"]["messages"][1]["content"] == [{"type": "text", "text": "answer"}]

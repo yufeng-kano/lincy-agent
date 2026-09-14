@@ -52,8 +52,28 @@ def content_parts_to_blocks(parts: list[ContentPart]) -> list[dict[str, Any]]:
     return blocks
 
 
+THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+
+def thinking_blocks(message: Message) -> list[dict[str, Any]]:
+    """Signed thinking blocks captured from an earlier response, replay-ready.
+
+    Anthropic requires the thinking blocks of a tool-use turn to come back
+    unmodified, and gateways that front Gemini carry the functionCall
+    thoughtSignature on the adjacent thinking block, so dropping them breaks
+    the next tool round on both. Unsigned blocks are not replayable.
+    """
+    blocks: list[dict[str, Any]] = []
+    for raw in message.reasoning_details or []:
+        if raw.get("type") == "thinking" and raw.get("signature"):
+            blocks.append({"type": "thinking", "thinking": raw.get("thinking") or "", "signature": raw["signature"]})
+        elif raw.get("type") == "redacted_thinking" and raw.get("data"):
+            blocks.append({"type": "redacted_thinking", "data": raw["data"]})
+    return blocks
+
+
 def convert_messages(
-    messages: list[Message], payload_type: type[PayloadT]
+    messages: list[Message], payload_type: type[PayloadT], *, replay_thinking: bool = False
 ) -> tuple[list[dict[str, Any]], list[PayloadT]]:
     system_blocks: list[dict[str, Any]] = []
     result: list[PayloadT] = []
@@ -84,8 +104,10 @@ def convert_messages(
             pending_tool_result_index = len(result) - 1
             continue
         if message.role == "assistant" and message.tool_calls:
-            blocks = content_parts_to_blocks(message.content) if isinstance(message.content, list) else []
-            if isinstance(message.content, str) and message.content:
+            blocks = thinking_blocks(message) if replay_thinking else []
+            if isinstance(message.content, list):
+                blocks.extend(content_parts_to_blocks(message.content))
+            elif isinstance(message.content, str) and message.content:
                 block = {"type": "text", "text": message.content}
                 if message.cache_control is not None:
                     block["cache_control"] = message.cache_control
@@ -100,6 +122,8 @@ def convert_messages(
                 if message.cache_control is not None:
                     block["cache_control"] = message.cache_control
                 content = [block]
+            if message.role == "assistant" and replay_thinking:
+                content = thinking_blocks(message) + content
             result.append(payload_type(role=message.role, content=content))
         pending_tool_result_index = None
     return system_blocks, result
@@ -108,11 +132,15 @@ def convert_messages(
 def parse_response(response: AnthropicResponse) -> LLMResponse:
     text_blocks: list[str] = []
     tool_calls: list[ToolCall] = []
+    reasoning_details: list[dict[str, Any]] = []
     for block in response.content:
         if block.type == "text" and block.text:
             text_blocks.append(block.text)
         elif block.type == "tool_use" and block.id and block.name:
             tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=block.input or {}))
+        elif block.type in THINKING_BLOCK_TYPES:
+            reasoning_details.append(block.model_dump(exclude_none=True))
+    reasoning_content = "".join(b.get("thinking") or "" for b in reasoning_details) or None
     prompt_tokens = completion_tokens = total_tokens = None
     cache_read = cache_write = 0
     usage_available = response.usage is not None
@@ -122,4 +150,4 @@ def parse_response(response: AnthropicResponse) -> LLMResponse:
         prompt_tokens = (response.usage.input_tokens or 0) + cache_read + cache_write
         completion_tokens = response.usage.output_tokens
         total_tokens = prompt_tokens + (completion_tokens or 0)
-    return LLMResponse(content="".join(text_blocks) or None, tool_calls=tool_calls, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, usage_available=usage_available, cache_read_tokens=cache_read, cache_write_tokens=cache_write)
+    return LLMResponse(content="".join(text_blocks) or None, reasoning_content=reasoning_content, reasoning_details=reasoning_details or None, tool_calls=tool_calls, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, usage_available=usage_available, cache_read_tokens=cache_read, cache_write_tokens=cache_write)
