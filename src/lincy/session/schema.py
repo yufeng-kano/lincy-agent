@@ -45,6 +45,10 @@ class SessionEntry(BaseModel):
         return self.message.reasoning_details
 
     @property
+    def reasoning_origin(self) -> str | None:
+        return self.message.reasoning_origin
+
+    @property
     def tool_calls(self) -> list[ToolCall] | None:
         return self.message.tool_calls
 

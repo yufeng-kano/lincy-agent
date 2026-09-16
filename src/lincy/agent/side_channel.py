@@ -40,6 +40,7 @@ def run_side_channel_tool_loop(
                 content=response.content,
                 reasoning_content=response.reasoning_content,
                 reasoning_details=response.reasoning_details,
+                reasoning_origin=response.served_by,
                 tool_calls=response.tool_calls,
             )
         )

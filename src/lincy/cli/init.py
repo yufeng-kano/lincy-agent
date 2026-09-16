@@ -131,6 +131,7 @@ def _run_init_agent(config, workspace: WorkspaceManager) -> None:
                     response.tool_calls,
                     reasoning_content=response.reasoning_content,
                     reasoning_details=response.reasoning_details,
+                    reasoning_origin=response.served_by,
                 )
                 for tool_call in response.tool_calls:
                     console.print_tool_call(tool_call)

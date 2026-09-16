@@ -392,6 +392,7 @@ def _run_responder(
             response.tool_calls,
             reasoning_content=response.reasoning_content,
             reasoning_details=response.reasoning_details,
+            reasoning_origin=response.served_by,
         )
 
         failed_memory_edit_this_round = False
@@ -603,6 +604,7 @@ def _run_responder(
                 response.tool_calls,
                 reasoning_content=response.reasoning_content,
                 reasoning_details=response.reasoning_details,
+                reasoning_origin=response.served_by,
             )
             for tc in response.tool_calls:
                 tr = tool_results_this_round.get(tc.id)

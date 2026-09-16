@@ -218,6 +218,8 @@
 
 2026-09-14 實測（續）：上一項修好後，同一輪第二次 request 回 `400 Function call is missing a thought_signature in functionCall parts`。Gemini 3 嚴格要求本輪 functionCall 帶回 `thoughtSignature`；kano-proxy 把它放在回應相鄰的 thinking block 上，但本專案 Anthropic adapter 原本把 thinking block 全部丟掉，重放的 tool_use 就沒簽名。修正為 adapter 保留並重放 thinking block（見 Anthropic adapter 規則）。
 
+2026-09-16 實測：brain 與 worker 同時連續 `400 Corrupted thought signature`。session 紀錄顯示 22:47–22:52 之間 kano-proxy 的 group 從 Antigravity Gemini failover 到另一個 target，回應的 `thinking.signature` 變成 36 字元 UUID、tool id 變成 `call_00_…`；Gemini 回來後這些 UUID 被原樣 echo 成 `thoughtSignature`，每次重送都失敗。根因在 proxy（core 已改為丟棄非 Gemini 形狀的 signature 並補 `skip_thought_signature_validator`）。本專案的對應規則：(1) `LLMResponse.served_by` 記錄產生回應的 failover candidate（`key#model`），存成 `Message.reasoning_origin`；failover 打某個 candidate 時，只 replay 該 candidate 自己產生的 `reasoning_details`，其他 candidate 的一律剝掉（origin 為 None 的舊紀錄照舊送）。(2) 收到 400 且錯誤訊息含 `signature` 時，同一 candidate 剝掉全部 `reasoning_details` 重送一次；再失敗就照一般規則處理，不做 failover。這兩條都在 `llm/failover.py`，provider adapter 本身不變。
+
 ### 4. 對話與任務的快取識別
 
 - Kano Proxy adapter 在 request body 加入 `metadata.user_id`，取自呼叫端的 `llm_session` 範圍。識別由 agent 名稱與 session/task ID 雜湊成 64 個 ASCII 字元，不含使用者姓名、prompt 或金鑰。

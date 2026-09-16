@@ -40,6 +40,7 @@ class _StubClient:
         self.tool_effects = list(tool_effects or [])
         self.chat_calls = 0
         self.tool_calls_count = 0
+        self.seen_messages: list[list[Message]] = []
 
     def chat(self, messages, response_schema=None, temperature=None):
         self.chat_calls += 1
@@ -50,6 +51,7 @@ class _StubClient:
 
     def chat_with_tools(self, messages, tools, temperature=None):
         self.tool_calls_count += 1
+        self.seen_messages.append(messages)
         effect = self.tool_effects.pop(0)
         if isinstance(effect, Exception):
             raise effect
@@ -525,3 +527,86 @@ def test_served_candidate_is_unknown_without_a_failover_chain():
     with observe_served_candidate() as probe:
         assert single.chat([Message(role="user", content="hi")]) == "ok"
         assert probe.get() is None
+
+
+def _signed_assistant(origin: str | None, signature: str) -> Message:
+    return Message(
+        role="assistant",
+        content="thinking done",
+        reasoning_details=[{"type": "thinking", "thinking": "plan", "signature": signature}],
+        reasoning_origin=origin,
+    )
+
+
+def _make_signature_400():
+    return _make_status(400, '{"error":{"type":"invalid_request_error","message":"Corrupted thought signature."}}')
+
+
+def _chain(primary, fallback):
+    return with_llm_failover(
+        [
+            FailoverCandidate(key="claude-primary", label="brain-primary", client=primary, model="brain-agent"),
+            FailoverCandidate(key="openrouter-fallback", label="brain-fallback", client=fallback, model="opus"),
+        ],
+        cooldown_seconds=1800,
+        label="brain",
+    )
+
+
+def test_response_is_stamped_with_the_candidate_that_served_it():
+    primary = _StubClient(tool_effects=[_make_429()])
+    fallback = _StubClient(tool_effects=[LLMResponse(content="ok", tool_calls=[])])
+
+    result = _chain(primary, fallback).chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert result.served_by == "openrouter-fallback#opus"
+
+
+def test_fallback_candidate_does_not_receive_another_candidates_signatures():
+    primary = _StubClient(tool_effects=[_make_429()])
+    fallback = _StubClient(tool_effects=[LLMResponse(content="ok", tool_calls=[])])
+    messages = [
+        Message(role="user", content="hi"),
+        _signed_assistant("claude-primary#brain-agent", "gemini-blob"),
+        _signed_assistant("openrouter-fallback#opus", "claude-blob"),
+        _signed_assistant(None, "legacy-blob"),
+        Message(role="user", content="again"),
+    ]
+
+    _chain(primary, fallback).chat_with_tools(messages, [])
+
+    seen = fallback.seen_messages[0]
+    assert seen[1].reasoning_details is None
+    assert seen[2].reasoning_details[0]["signature"] == "claude-blob"
+    assert seen[3].reasoning_details[0]["signature"] == "legacy-blob"
+    # The caller's history is untouched: only the outgoing copy is trimmed.
+    assert messages[1].reasoning_details[0]["signature"] == "gemini-blob"
+
+
+def test_signature_400_retries_once_without_replayed_thinking():
+    primary = _StubClient(tool_effects=[_make_signature_400(), LLMResponse(content="ok", tool_calls=[])])
+    fallback = _StubClient(tool_effects=[LLMResponse(content="never", tool_calls=[])])
+    messages = [
+        Message(role="user", content="hi"),
+        _signed_assistant("claude-primary#brain-agent", "stale-blob"),
+        Message(role="user", content="again"),
+    ]
+
+    result = _chain(primary, fallback).chat_with_tools(messages, [])
+
+    assert result.content == "ok"
+    assert primary.tool_calls_count == 2
+    assert fallback.tool_calls_count == 0
+    assert primary.seen_messages[0][1].reasoning_details is not None
+    assert primary.seen_messages[1][1].reasoning_details is None
+
+
+def test_signature_400_without_replayed_thinking_is_raised_as_is():
+    primary = _StubClient(tool_effects=[_make_signature_400()])
+    fallback = _StubClient(tool_effects=[LLMResponse(content="never", tool_calls=[])])
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _chain(primary, fallback).chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert primary.tool_calls_count == 1
+    assert fallback.tool_calls_count == 0

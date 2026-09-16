@@ -113,6 +113,9 @@ class LLMResponse(BaseModel):
     usage_available: bool = False
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Which failover candidate produced this response (see failover.py). The
+    # signatures in reasoning_details only verify on that same candidate.
+    served_by: str | None = None
 
     def has_tool_calls(self) -> bool:
         return len(self.tool_calls) > 0
@@ -126,6 +129,8 @@ class Message(BaseModel):
     content: str | list[ContentPart] | None = None
     reasoning_content: str | None = None  # Plain text for display
     reasoning_details: list[dict[str, Any]] | None = None  # Structured round-trip
+    # Failover candidate that minted reasoning_details; None = unknown (legacy).
+    reasoning_origin: str | None = None
     tool_calls: list[ToolCall] | None = None  # For assistant messages with tool calls
     tool_call_id: str | None = None  # For tool result messages
     name: str | None = None  # Tool name for tool result messages

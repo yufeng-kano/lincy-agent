@@ -27,6 +27,11 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
+# A 400 about a thinking/thought signature: the replayed reasoning_details do
+# not verify on this candidate (they were minted elsewhere, or the gateway
+# behind it switched upstream). Resending the same payload can never succeed.
+_SIGNATURE_ERROR_PATTERN = re.compile(r"signature", re.IGNORECASE)
+
 _FAILOVER_ERROR_PATTERNS = (
     re.compile(r"rate.?limit", re.IGNORECASE),
     re.compile(r"quota", re.IGNORECASE),
@@ -224,6 +229,38 @@ def _should_failover(exc: Exception) -> bool:
     return any(pattern.search(_extract_http_error_detail(exc)) for pattern in _FAILOVER_ERROR_PATTERNS)
 
 
+def _is_signature_error(exc: Exception) -> bool:
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response is not None
+        and exc.response.status_code == 400
+        and _SIGNATURE_ERROR_PATTERN.search(_extract_http_error_detail(exc)) is not None
+    )
+
+
+def candidate_origin(candidate: "FailoverCandidate") -> str:
+    """Identity stamped on responses so their signatures replay only here."""
+    return f"{candidate.key}#{candidate.model or ''}"
+
+
+def _replayable_messages(
+    messages: list[Message], origin: str, *, strip_all: bool = False
+) -> list[Message]:
+    """Drop reasoning_details another candidate minted (or all of them).
+
+    Signed thinking only verifies on the model that produced it; replaying it
+    to a different candidate fails the whole request with a 400. Messages
+    with no recorded origin are left alone.
+    """
+    result: list[Message] = []
+    for message in messages:
+        foreign = message.reasoning_origin is not None and message.reasoning_origin != origin
+        if message.reasoning_details and (strip_all or foreign):
+            message = message.model_copy(update={"reasoning_details": None})
+        result.append(message)
+    return result
+
+
 def _format_error(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code if exc.response is not None else "unknown"
@@ -252,7 +289,7 @@ class FailoverLLMClient:
         response_schema: dict[str, Any] | None = None,
         temperature: float | None = None,
     ) -> str:
-        def _invoke(client: LLMClient) -> str:
+        def _invoke(client: LLMClient, messages: list[Message]) -> str:
             return client.chat(
                 messages,
                 response_schema=response_schema,
@@ -267,7 +304,7 @@ class FailoverLLMClient:
         tools: list[ToolDefinition],
         temperature: float | None = None,
     ) -> LLMResponse:
-        def _invoke(client: LLMClient) -> LLMResponse:
+        def _invoke(client: LLMClient, messages: list[Message]) -> LLMResponse:
             return client.chat_with_tools(
                 messages,
                 tools,
@@ -292,8 +329,9 @@ class FailoverLLMClient:
                 continue
 
             attempted = True
+            origin = candidate_origin(candidate)
             try:
-                result = invoke(candidate.client)
+                result = self._invoke_candidate(invoke, candidate, messages, origin)
             except Exception as exc:
                 last_error = exc
                 _SERVED_CANDIDATE.set(self._served(candidate))
@@ -330,6 +368,23 @@ class FailoverLLMClient:
                 "No vision-capable LLM available for a prompt that contains images"
             )
         raise RuntimeError("Failover client has no candidates")
+
+    @staticmethod
+    def _invoke_candidate(invoke, candidate: FailoverCandidate, messages: list[Message], origin: str):
+        try:
+            result = invoke(candidate.client, _replayable_messages(messages, origin))
+        except Exception as exc:
+            if not _is_signature_error(exc) or not any(m.reasoning_details for m in messages):
+                raise
+            logger.warning(
+                "%s rejected the replayed thinking signatures (%s); retrying once without them",
+                candidate.label,
+                _format_error(exc),
+            )
+            result = invoke(candidate.client, _replayable_messages(messages, origin, strip_all=True))
+        if isinstance(result, LLMResponse):
+            result.served_by = origin
+        return result
 
     def _served(self, candidate: FailoverCandidate) -> ServedCandidate:
         # Index in the *configured* chain, not in the cooldown-ordered attempt
