@@ -1075,9 +1075,26 @@ def main(user: str, resume: str | None = None) -> None:
 
     agent_thread = threading.Thread(target=agent.run, name="agent-core", daemon=True)
     agent_thread.start()
+    # Textual only captures Python-level sys.stderr. Anything written straight to
+    # fd 2 (macOS libmalloc diagnostics emitted by forked children before their
+    # stderr is redirected, native library warnings, etc.) would otherwise land
+    # on the raw terminal and corrupt the TUI. Park fd 2 in a log file while
+    # Textual owns the screen and restore it afterwards so exit tracebacks stay
+    # visible.
+    state_dir.mkdir(parents=True, exist_ok=True)
+    stderr_log_fd = os.open(
+        state_dir / "chat-cli.stderr.log",
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+        0o644,
+    )
+    saved_stderr_fd = os.dup(2)
+    os.dup2(stderr_log_fd, 2)
+    os.close(stderr_log_fd)
     try:
         app.run()
     finally:
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stderr_fd)
         shell_task_manager.shutdown()
         if agent_thread.is_alive():
             agent.request_shutdown(graceful=False)

@@ -28,3 +28,4 @@
 
 - `chat-cli` 主介面已使用 `src/lincy/tui/`
 - 所有執行期輸出都透過 `agent.ui_event_console.UiEventConsole`；`init` 以極簡 Rich sink 渲染同一事件流
+- `app.run()` 期間 fd 2 會被 dup2 到 `<agent_os_dir>/state/chat-cli.stderr.log`：Textual 只攔截 Python 層的 `sys.stderr`，直接寫 fd 2 的內容（如 macOS libmalloc 的 `MallocStackLogging` 診斷、fork 出的子程序在 stderr 重導前的輸出、native library 警告）否則會直接印到終端機弄壞畫面；退出後會還原，讓 traceback 仍可見

@@ -234,7 +234,7 @@ class InteractiveShellSession:
                 stderr=slave_fd,
                 cwd=str(self.cwd),
                 env=env,
-                preexec_fn=os.setsid,
+                start_new_session=True,
                 close_fds=True,
             )
             os.close(slave_fd)

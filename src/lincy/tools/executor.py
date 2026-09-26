@@ -124,7 +124,7 @@ class ShellExecutor:
                 env=env,
                 text=True,
                 # Create new process group for proper cleanup
-                preexec_fn=os.setsid,
+                start_new_session=True,
             )
 
             if on_stdout_line is not None:
