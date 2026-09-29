@@ -610,3 +610,44 @@ def test_signature_400_without_replayed_thinking_is_raised_as_is():
 
     assert primary.tool_calls_count == 1
     assert fallback.tool_calls_count == 0
+
+
+def test_served_by_includes_the_upstream_the_gateway_named():
+    primary = _StubClient(
+        tool_effects=[LLMResponse(content="ok", tool_calls=[], served_upstream="claude-code/claude-opus-5-5")]
+    )
+
+    result = _chain(primary, _StubClient()).chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert result.served_by == "claude-primary#brain-agent via claude-code/claude-opus-5-5"
+
+
+def test_signatures_from_another_upstream_behind_the_same_candidate_are_not_replayed():
+    claude = "claude-primary#brain-agent via claude-code/claude-opus-5-5"
+    gemini = "claude-primary#brain-agent via antigravity/gemini-3.8-flash-high"
+    primary = _StubClient(
+        tool_effects=[
+            LLMResponse(content="ok", tool_calls=[], served_upstream="claude-code/claude-opus-5-5"),
+            LLMResponse(content="ok", tool_calls=[]),
+        ]
+    )
+    chain = _chain(primary, _StubClient())
+    messages = [
+        Message(role="user", content="hi"),
+        _signed_assistant(claude, "claude-blob"),
+        _signed_assistant(gemini, "gemini-blob"),
+        _signed_assistant("claude-primary#brain-agent", "pre-header-blob"),
+        Message(role="user", content="again"),
+    ]
+
+    # Nothing served yet in this process: everything this candidate minted gets one try.
+    chain.chat_with_tools(messages, [])
+    first = primary.seen_messages[0]
+    assert [m.reasoning_details is not None for m in first[1:4]] == [True, True, True]
+
+    # Claude Code answered, so only Claude Code's signatures go back on the next turn.
+    chain.chat_with_tools(messages, [])
+    second = primary.seen_messages[1]
+    assert second[1].reasoning_details[0]["signature"] == "claude-blob"
+    assert second[2].reasoning_details is None
+    assert second[3].reasoning_details is None

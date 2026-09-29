@@ -10,6 +10,7 @@ from lincy.llm.schema import Message, ToolCall, ToolDefinition, ToolParameter
 class _FakeResponse:
     def __init__(self, payload: dict):
         self.payload = payload
+        self.headers: dict[str, str] = {}
 
     def raise_for_status(self) -> None:
         return None

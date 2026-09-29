@@ -199,6 +199,7 @@
 | Request / response shape | Anthropic Messages API native shape | 假設 Anthropic-compatible / 未驗證 | 低 | 不新增 gateway-specific 欄位 |
 | Thinking | `thinking: {"type": "adaptive"|"enabled"|"disabled"}`；enabled 可帶 `budget_tokens` | 假設 Anthropic-compatible / 未驗證 | 低 | 完全沿用本專案 Anthropic adapter shape |
 | Effort | `output_config: {"effort": "low"|"medium"|"high"|"xhigh"|"max"}` | 假設 Anthropic-compatible / 未驗證 | 低 | 不推測 kano-proxy 的額外 effort 值或模型能力 |
+| Served upstream headers | 非串流回應帶 `x-kano-upstream-provider`（provider id 或 custom slug）與 `x-kano-upstream-model`（裸 upstream model id）；成功與 upstream 錯誤 passthrough 都有，pre-dispatch 錯誤與 `stream: true` 沒有 | kano-proxy `docs/api.md` § Served upstream headers（v4.11.0） | 高 | model group 在對話中途 failover 到別的 target 時，這是 client 唯一能察覺的訊號 |
 
 ### 2. 本專案 adapter 規則
 
@@ -209,10 +210,13 @@
 | Base URL | 預設 `https://kano-proxy.yuufeng.com/g/lincy/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/g/lincy/anthropic/v1/messages` |
 | API key env | 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` + `src/lincy/core/config.py` | 依既有 `api_key_env` 解析規則；不可 fallback 到 `ANTHROPIC_API_KEY` |
 | Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 與 Anthropic adapter 相同而納入 |
+| Reasoning origin | `LLMResponse.served_upstream` 讀自上述 header；`served_by` / `reasoning_origin` 為 `{candidate}#{model} via {provider}/{model}`。同一 candidate 下只回放與最近一次回應相同 upstream 的 thinking signature；本次程序尚未觀察到 upstream 時全部回放，被拒後仍有一次去除 thinking 的重送 | `src/lincy/llm/failover.py` + `src/lincy/llm/providers/anthropic.py` | 沒有 `via` 的舊 origin 在觀察到 upstream 後視為外來、不回放 |
 
 ### 3. 實測 / 逆向資訊
 
 2026-09-09 對照相鄰 kano-proxy repo 的 `docs/api.md`、`src/proxy/dispatch_anthropic_via_openai.ts` 與 `src/providers/codex.ts`：gateway 把 `metadata.user_id` 轉成 Codex `prompt_cache_key` 與 `session_id`。未傳識別時，每次產生新的上游 session。這是 gateway 實作事實，不是 Anthropic 官方快取保證。
+
+2026-09-29 從 kano-proxy `request_logs` 與 lincy session log 對照：`brain-agent` group 在 16:26 與 17:16-17:17 兩輪被 antigravity/gemini-3.8-flash-high 服務，之後每一輪回放這些 Gemini 簽章給 claude-code 都先收到一次 400，再由 strip-all 重送成功。gateway 對 client 隱藏 target 切換，因此新增上述 header 與 origin 規則。
 
 2026-09-14 實測：brain 的 boot files prefix 在 system 之後第一則就是 synthetic `assistant` tool_use（讀記憶檔），沒有前置 user turn。Anthropic 與 Claude 上游接受，但 gateway 把 `brain-agent` 導到 Antigravity Gemini 時，Gemini 對 `contents[0]` 為 model functionCall 一律回 `400 Please ensure that function call turn comes immediately after a user turn or after a function response turn`，整輪連續失敗。修正落在 kano-proxy 的 Gemini 轉換層（`proxy/gemini_wire.ts` 的 `openWithUserTurn`：第一則是 model 就補一個 user turn），本專案 prefix 不變；見 kano-proxy `docs/providers.md` § Antigravity。
 

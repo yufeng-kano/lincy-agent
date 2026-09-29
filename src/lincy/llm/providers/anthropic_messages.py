@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any, Mapping, TypeVar
 
 from ..schema import AnthropicResponse, ContentPart, LLMResponse, Message, ToolCall
 
@@ -53,6 +53,18 @@ def content_parts_to_blocks(parts: list[ContentPart]) -> list[dict[str, Any]]:
 
 
 THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+# Kano Proxy names the target behind a model group on non-stream responses
+# (kano-proxy docs/api.md, "Served upstream headers"). A plain Anthropic
+# endpoint sends neither.
+UPSTREAM_PROVIDER_HEADER = "x-kano-upstream-provider"
+UPSTREAM_MODEL_HEADER = "x-kano-upstream-model"
+
+
+def served_upstream(headers: Mapping[str, str]) -> str | None:
+    provider = headers.get(UPSTREAM_PROVIDER_HEADER)
+    model = headers.get(UPSTREAM_MODEL_HEADER)
+    return f"{provider}/{model}" if provider and model else None
 
 
 def thinking_blocks(message: Message) -> list[dict[str, Any]]:

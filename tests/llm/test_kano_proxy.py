@@ -9,8 +9,9 @@ from lincy.llm.schema import Message
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, headers: dict[str, str] | None = None):
         self.payload = payload
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         return None
@@ -20,9 +21,10 @@ class _FakeResponse:
 
 
 class _FakeHttpxClient:
-    def __init__(self, payload: dict, calls: list[dict]):
+    def __init__(self, payload: dict, calls: list[dict], headers: dict[str, str] | None = None):
         self.payload = payload
         self.calls = calls
+        self.headers = headers
 
     def __enter__(self):
         return self
@@ -32,13 +34,13 @@ class _FakeHttpxClient:
 
     def post(self, url: str, headers: dict, json: dict) -> _FakeResponse:
         self.calls.append({"url": url, "headers": headers, "json": json})
-        return _FakeResponse(self.payload)
+        return _FakeResponse(self.payload, self.headers)
 
 
-def _patch_httpx_client(monkeypatch, payload: dict, calls: list[dict]) -> None:
+def _patch_httpx_client(monkeypatch, payload: dict, calls: list[dict], headers: dict[str, str] | None = None) -> None:
     monkeypatch.setattr(
         "lincy.llm.providers.anthropic.httpx.Client",
-        lambda timeout: _FakeHttpxClient(payload, calls),
+        lambda timeout: _FakeHttpxClient(payload, calls, headers),
     )
 
 
@@ -157,3 +159,26 @@ def test_session_metadata_reaches_http_and_survives_retries(monkeypatch):
     assert len(set(keys[:4])) == 1  # Retry, tool loop, and resume.
     assert keys[4] != keys[0]
     assert "metadata" not in calls[5]["json"]
+
+
+def test_kano_proxy_reports_the_upstream_the_gateway_named(monkeypatch):
+    calls: list[dict] = []
+    _patch_httpx_client(
+        monkeypatch,
+        {"content": [{"type": "text", "text": "ok"}]},
+        calls,
+        headers={"x-kano-upstream-provider": "claude-code", "x-kano-upstream-model": "claude-opus-5-5"},
+    )
+
+    result = _make_client().chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert result.served_upstream == "claude-code/claude-opus-5-5"
+
+
+def test_kano_proxy_leaves_served_upstream_unset_without_the_headers(monkeypatch):
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, {"content": [{"type": "text", "text": "ok"}]}, calls)
+
+    result = _make_client().chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert result.served_upstream is None

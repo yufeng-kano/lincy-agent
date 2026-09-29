@@ -238,23 +238,48 @@ def _is_signature_error(exc: Exception) -> bool:
     )
 
 
+_UPSTREAM_SEPARATOR = " via "
+
+
 def candidate_origin(candidate: "FailoverCandidate") -> str:
     """Identity stamped on responses so their signatures replay only here."""
     return f"{candidate.key}#{candidate.model or ''}"
 
 
+def served_origin(origin: str, upstream: str | None) -> str:
+    """Origin plus the upstream a gateway reported serving the response.
+
+    A Kano Proxy model group can switch targets between turns, and a
+    signature only verifies on the target that minted it, so the served
+    upstream is part of the identity whenever the gateway names one.
+    """
+    return f"{origin}{_UPSTREAM_SEPARATOR}{upstream}" if upstream else origin
+
+
+def _replays_on(reasoning_origin: str | None, origin: str, upstream: str | None) -> bool:
+    if reasoning_origin is None:
+        return True
+    if upstream is not None:
+        return reasoning_origin == served_origin(origin, upstream)
+    # No upstream observed on this candidate yet (fresh process): anything it
+    # minted is worth one try; a rejection falls back to the strip-all retry.
+    return reasoning_origin == origin or reasoning_origin.startswith(origin + _UPSTREAM_SEPARATOR)
+
+
 def _replayable_messages(
-    messages: list[Message], origin: str, *, strip_all: bool = False
+    messages: list[Message], origin: str, *, upstream: str | None = None, strip_all: bool = False
 ) -> list[Message]:
-    """Drop reasoning_details another candidate minted (or all of them).
+    """Drop reasoning_details another candidate or upstream minted (or all of them).
 
     Signed thinking only verifies on the model that produced it; replaying it
-    to a different candidate fails the whole request with a 400. Messages
-    with no recorded origin are left alone.
+    elsewhere fails the whole request with a 400. Messages with no recorded
+    origin are left alone. Once the gateway has named an upstream, a message
+    stamped with this candidate but no upstream is foreign too: it predates
+    the header and may have come from any of the group's targets.
     """
     result: list[Message] = []
     for message in messages:
-        foreign = message.reasoning_origin is not None and message.reasoning_origin != origin
+        foreign = not _replays_on(message.reasoning_origin, origin, upstream)
         if message.reasoning_details and (strip_all or foreign):
             message = message.model_copy(update={"reasoning_details": None})
         result.append(message)
@@ -282,6 +307,9 @@ class FailoverLLMClient:
         self._candidates = tuple(candidates)
         self._cooldown_seconds = max(0, cooldown_seconds)
         self._label = (label or "").strip()
+        # origin -> the upstream the gateway last named for it; only that
+        # upstream's signatures are replayed until the gateway names another.
+        self._served_upstreams: dict[str, str] = {}
 
     def chat(
         self,
@@ -369,10 +397,10 @@ class FailoverLLMClient:
             )
         raise RuntimeError("Failover client has no candidates")
 
-    @staticmethod
-    def _invoke_candidate(invoke, candidate: FailoverCandidate, messages: list[Message], origin: str):
+    def _invoke_candidate(self, invoke, candidate: FailoverCandidate, messages: list[Message], origin: str):
+        upstream = self._served_upstreams.get(origin)
         try:
-            result = invoke(candidate.client, _replayable_messages(messages, origin))
+            result = invoke(candidate.client, _replayable_messages(messages, origin, upstream=upstream))
         except Exception as exc:
             if not _is_signature_error(exc) or not any(m.reasoning_details for m in messages):
                 raise
@@ -383,7 +411,9 @@ class FailoverLLMClient:
             )
             result = invoke(candidate.client, _replayable_messages(messages, origin, strip_all=True))
         if isinstance(result, LLMResponse):
-            result.served_by = origin
+            if result.served_upstream:
+                self._served_upstreams[origin] = result.served_upstream
+            result.served_by = served_origin(origin, result.served_upstream)
         return result
 
     def _served(self, candidate: FailoverCandidate) -> ServedCandidate:

@@ -23,6 +23,7 @@ from .anthropic_messages import (
     has_active_thinking,
     map_output_config,
     map_thinking,
+    served_upstream,
     parse_response,
 )
 
@@ -109,7 +110,7 @@ class AnthropicClient:
             request["temperature"] = effective_temperature
         return request
 
-    def _post(self, request: dict[str, Any]) -> AnthropicResponse:
+    def _post(self, request: dict[str, Any]) -> tuple[AnthropicResponse, str | None]:
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -120,7 +121,7 @@ class AnthropicClient:
         with httpx.Client(timeout=self.request_timeout) as client:
             response = client.post(f"{self.base_url}/v1/messages", headers=headers, json=request)
             response.raise_for_status()
-        return AnthropicResponse.model_validate(response.json())
+        return AnthropicResponse.model_validate(response.json()), served_upstream(response.headers)
 
     def chat(
         self,
@@ -130,7 +131,8 @@ class AnthropicClient:
     ) -> str:
         if response_schema is not None:
             raise ValueError("Anthropic provider does not support response_schema; use a provider with native structured outputs.")
-        return self._parse_response(self._post(self._build_request(messages, temperature=temperature))).content or ""
+        response, _ = self._post(self._build_request(messages, temperature=temperature))
+        return self._parse_response(response).content or ""
 
     def chat_with_tools(
         self,
@@ -138,4 +140,7 @@ class AnthropicClient:
         tools: list[ToolDefinition],
         temperature: float | None = None,
     ) -> LLMResponse:
-        return self._parse_response(self._post(self._build_request(messages, tools=tools, temperature=temperature)))
+        response, upstream = self._post(self._build_request(messages, tools=tools, temperature=temperature))
+        result = self._parse_response(response)
+        result.served_upstream = upstream
+        return result

@@ -116,6 +116,9 @@ class LLMResponse(BaseModel):
     # Which failover candidate produced this response (see failover.py). The
     # signatures in reasoning_details only verify on that same candidate.
     served_by: str | None = None
+    # `provider/model` a gateway reports having served (Kano Proxy's
+    # x-kano-upstream-* headers); None when the provider does not say.
+    served_upstream: str | None = None
 
     def has_tool_calls(self) -> bool:
         return len(self.tool_calls) > 0
