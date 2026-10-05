@@ -107,6 +107,15 @@ class TestValidateExcludedTools:
 
         validate_excluded_tools(_source_registry(), agents)
 
+    def test_worker_may_exclude_its_own_extra_tool(self):
+        agents = {"worker": _agent_config(["worker_note"])}
+        validate_excluded_tools(_source_registry(), agents)
+
+    def test_brain_cannot_exclude_worker_only_tool(self):
+        agents = {"brain": _agent_config(["worker_note"])}
+        with pytest.raises(SystemExit):
+            validate_excluded_tools(_source_registry(), agents)
+
     def test_typo_still_aborts_next_to_conditional_tool(self):
         agents = {"brain": _agent_config(["gui_task", "typo_tool"])}
 

@@ -516,6 +516,9 @@ def setup_tools(
 # Registered only when GUI / vision settings enable them, so excluding them
 # must not abort startup on a config that turns those features off.
 _CONDITIONAL_TOOLS = frozenset({"gui_task", "screenshot", "screenshot_by_subagent"})
+# Registered on the WorkerRunner only (extra_tools), never in the shared
+# registry, so the worker may exclude them without tripping the typo check.
+_WORKER_ONLY_TOOLS = frozenset({"worker_note"})
 
 
 def validate_excluded_tools(
@@ -529,10 +532,13 @@ def validate_excluded_tools(
     registration is done, since registry building is spread across startup.
     """
     for agent_name, agent_config in agents.items():
+        known_unregistered = _CONDITIONAL_TOOLS
+        if agent_name == "worker":
+            known_unregistered = _CONDITIONAL_TOOLS | _WORKER_ONLY_TOOLS
         unknown = [
             name
             for name in agent_config.excluded_tools
-            if not registry.has_tool(name) and name not in _CONDITIONAL_TOOLS
+            if not registry.has_tool(name) and name not in known_unregistered
         ]
         if unknown:
             raise SystemExit(
