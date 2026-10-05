@@ -1,4 +1,5 @@
 import re
+import threading
 
 import pytest
 
@@ -101,6 +102,34 @@ def test_compress_skips_when_file_was_rewritten_meanwhile(tmp_path):
 
     assert notes.compress(summarize) is False
     assert notes.read() == "- compressed by another run\n"
+
+
+def test_concurrent_compress_summarizes_once(tmp_path):
+    notes = _notes(tmp_path)
+    notes.path.parent.mkdir(parents=True)
+    notes.path.write_text("- old entry\n" * 200, encoding="utf-8")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow_summarize(text: str) -> str:
+        calls.append(text)
+        entered.set()
+        release.wait(timeout=5)
+        return "- merged entry"
+
+    results = []
+    first = threading.Thread(target=lambda: results.append(notes.compress(slow_summarize)))
+    first.start()
+    assert entered.wait(timeout=5)
+
+    assert notes.compress(slow_summarize) is False
+    release.set()
+    first.join(timeout=5)
+
+    assert results == [True]
+    assert len(calls) == 1
+    assert notes.read().startswith("- merged entry\n")
 
 
 class _ChatClient:

@@ -253,6 +253,26 @@ def test_worker_runner_falls_back_when_forced_report_fails():
     assert "first value" in result.action_log
 
 
+def test_worker_runner_uses_forced_report_text_even_with_tool_call():
+    client = _FakeWorkerClient([
+        _echo_call("c1", "first value"),
+        _echo_call("c2", "pending value"),
+        LLMResponse(
+            content="Report: first value echoed.",
+            tool_calls=[ToolCall(id="c3", name="echo", arguments={"text": "again"})],
+            total_tokens=1,
+        ),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo twice", max_turns_override=1)
+
+    assert result.truncated is True
+    assert result.text == "Report: first value echoed."
+    assert len(client.calls) == 3
+    assert "again" not in result.action_log
+
+
 def test_worker_runner_keeps_partial_action_log_on_exception():
     client = _FakeWorkerClient([
         _echo_call("c1", "first value"),
@@ -270,13 +290,13 @@ def test_worker_runner_keeps_partial_action_log_on_exception():
 
 def test_worker_action_log_keeps_latest_entries_within_budget():
     responses = [_echo_call(f"c{i}", f"value-{i} " + "z" * 400) for i in range(20)]
-    responses.append(LLMResponse(content="done", total_tokens=1))
+    responses.append(LLMResponse(content="report", total_tokens=1))
     client = _FakeWorkerClient(responses)
     runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
 
-    result = runner.run("Echo many")
+    result = runner.run("Echo many", max_turns_override=19)
 
-    assert result.success is True
+    assert result.truncated is True
     lines = result.action_log.splitlines()
     assert len(result.action_log) <= 4100
     assert lines[0].endswith("earlier entries omitted)")
@@ -346,6 +366,7 @@ def test_worker_runner_registers_extra_tools():
     result = runner.run("Do it")
 
     assert result.success is True
+    assert result.action_log == ""
     assert {tool.name for tool in client.tools[0]} == {"echo", "worker_note"}
     assert calls == ["lesson"]
 
@@ -390,6 +411,7 @@ def test_worker_runner_compresses_notes_after_run():
     )
 
     result = runner.run("Do it")
+    runner._notes_thread.join(timeout=5)
 
     assert result.text == "done"
     assert notes.compressed_with == [summarizer]
@@ -404,6 +426,7 @@ def test_worker_runner_compresses_notes_after_failure_and_ignores_errors():
     )
 
     result = runner.run("Do it")
+    runner._notes_thread.join(timeout=5)
 
     assert result.success is False
     assert result.error == "connection reset"
@@ -417,4 +440,5 @@ def test_worker_runner_skips_compression_without_summarizer():
 
     runner.run("Do it")
 
+    assert runner._notes_thread is None
     assert notes.compressed_with == []

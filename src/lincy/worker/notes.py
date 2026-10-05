@@ -39,6 +39,7 @@ class WorkerNotes:
         self.threshold_chars = threshold_chars
         self.max_chars = max_chars
         self._lock = threading.Lock()
+        self._compressing = False
 
     def read(self) -> str:
         try:
@@ -63,44 +64,53 @@ class WorkerNotes:
         """Replace the notes with a summary once they exceed the threshold.
 
         The LLM call runs outside the lock so concurrent appends are not
-        blocked; text appended meanwhile is kept after the summary.
+        blocked; text appended meanwhile is kept after the summary. Only one
+        compression runs at a time; a concurrent call returns False at once.
         """
         with self._lock:
-            snapshot = self.read()
-        if len(snapshot) <= self.threshold_chars:
-            return False
-
-        try:
-            summary = summarize(snapshot).strip()
-        except Exception as exc:
-            logger.warning("Worker notes compression failed: %s", exc)
-            return False
-        if not summary:
-            logger.warning("Worker notes compression returned empty text")
-            return False
-
-        with self._lock:
-            current = self.read()
-            # Another run compressed or the file was edited meanwhile; writing
-            # our summary would discard that, so skip this round.
-            if not current.startswith(snapshot):
-                logger.warning("Worker notes changed during compression; skipped")
+            if self._compressing:
                 return False
-            content = summary + "\n" + current[len(snapshot):]
-            fd, tmp_name = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
+            self._compressing = True
+        try:
+            with self._lock:
+                snapshot = self.read()
+            if len(snapshot) <= self.threshold_chars:
+                return False
+
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    handle.write(content)
-                # mkstemp creates the file 0600; keep the usual readable mode.
-                os.chmod(tmp_name, 0o644)
-                os.replace(tmp_name, self.path)
-            except BaseException:
-                Path(tmp_name).unlink(missing_ok=True)
-                raise
-        logger.info(
-            "Worker notes compressed %s -> %s chars", len(snapshot), len(content),
-        )
-        return True
+                summary = summarize(snapshot).strip()
+            except Exception as exc:
+                logger.warning("Worker notes compression failed: %s", exc)
+                return False
+            if not summary:
+                logger.warning("Worker notes compression returned empty text")
+                return False
+
+            with self._lock:
+                current = self.read()
+                # Another run compressed or the file was edited meanwhile; writing
+                # our summary would discard that, so skip this round.
+                if not current.startswith(snapshot):
+                    logger.warning("Worker notes changed during compression; skipped")
+                    return False
+                content = summary + "\n" + current[len(snapshot):]
+                fd, tmp_name = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write(content)
+                    # mkstemp creates the file 0600; keep the usual readable mode.
+                    os.chmod(tmp_name, 0o644)
+                    os.replace(tmp_name, self.path)
+                except BaseException:
+                    Path(tmp_name).unlink(missing_ok=True)
+                    raise
+            logger.info(
+                "Worker notes compressed %s -> %s chars", len(snapshot), len(content),
+            )
+            return True
+        finally:
+            with self._lock:
+                self._compressing = False
 
 
 @llm_session("compactor")

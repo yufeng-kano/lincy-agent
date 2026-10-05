@@ -9,11 +9,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..llm.schema import ContentPart, ToolDefinition, ToolParameter
-from ..tools.background_dispatch import dispatch_background_task
 from .manager import GUIManager
 
 if TYPE_CHECKING:
-    from ..agent.queue import PersistentPriorityQueue
     from .worker import GUIWorker
 
 logger = logging.getLogger(__name__)
@@ -51,7 +49,7 @@ GUI_TASK_DEFINITION = ToolDefinition(
     name="gui_task",
     description=(
         "Delegate a GUI task to an autonomous desktop agent. "
-        "The intent is a self-contained prompt for a subagent — "
+        "The intent is a self-contained prompt for a subagent - "
         "it must be understandable WITHOUT any conversation context. "
         "Write the intent as a GOAL, not step-by-step instructions. "
         "The GUI agent decides HOW to achieve the goal.\n"
@@ -66,10 +64,10 @@ GUI_TASK_DEFINITION = ToolDefinition(
         "the agent can try if the primary name is not found.\n"
         "- Include constraints (save path, app preference) as bullet points.\n"
         "\n"
-        "Good: 'Download a photo of the singer Kano (鹿乃) from her "
+        "Good: 'Download a photo of the singer Kano from her "
         "Twitter/X page https://x.com/kano_hanano (if it does not load, "
-        "search: 鹿乃, Kano, kano_hanano). Save to ~/Pictures/kano.jpg.'\n"
-        "Bad: 'Save a cute photo of her for 老公 from that account we "
+        "search: Kano, kano_hanano, Kano singer). Save to ~/Pictures/kano.jpg.'\n"
+        "Bad: 'Save a cute photo of her for honey from that account we "
         "talked about.'"
     ),
     parameters={
@@ -128,20 +126,13 @@ def create_gui_task(
     manager: GUIManager,
     gui_lock: threading.Lock | None = None,
     agent_os_dir: Path | None = None,
-    queue: "PersistentPriorityQueue | None" = None,
+    lock_wait_seconds: float = 300,
 ) -> Callable[..., str]:
     """Create gui_task tool function bound to a GUIManager instance.
 
-    When *queue* is provided the task runs in a background thread and
-    the result is injected into the queue as an ``InboundMessage``.
-    The tool returns immediately with a dispatch confirmation.
-
-    When *queue* is ``None`` the task runs synchronously (test/direct
-    call compatibility).
-
-    *gui_lock* prevents concurrent GUI access.  In background mode the
-    lock is acquired non-blocking; if busy the tool returns immediately
-    with a ``[GUI BUSY]`` error.
+    The task runs synchronously. *gui_lock* prevents concurrent GUI access;
+    a caller that cannot get it within *lock_wait_seconds* gets a
+    ``[GUI BUSY]`` result instead of blocking indefinitely.
     """
 
     def _run_sync(
@@ -150,21 +141,22 @@ def create_gui_task(
         app_prompt: str | None,
     ) -> str:
         app_prompt_text = _resolve_app_prompt(app_prompt, agent_os_dir)
+        if gui_lock is not None and not gui_lock.acquire(timeout=lock_wait_seconds):
+            return (
+                f"[GUI BUSY] Another GUI task is still running after "
+                f"{lock_wait_seconds:g}s; retry later or report back."
+            )
         try:
-            if gui_lock is not None:
-                with gui_lock:
-                    result = manager.execute_task(
-                        intent, session_id=session_id,
-                        app_prompt_text=app_prompt_text,
-                    )
-            else:
-                result = manager.execute_task(
-                    intent, session_id=session_id,
-                    app_prompt_text=app_prompt_text,
-                )
+            result = manager.execute_task(
+                intent, session_id=session_id,
+                app_prompt_text=app_prompt_text,
+            )
         except Exception as e:
             logger.error("GUI task error: %s", e)
             return f"GUI task error: {e}"
+        finally:
+            if gui_lock is not None:
+                gui_lock.release()
         return format_gui_result(result)
 
     def gui_task(
@@ -173,48 +165,7 @@ def create_gui_task(
     ) -> str:
         if not intent:
             return "Error: intent is required."
-
-        # Synchronous fallback (no queue — tests / direct call)
-        if queue is None:
-            return _run_sync(intent, session_id or None, app_prompt or None)
-
-        from ..agent.schema import InboundMessage
-
-        def run_background():
-            app_prompt_text = _resolve_app_prompt(app_prompt or None, agent_os_dir)
-            return manager.execute_task(
-                intent,
-                session_id=session_id or None,
-                app_prompt_text=app_prompt_text,
-            )
-
-        def format_background(result, error: Exception | None):
-            if error is not None:
-                logger.error("Background GUI task error: %s", error)
-                return InboundMessage(
-                    channel="gui",
-                    content=f"[GUI Task Result]\nIntent: {intent}\n\n[GUI ERROR] {error}",
-                    priority=0,
-                    sender="system",
-                    metadata={"gui_intent": intent},
-                )
-            return InboundMessage(
-                channel="gui",
-                content=f"[GUI Task Result]\nIntent: {intent}\n\n{format_gui_result(result)}",
-                priority=0,
-                sender="system",
-                metadata={"gui_intent": intent, "gui_session_id": result.session_id},
-            )
-
-        busy = dispatch_background_task(
-            queue, gui_lock, "GUI", run_background, format_background
-        )
-        if busy is not None:
-            return "[GUI BUSY] Another GUI task is already running. Use schedule_action to check back later."
-        return (
-            "[GUI DISPATCHED] Task accepted and running in background. "
-            "Result will be delivered as a [gui, from system] message."
-        )
+        return _run_sync(intent, session_id or None, app_prompt or None)
 
     return gui_task
 

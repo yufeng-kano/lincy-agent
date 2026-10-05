@@ -1,4 +1,7 @@
-"""Add the shared worker notes file and deploy the prompts that use it."""
+"""Deploy the prompts that use the shared worker notes.
+
+The notes file itself is created lazily on the first worker_note append.
+"""
 
 import shutil
 from pathlib import Path
@@ -9,7 +12,6 @@ _FILES = [
     "agents/worker/prompts/system.md",
     "builtin-skills/skill-installer/SKILL.md",
 ]
-_NOTES_PATH = "worker-notes/notes.md"
 
 
 class M0178WorkerNotes(Migration):
@@ -29,8 +31,3 @@ class M0178WorkerNotes(Migration):
             if src.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
-
-        notes_path = kernel_dir.parent / _NOTES_PATH
-        if not notes_path.exists():
-            notes_path.parent.mkdir(parents=True, exist_ok=True)
-            notes_path.write_text("", encoding="utf-8")

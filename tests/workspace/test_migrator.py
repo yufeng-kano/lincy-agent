@@ -1772,7 +1772,7 @@ class TestM0177WorkerGuiEscalation:
 class TestM0178WorkerNotes:
     """Tests for the shared worker notes migration."""
 
-    def test_copies_prompts_and_creates_empty_notes(self, tmp_path: Path):
+    def test_copies_prompts_without_creating_notes(self, tmp_path: Path):
         from lincy.workspace.migrations.m0178_worker_notes import M0178WorkerNotes
 
         kernel_dir = tmp_path / "kernel"
@@ -1793,7 +1793,7 @@ class TestM0178WorkerNotes:
 
         for rel in files:
             assert (kernel_dir / rel).read_text() == f"new::{rel}"
-        assert (tmp_path / "worker-notes" / "notes.md").read_text() == ""
+        assert not (tmp_path / "worker-notes").exists()
 
     def test_keeps_existing_notes(self, tmp_path: Path):
         from lincy.workspace.migrations.m0178_worker_notes import M0178WorkerNotes

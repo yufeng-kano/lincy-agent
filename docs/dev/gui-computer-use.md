@@ -26,7 +26,7 @@ brain --screenshot_by_subagent--> GUIWorker (Gemini 視覺describe，僅此用�
 - **兩層不變**：CU loop 隔離在 `gui_task` 子 loop，不把 9 個 AX 工具掛到 brain 或 worker。理由：每步 tree+截圖是高流量暫時性 context，掛 brain 會炸 `soft_max_prompt_tokens`、破壞 brain cache 準則，且做完後殘留對話歷史。
 - **manager 直接看圖**：tool result 內含截圖（Anthropic 系 provider 支援 tool result image parts），不再有視覺轉述層。
 - **gui_worker 僅存於** `screenshot_by_subagent`；GUI 任務 loop 不再依賴。
-- 呼叫者是 worker 而非 brain（brain 的 `excluded_tools` 排除 `gui_task`，見 `brain-worker-delegation.md`「GUI 升級鏈」）。介面（intent / session_id / app_prompt、GUI lock）不變；worker 拿到的是同步版本，直接收到結果文字。
+- 呼叫者是 worker 而非 brain（brain 的 `excluded_tools` 排除 `gui_task`，見 `brain-worker-delegation.md`「GUI 升級鏈」）。介面（intent / session_id / app_prompt）不變；只有一個同步 `gui_task`，註冊在共用 registry，worker 像其他工具一樣 clone，直接收到結果文字。並行 GUI 任務由 `gui_lock` 序列化，等待超過 `agents.gui_manager.lock_wait_seconds` 回 `[GUI BUSY]`。
 
 ## 工具面（9 MCP + 4 本地）
 

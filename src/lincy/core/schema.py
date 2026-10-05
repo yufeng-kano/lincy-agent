@@ -330,7 +330,8 @@ class WorkerNotesConfig(StrictConfigModel):
         parts = Path(value).parts
         if not parts or Path(value).is_absolute() or ".." in parts:
             raise ValueError("notes.path must be a relative path inside agent_os_dir")
-        if parts[0] == "memory":
+        # APFS is case-insensitive, so Memory/ is the same directory.
+        if parts[0].lower() == "memory":
             raise ValueError("notes.path must stay outside memory/")
         return value
 
@@ -366,6 +367,7 @@ class AgentConfig(StrictConfigModel):
     allow_wait_tool: bool = True
     step_delay_min: float = Field(default=0.0, ge=0.0, le=10.0)
     step_delay_max: float = Field(default=0.0, ge=0.0, le=10.0)
+    lock_wait_seconds: int = Field(default=300, ge=1)
     # GUI screenshot optimization
     screenshot_max_width: int | None = Field(default=1280, ge=256)
     screenshot_quality: int = Field(default=80, ge=10, le=100)

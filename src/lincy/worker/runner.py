@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -101,6 +102,7 @@ class WorkerRunner:
         self._extra_tools = extra_tools or {}
         self._notes = notes
         self._notes_summarizer = notes_summarizer
+        self._notes_thread: threading.Thread | None = None
         self._max_turns = max_turns
         self._max_context_tokens = max_context_tokens
         self._cache_control = cache_control
@@ -318,109 +320,119 @@ class WorkerRunner:
         started_ms = _now_ms()
 
         try:
-            try:
+            request_messages = advance_cache_breakpoint(
+                self._compact_messages(messages, worker_label)
+            )
+            response = client.chat_with_tools(request_messages, tool_defs)
+            tokens_used += response.total_tokens or 0
+
+            while response.tool_calls and turns < effective_max_turns:
+                # Capture assistant text if present
+                if response.content:
+                    last_text = response.content
+
+                messages.append(Message(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                ))
+
+                for tc in response.tool_calls:
+                    self._print_tool_call(worker_label, tc)
+                    result = registry.execute(tc)
+                    self._print_tool_result(worker_label, tc, result.content)
+                    messages.append(make_tool_result_message(
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                        content=result.content,
+                    ))
+
+                turns += 1
                 request_messages = advance_cache_breakpoint(
                     self._compact_messages(messages, worker_label)
                 )
                 response = client.chat_with_tools(request_messages, tool_defs)
                 tokens_used += response.total_tokens or 0
 
-                while response.tool_calls and turns < effective_max_turns:
-                    # Capture assistant text if present
-                    if response.content:
-                        last_text = response.content
+            # Final response (no tool calls)
+            if response.content:
+                last_text = response.content
 
-                    messages.append(Message(
-                        role="assistant",
-                        content=response.content,
-                        tool_calls=response.tool_calls,
+            truncated = bool(response.tool_calls) and turns >= effective_max_turns
+            if truncated:
+                # Without a report the brain re-dispatches from scratch, so
+                # close out the pending calls and ask for one tool-free answer.
+                messages.append(Message(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                ))
+                for tc in response.tool_calls:
+                    messages.append(make_tool_result_message(
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                        content=_TURN_LIMIT_TOOL_RESULT,
                     ))
-
-                    for tc in response.tool_calls:
-                        self._print_tool_call(worker_label, tc)
-                        result = registry.execute(tc)
-                        self._print_tool_result(worker_label, tc, result.content)
-                        messages.append(make_tool_result_message(
-                            tool_call_id=tc.id,
-                            name=tc.name,
-                            content=result.content,
-                        ))
-
-                    turns += 1
-                    request_messages = advance_cache_breakpoint(
-                        self._compact_messages(messages, worker_label)
-                    )
-                    response = client.chat_with_tools(request_messages, tool_defs)
-                    tokens_used += response.total_tokens or 0
-
-                # Final response (no tool calls)
-                if response.content:
-                    last_text = response.content
-
-                truncated = bool(response.tool_calls) and turns >= effective_max_turns
-                if truncated:
-                    # Without a report the brain re-dispatches from scratch, so
-                    # close out the pending calls and ask for one tool-free answer.
-                    messages.append(Message(
-                        role="assistant",
-                        content=response.content,
-                        tool_calls=response.tool_calls,
-                    ))
-                    for tc in response.tool_calls:
-                        messages.append(make_tool_result_message(
-                            tool_call_id=tc.id,
-                            name=tc.name,
-                            content=_TURN_LIMIT_TOOL_RESULT,
-                        ))
-                    messages.append(Message(role="user", content=_FORCED_REPORT_PROMPT))
-                    # Anthropic rejects a history containing tool_use/tool_result
-                    # blocks when the request defines no tools, so the tools stay
-                    # attached; the prompt forbids calling them and a call that
-                    # still comes back is ignored.
-                    try:
-                        report = client.chat_with_tools(
-                            advance_cache_breakpoint(self._compact_messages(messages, worker_label)),
-                            tool_defs,
-                        )
-                        tokens_used += report.total_tokens or 0
-                        if report.content and not report.tool_calls:
-                            last_text = report.content
-                    except Exception as exc:
-                        logger.warning(
-                            "Worker %s forced final report failed: %s", worker_label, exc,
-                        )
-
-                action_log = _build_action_log(messages)
-                return WorkerResult(
-                    success=not truncated,
-                    text=last_text or "",
-                    turns_used=turns,
-                    tokens_used=tokens_used,
-                    duration_ms=_now_ms() - started_ms,
-                    truncated=truncated,
-                    action_log=action_log,
-                )
-
-            except Exception as exc:
-                logger.warning("Worker %s failed: %s", worker_label, exc)
-                action_log = _build_action_log(messages)
-                return WorkerResult(
-                    success=False,
-                    text=last_text or "",
-                    turns_used=turns,
-                    tokens_used=tokens_used,
-                    duration_ms=_now_ms() - started_ms,
-                    truncated=False,
-                    error=str(exc),
-                    action_log=action_log,
-                )
-        finally:
-            # Runs on every return path; notes upkeep must never alter the result.
-            if self._notes is not None and self._notes_summarizer is not None:
+                messages.append(Message(role="user", content=_FORCED_REPORT_PROMPT))
+                # Anthropic rejects a history containing tool_use/tool_result
+                # blocks when the request defines no tools, so the tools stay
+                # attached; the prompt forbids calling them. A tool call that
+                # still comes back is never executed, but any text it carries
+                # is the report.
                 try:
-                    self._notes.compress(self._notes_summarizer)
+                    report = client.chat_with_tools(
+                        advance_cache_breakpoint(self._compact_messages(messages, worker_label)),
+                        tool_defs,
+                    )
+                    tokens_used += report.total_tokens or 0
+                    if report.content:
+                        last_text = report.content
+                except Exception as exc:
+                    logger.warning(
+                        "Worker %s forced final report failed: %s", worker_label, exc,
+                    )
+
+            worker_result = WorkerResult(
+                success=not truncated,
+                text=last_text or "",
+                turns_used=turns,
+                tokens_used=tokens_used,
+                duration_ms=_now_ms() - started_ms,
+                truncated=truncated,
+                # The log only helps the brain resume unfinished work.
+                action_log=_build_action_log(messages) if truncated else "",
+            )
+
+        except Exception as exc:
+            logger.warning("Worker %s failed: %s", worker_label, exc)
+            worker_result = WorkerResult(
+                success=False,
+                text=last_text or "",
+                turns_used=turns,
+                tokens_used=tokens_used,
+                duration_ms=_now_ms() - started_ms,
+                truncated=False,
+                error=str(exc),
+                action_log=_build_action_log(messages),
+            )
+
+        if self._notes is not None and self._notes_summarizer is not None:
+            notes = self._notes
+            summarizer = self._notes_summarizer
+
+            # Compression is an LLM call; keep it off the caller's path so the
+            # finished result is returned immediately.
+            def compress_notes() -> None:
+                try:
+                    notes.compress(summarizer)
                 except Exception:
                     logger.warning("Worker notes compression failed", exc_info=True)
+
+            self._notes_thread = threading.Thread(
+                target=compress_notes, name="worker-notes-compress", daemon=True,
+            )
+            self._notes_thread.start()
+        return worker_result
 
 
 def _build_action_log(messages: list[Message]) -> str:

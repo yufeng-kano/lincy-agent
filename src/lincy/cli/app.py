@@ -706,6 +706,7 @@ def main(user: str, resume: str | None = None) -> None:
     worker_config = config.agents.get("worker")
     _worker_runner = None
     _worker_counter = None
+    _worker_extra_tools = {}
     if worker_config is not None and worker_config.enabled:
         from ..agent.tool_setup import build_worker_file_tools
         from ..worker import WORKER_TOOL_DEFINITION, WorkerRunner, create_worker_tool
@@ -725,25 +726,7 @@ def main(user: str, resume: str | None = None) -> None:
         )
 
         _worker_overrides = build_worker_file_tools(all_allowed_paths, agent_os_dir)
-        if gui_manager_instance is not None:
-            from ..gui.tool_adapter import GUI_TASK_DEFINITION, create_gui_task
 
-            # The worker escalates to GUI itself and needs the result inline,
-            # so it gets a synchronous gui_task (queue=None) that blocks on the
-            # shared gui_lock; the queue-bound one registered below reports to
-            # the brain's inbox. Overrides only apply to names in the source
-            # registry, which is cloned at run() time, after gui_task exists.
-            _worker_overrides["gui_task"] = (
-                create_gui_task(
-                    gui_manager_instance,
-                    gui_lock=gui_lock,
-                    agent_os_dir=agent_os_dir,
-                    queue=None,
-                ),
-                GUI_TASK_DEFINITION,
-            )
-
-        _worker_extra_tools = {}
         _worker_notes = None
         _worker_notes_summarizer = None
         if worker_config.notes.enabled:
@@ -949,7 +932,7 @@ def main(user: str, resume: str | None = None) -> None:
             GET_CHANNEL_HISTORY_DEFINITION,
         )
 
-    # === gui_task tool (registered after queue for background execution) ===
+    # === gui_task tool (synchronous; serialized by gui_lock) ===
     if gui_manager_instance is not None:
         from ..gui.tool_adapter import GUI_TASK_DEFINITION, create_gui_task
 
@@ -959,7 +942,7 @@ def main(user: str, resume: str | None = None) -> None:
                 gui_manager_instance,
                 gui_lock=gui_lock,
                 agent_os_dir=agent_os_dir,
-                queue=pqueue,
+                lock_wait_seconds=_gm_cfg.lock_wait_seconds,
             ),
             GUI_TASK_DEFINITION,
         )
@@ -1047,7 +1030,9 @@ def main(user: str, resume: str | None = None) -> None:
         )
 
     # All registrations are done by now, so unknown exclusions are real typos.
-    validate_excluded_tools(registry, config.agents)
+    validate_excluded_tools(
+        registry, config.agents, extra_tools_by_agent={"worker": _worker_extra_tools},
+    )
 
     app = ChatTextualApp(controller=controller, event_sink=ui_sink)
 
