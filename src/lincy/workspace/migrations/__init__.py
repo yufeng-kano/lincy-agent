@@ -186,6 +186,8 @@ from .m0175_remove_chat_proxy_providers import M0175RemoveChatProxyProviders
 from .m0176_split_kano_proxy_utility_profile import (
     M0176SplitKanoProxyUtilityProfile,
 )
+from .m0177_worker_gui_escalation import M0177WorkerGuiEscalation
+from .m0178_worker_notes import M0178WorkerNotes
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -362,4 +364,6 @@ ALL_MIGRATIONS = [
     M0174RemoveReminderCopilotFeatures(),
     M0175RemoveChatProxyProviders(),
     M0176SplitKanoProxyUtilityProfile(),
+    M0177WorkerGuiEscalation(),
+    M0178WorkerNotes(),
 ]

@@ -1670,3 +1670,140 @@ class TestM0166WorkerMemoryFileAccess:
 
         for rel in files:
             assert (kernel_dir / rel).read_text() == f"new::{rel}"
+
+
+class TestM0177WorkerGuiEscalation:
+    """Tests for moving gui_task from brain to worker."""
+
+    def test_copies_brain_and_worker_prompts(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+
+        files = [
+            "agents/brain/prompts/system.md",
+            "agents/worker/prompts/system.md",
+        ]
+
+        for rel in files:
+            src = templates_dir / rel
+            dst = kernel_dir / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"new::{rel}")
+            dst.write_text(f"old::{rel}")
+
+        from lincy.workspace.migrations.m0177_worker_gui_escalation import (
+            M0177WorkerGuiEscalation,
+        )
+
+        M0177WorkerGuiEscalation().upgrade(kernel_dir, templates_dir)
+
+        for rel in files:
+            assert (kernel_dir / rel).read_text() == f"new::{rel}"
+
+    def test_moves_gui_task_exclusion_from_worker_to_brain(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0177_worker_gui_escalation import (
+            M0177WorkerGuiEscalation,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "cfgs" / "agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "agents:\n"
+            "  brain:\n"
+            "    llm: cfgs/llm/kano-proxy/brain.yaml\n"
+            "    excluded_tools:\n"
+            "      - execute_shell\n"
+            "      - shell_task\n"
+            "  worker:\n"
+            "    llm: cfgs/llm/kano-proxy/worker.yaml\n"
+            "    excluded_tools:\n"
+            "      - gui_task\n"
+            "      - screenshot\n"
+            "      - shell_task\n",
+            encoding="utf-8",
+        )
+
+        M0177WorkerGuiEscalation().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config["agents"]["brain"]["excluded_tools"] == [
+            "execute_shell",
+            "shell_task",
+            "gui_task",
+        ]
+        assert config["agents"]["worker"]["excluded_tools"] == [
+            "screenshot",
+            "shell_task",
+        ]
+
+    def test_brain_without_excluded_tools_gets_gui_task(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0177_worker_gui_escalation import (
+            M0177WorkerGuiEscalation,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        config_path = tmp_path / "agent.yaml"
+        config_path.write_text(
+            "agents:\n  brain:\n    llm: cfgs/llm/kano-proxy/brain.yaml\n",
+            encoding="utf-8",
+        )
+
+        M0177WorkerGuiEscalation().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config["agents"]["brain"]["excluded_tools"] == ["gui_task"]
+        assert "worker" not in config["agents"]
+
+    def test_missing_config_files_are_noop(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0177_worker_gui_escalation import (
+            M0177WorkerGuiEscalation,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+
+        M0177WorkerGuiEscalation().upgrade(kernel_dir, tmp_path / "templates")
+
+
+class TestM0178WorkerNotes:
+    """Tests for the shared worker notes migration."""
+
+    def test_copies_prompts_without_creating_notes(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0178_worker_notes import M0178WorkerNotes
+
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+        files = [
+            "agents/worker/prompts/system.md",
+            "builtin-skills/skill-installer/SKILL.md",
+        ]
+        for rel in files:
+            src = templates_dir / rel
+            dst = kernel_dir / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"new::{rel}")
+            dst.write_text(f"old::{rel}")
+
+        M0178WorkerNotes().upgrade(kernel_dir, templates_dir)
+
+        for rel in files:
+            assert (kernel_dir / rel).read_text() == f"new::{rel}"
+        assert not (tmp_path / "worker-notes").exists()
+
+    def test_keeps_existing_notes(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0178_worker_notes import M0178WorkerNotes
+
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        notes_path = tmp_path / "worker-notes" / "notes.md"
+        notes_path.parent.mkdir()
+        notes_path.write_text("- [2026-10-01] keep me\n")
+
+        M0178WorkerNotes().upgrade(kernel_dir, tmp_path / "templates")
+
+        assert notes_path.read_text() == "- [2026-10-01] keep me\n"

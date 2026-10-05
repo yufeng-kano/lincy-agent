@@ -33,12 +33,6 @@ npx skills add <owner>/<repo>@<skill-name> -g -y
 npx skills add <owner>/<repo> --all -g -y
 ```
 
-常見範例：
-
-```bash
-npx skills add vercel-labs/agent-browser@agent-browser -g -y
-```
-
 ### 列出已安裝
 
 ```bash
@@ -72,8 +66,6 @@ npx skills remove <skill-name> -g -y
 
 ## 主動建議
 
-當 heartbeat 回顧中發現重複的手動操作模式，且生態系有對應 skill，可以主動建議 owner 安裝：
-
-> 「我注意到最近多次手動操作瀏覽器。生態系有 `agent-browser` skill 可以更好地處理這件事。要安裝嗎？」
+當 heartbeat 回顧中發現重複的手動操作模式，且生態系有對應 skill，可以主動建議 owner 安裝。瀏覽器與桌面 GUI 操作不在此列：那由 worker 的 `gui_task` 處理，不要建議安裝瀏覽器自動化 skill（agent-browser 已停用）。
 
 建議即可，不要自行安裝。

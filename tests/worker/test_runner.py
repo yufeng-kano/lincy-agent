@@ -7,13 +7,18 @@ class _FakeWorkerClient:
     def __init__(self, responses: list[LLMResponse]):
         self._responses = list(responses)
         self.calls: list[list[Message]] = []
+        self.tools: list[list[ToolDefinition]] = []
 
     def chat(self, messages, response_schema=None, temperature=None):
         raise NotImplementedError
 
     def chat_with_tools(self, messages, tools, temperature=None):
         self.calls.append([message.model_copy(deep=True) for message in messages])
-        return self._responses.pop(0)
+        self.tools.append(list(tools))
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _build_registry() -> ToolRegistry:
@@ -185,3 +190,255 @@ def test_worker_session_covers_tool_loop_and_is_new_for_each_task():
     assert keys[0] == keys[1]
     assert keys[2] != keys[0]
     assert parent not in keys
+
+
+def _echo_call(call_id: str, text: str) -> LLMResponse:
+    return LLMResponse(
+        content=None,
+        tool_calls=[ToolCall(id=call_id, name="echo", arguments={"text": text})],
+        total_tokens=1,
+    )
+
+
+def test_worker_runner_forces_final_report_at_turn_limit():
+    client = _FakeWorkerClient([
+        _echo_call("c1", "first value"),
+        _echo_call("c2", "pending value"),
+        LLMResponse(content="Report: echoed first value; c2 not run.", total_tokens=5),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo twice", max_turns_override=1, worker_label="worker-cap")
+
+    assert result.truncated is True
+    assert result.success is False
+    assert result.turns_used == 1
+    assert result.tokens_used == 7
+    assert result.text == "Report: echoed first value; c2 not run."
+    assert len(client.calls) == 3
+    assert client.tools[0] and client.tools[1]
+    assert client.tools[2] == client.tools[1]
+    assistant, tool_result, user = client.calls[2][-3:]
+    assert assistant.role == "assistant"
+    assert [tc.id for tc in assistant.tool_calls] == ["c2"]
+    assert tool_result.role == "tool"
+    assert tool_result.tool_call_id == "c2"
+    assert tool_result.name == "echo"
+    assert tool_result.content == "Not executed: worker turn limit reached."
+    assert user.role == "user"
+    assert "Do not call tools" in user.content
+    assert '1. echo({"text": "first value"}) -> first value' in result.action_log
+    assert "2. echo(" in result.action_log
+    assert "Not executed" in result.action_log
+
+
+def test_worker_runner_falls_back_when_forced_report_fails():
+    client = _FakeWorkerClient([
+        _echo_call("c1", "first value"),
+        LLMResponse(
+            content="halfway",
+            tool_calls=[ToolCall(id="c2", name="echo", arguments={"text": "x"})],
+            total_tokens=1,
+        ),
+        RuntimeError("provider rejected"),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo twice", max_turns_override=1)
+
+    assert result.truncated is True
+    assert result.success is False
+    assert result.error is None
+    assert result.text == "halfway"
+    assert "first value" in result.action_log
+
+
+def test_worker_runner_uses_forced_report_text_even_with_tool_call():
+    client = _FakeWorkerClient([
+        _echo_call("c1", "first value"),
+        _echo_call("c2", "pending value"),
+        LLMResponse(
+            content="Report: first value echoed.",
+            tool_calls=[ToolCall(id="c3", name="echo", arguments={"text": "again"})],
+            total_tokens=1,
+        ),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo twice", max_turns_override=1)
+
+    assert result.truncated is True
+    assert result.text == "Report: first value echoed."
+    assert len(client.calls) == 3
+    assert "again" not in result.action_log
+
+
+def test_worker_runner_keeps_partial_action_log_on_exception():
+    client = _FakeWorkerClient([
+        _echo_call("c1", "first value"),
+        RuntimeError("connection reset"),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo")
+
+    assert result.success is False
+    assert result.truncated is False
+    assert result.error == "connection reset"
+    assert result.action_log == '1. echo({"text": "first value"}) -> first value'
+
+
+def test_worker_action_log_keeps_latest_entries_within_budget():
+    responses = [_echo_call(f"c{i}", f"value-{i} " + "z" * 400) for i in range(20)]
+    responses.append(LLMResponse(content="report", total_tokens=1))
+    client = _FakeWorkerClient(responses)
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo many", max_turns_override=19)
+
+    assert result.truncated is True
+    lines = result.action_log.splitlines()
+    assert len(result.action_log) <= 4100
+    assert lines[0].endswith("earlier entries omitted)")
+    assert lines[-1].startswith("20. echo(")
+    assert "value-0 " not in result.action_log
+
+
+def _note_tool_definition() -> ToolDefinition:
+    return ToolDefinition(
+        name="worker_note",
+        description="note",
+        parameters={"text": ToolParameter(type="string", description="text")},
+        required=["text"],
+    )
+
+
+def test_worker_runner_injects_notes_before_context_files(tmp_path):
+    from lincy.worker.notes import WorkerNotes
+
+    notes = WorkerNotes(tmp_path / "notes.md", 1000, 500)
+    notes.append("site X blocks curl")
+    context_file = tmp_path / "ctx.md"
+    context_file.write_text("context body", encoding="utf-8")
+    client = _FakeWorkerClient([LLMResponse(content="done", total_tokens=1)])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt", notes=notes)
+
+    runner.run("Do it", context_files=[str(context_file)])
+
+    content = client.calls[0][1].content
+    assert content.startswith("[Worker notes]\n- [")
+    assert "site X blocks curl\n[/Worker notes]" in content
+    assert content.index("[/Worker notes]") < content.index("[Context:")
+    assert content.endswith("Do it")
+
+
+def test_worker_runner_skips_empty_notes(tmp_path):
+    from lincy.worker.notes import WorkerNotes
+
+    notes = WorkerNotes(tmp_path / "notes.md", 1000, 500)
+    client = _FakeWorkerClient([LLMResponse(content="done", total_tokens=1)])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt", notes=notes)
+
+    runner.run("Do it")
+
+    assert client.calls[0][1].content == "Do it"
+
+
+def test_worker_runner_registers_extra_tools():
+    calls = []
+    client = _FakeWorkerClient([
+        LLMResponse(
+            tool_calls=[ToolCall(id="n1", name="worker_note", arguments={"text": "lesson"})],
+            total_tokens=1,
+        ),
+        LLMResponse(content="done", total_tokens=1),
+    ])
+    runner = WorkerRunner(
+        client,
+        _build_registry(),
+        frozenset(),
+        "system prompt",
+        extra_tools={
+            "worker_note": (lambda text: calls.append(text) or "ok", _note_tool_definition()),
+        },
+    )
+
+    result = runner.run("Do it")
+
+    assert result.success is True
+    assert result.action_log == ""
+    assert {tool.name for tool in client.tools[0]} == {"echo", "worker_note"}
+    assert calls == ["lesson"]
+
+
+def test_worker_runner_extra_tools_respect_exclusions():
+    client = _FakeWorkerClient([LLMResponse(content="done", total_tokens=1)])
+    runner = WorkerRunner(
+        client,
+        _build_registry(),
+        frozenset({"worker_note"}),
+        "system prompt",
+        extra_tools={"worker_note": (lambda text: "ok", _note_tool_definition())},
+    )
+
+    runner.run("Do it")
+
+    assert [tool.name for tool in client.tools[0]] == ["echo"]
+
+
+class _RecordingNotes:
+    def __init__(self, compress_error: Exception | None = None):
+        self.compressed_with = []
+        self.compress_error = compress_error
+
+    def read(self) -> str:
+        return ""
+
+    def compress(self, summarize):
+        self.compressed_with.append(summarize)
+        if self.compress_error is not None:
+            raise self.compress_error
+        return True
+
+
+def test_worker_runner_compresses_notes_after_run():
+    summarizer = lambda text: text  # noqa: E731
+    notes = _RecordingNotes()
+    client = _FakeWorkerClient([LLMResponse(content="done", total_tokens=1)])
+    runner = WorkerRunner(
+        client, _build_registry(), frozenset(), "system prompt",
+        notes=notes, notes_summarizer=summarizer,
+    )
+
+    result = runner.run("Do it")
+    runner._notes_thread.join(timeout=5)
+
+    assert result.text == "done"
+    assert notes.compressed_with == [summarizer]
+
+
+def test_worker_runner_compresses_notes_after_failure_and_ignores_errors():
+    notes = _RecordingNotes(compress_error=RuntimeError("disk full"))
+    client = _FakeWorkerClient([RuntimeError("connection reset")])
+    runner = WorkerRunner(
+        client, _build_registry(), frozenset(), "system prompt",
+        notes=notes, notes_summarizer=lambda text: text,
+    )
+
+    result = runner.run("Do it")
+    runner._notes_thread.join(timeout=5)
+
+    assert result.success is False
+    assert result.error == "connection reset"
+    assert len(notes.compressed_with) == 1
+
+
+def test_worker_runner_skips_compression_without_summarizer():
+    notes = _RecordingNotes()
+    client = _FakeWorkerClient([LLMResponse(content="done", total_tokens=1)])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt", notes=notes)
+
+    runner.run("Do it")
+
+    assert runner._notes_thread is None
+    assert notes.compressed_with == []

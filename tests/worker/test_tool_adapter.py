@@ -101,6 +101,28 @@ class TestFormatWorkerResult:
         text = format_worker_result(_ok_result(truncated=True), "demo task")
         assert "[WORKER TRUNCATED]" in text
 
+    def test_truncated_includes_action_log(self):
+        text = format_worker_result(
+            _ok_result(success=False, truncated=True, action_log="1. echo({}) -> hi"),
+            "demo task",
+        )
+        assert "[Action log]\n1. echo({}) -> hi" in text
+
+    def test_failed_includes_action_log(self):
+        text = format_worker_result(
+            _ok_result(success=False, error="boom", action_log="1. echo({}) -> hi"),
+            "demo task",
+        )
+        assert "[Action log]" in text
+        assert text.index("Error: boom") < text.index("[Action log]")
+
+    def test_success_omits_action_log(self):
+        text = format_worker_result(
+            _ok_result(action_log="1. echo({}) -> hi"), "demo task"
+        )
+        assert "[Action log]" not in text
+        assert "echo(" not in text
+
 
 class TestAsyncDispatch:
     def _make_tool(self, runner, queue, max_concurrent: int = 2):

@@ -261,6 +261,7 @@ agents:
     excluded_tools:
       - execute_shell
       - shell_task
+      - gui_task # browser/GUI work goes through worker, which escalates to gui_task itself
     cache:
       enabled: true
       ttl: "24h"
@@ -296,8 +297,12 @@ agents:
     max_turns: 30
     max_context_tokens: 96000
     task_max_concurrency: 2 # background worker tasks running at once
-    excluded_tools:
-      - gui_task
+    notes: # shared free-form notes, see docs/dev/worker-notes.md
+      enabled: true
+      path: worker-notes/notes.md # relative to agent_os_dir, outside memory/
+      compress_threshold_chars: 8000 # compactor compresses after a task once above this
+      max_chars: 4000 # target size after compression (must be < threshold)
+    excluded_tools: # gui_task stays: worker escalates to it (synchronous, shared registry)
       - screenshot
       - shell_task
     cache:
@@ -339,6 +344,7 @@ agents:
     allow_wait_tool: false # false = disable wait tool
     step_delay_min: 0.1 # min forced delay (sec) after each tool step
     step_delay_max: 0.3 # max forced delay (sec); random in [min, max]
+    lock_wait_seconds: 300 # gui_task 等待另一個 GUI 任務釋放鎖的上限（秒），逾時回 [GUI BUSY]
     screenshot_max_width: 1000 # 截圖最大寬度（等比縮放；供 brain screenshot 工具與 gui_worker 用）
     screenshot_quality: 70 # JPEG 壓縮品質（1-100）
     ax: # AX-first 後端（OpenComputerUse MCP server）

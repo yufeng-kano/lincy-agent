@@ -585,3 +585,26 @@ def test_app_config_rejects_invalid_timezone(value: str):
                 },
             }
         )
+
+
+def test_worker_notes_config_defaults():
+    config = AgentConfig.model_validate({"llm": _ollama_llm()})
+    assert config.notes.enabled is True
+    assert config.notes.path == "worker-notes/notes.md"
+    assert config.notes.compress_threshold_chars == 8000
+    assert config.notes.max_chars == 4000
+
+
+def test_worker_notes_config_rejects_max_chars_at_or_above_threshold():
+    with pytest.raises(ValidationError, match="max_chars"):
+        AgentConfig.model_validate(
+            {"llm": _ollama_llm(), "notes": {"compress_threshold_chars": 1000, "max_chars": 1000}}
+        )
+
+
+@pytest.mark.parametrize(
+    "path", ["memory/notes.md", "Memory/x.md", "/tmp/notes.md", "../notes.md"]
+)
+def test_worker_notes_config_rejects_paths_outside_workspace_or_in_memory(path):
+    with pytest.raises(ValidationError, match="notes.path"):
+        AgentConfig.model_validate({"llm": _ollama_llm(), "notes": {"path": path}})

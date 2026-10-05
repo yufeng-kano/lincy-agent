@@ -65,3 +65,25 @@ class TestGuiLock:
         assert lock_was_held == [True]
         # Lock is released after execution
         assert not lock.locked()
+
+    def test_gui_task_returns_busy_when_lock_wait_times_out(self):
+        mgr = _make_manager()
+        lock = threading.Lock()
+        lock.acquire()
+        try:
+            fn = create_gui_task(mgr, gui_lock=lock, lock_wait_seconds=0.1)
+            result = fn(intent="do something")
+        finally:
+            lock.release()
+        assert result.startswith("[GUI BUSY]")
+        assert "0.1s" in result
+        mgr.execute_task.assert_not_called()
+
+    def test_gui_task_releases_lock_on_error(self):
+        mgr = MagicMock()
+        mgr.execute_task.side_effect = RuntimeError("boom")
+        lock = threading.Lock()
+        fn = create_gui_task(mgr, gui_lock=lock)
+        result = fn(intent="fail")
+        assert "GUI task error: boom" in result
+        assert not lock.locked()

@@ -22,7 +22,7 @@ WORKER_TOOL_DEFINITION = ToolDefinition(
     description=(
         "Delegate a multi-step task to an autonomous worker subagent. "
         "The worker runs with its own independent context window and can use "
-        "all available tools except gui_task and worker itself. "
+        "all available tools except worker itself, including a synchronous gui_task for browser or desktop work it cannot finish over HTTP or CLI. "
         "Write the prompt as a self-contained task description -- "
         "the worker has NO access to the current conversation context. "
         "Include all necessary details, file paths, and success criteria.\n"
@@ -87,6 +87,11 @@ def format_worker_result(result: WorkerResult, description: str) -> str:
         parts.append(result.text)
     if result.error:
         parts.append(f"Error: {result.error}")
+    # SUCCESS already carries the worker's own report; the log is for
+    # resuming after a cut-off run.
+    if status != "SUCCESS" and result.action_log:
+        parts.append("[Action log]")
+        parts.append(result.action_log)
     return "\n".join(parts)
 
 

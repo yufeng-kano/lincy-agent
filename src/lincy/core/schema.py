@@ -314,6 +314,37 @@ class AXServerConfig(StrictConfigModel):
     tool_timeout: float = Field(default=90.0, gt=0)
 
 
+class WorkerNotesConfig(StrictConfigModel):
+    """Shared free-form notes injected into every worker task."""
+
+    enabled: bool = True
+    # Relative to agent_os_dir; must stay outside memory/ (brain-owned).
+    path: str = "worker-notes/notes.md"
+    compress_threshold_chars: int = Field(default=8000, ge=1000)
+    # Target size after compression.
+    max_chars: int = Field(default=4000, ge=500)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        parts = Path(value).parts
+        if not parts or Path(value).is_absolute() or ".." in parts:
+            raise ValueError("notes.path must be a relative path inside agent_os_dir")
+        # APFS is case-insensitive, so Memory/ is the same directory.
+        if parts[0].lower() == "memory":
+            raise ValueError("notes.path must stay outside memory/")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_sizes(self) -> "WorkerNotesConfig":
+        if self.max_chars >= self.compress_threshold_chars:
+            raise ValueError(
+                f"max_chars ({self.max_chars}) must be less than "
+                f"compress_threshold_chars ({self.compress_threshold_chars})"
+            )
+        return self
+
+
 class AgentConfig(StrictConfigModel):
     """Agent configuration with LLM settings."""
 
@@ -336,6 +367,7 @@ class AgentConfig(StrictConfigModel):
     allow_wait_tool: bool = True
     step_delay_min: float = Field(default=0.0, ge=0.0, le=10.0)
     step_delay_max: float = Field(default=0.0, ge=0.0, le=10.0)
+    lock_wait_seconds: int = Field(default=300, ge=1)
     # GUI screenshot optimization
     screenshot_max_width: int | None = Field(default=1280, ge=256)
     screenshot_quality: int = Field(default=80, ge=10, le=100)
@@ -349,6 +381,7 @@ class AgentConfig(StrictConfigModel):
     max_turns: int = Field(default=30, ge=1)
     max_context_tokens: int = Field(default=96000, ge=1024)
     task_max_concurrency: int = Field(default=2, ge=1)
+    notes: WorkerNotesConfig = Field(default_factory=WorkerNotesConfig)
     # Tools hidden from this agent's tool loop (schema + execution);
     # validated against the registry at startup.
     excluded_tools: list[str] = Field(default_factory=list)
