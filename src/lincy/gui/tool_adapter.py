@@ -58,8 +58,8 @@ GUI_TASK_DEFINITION = ToolDefinition(
         "\n"
         "Intent guidelines:\n"
         "- State the goal and success criteria clearly.\n"
-        "- Do NOT include URLs. Describe the destination instead "
-        "(e.g. 'find X's Twitter page' not 'go to twitter.com/X').\n"
+        "- Include the URL when you know it. Otherwise describe the "
+        "destination and give search keywords.\n"
         "- Do NOT include conversation context, nicknames, or "
         "references that only make sense in this chat.\n"
         "- For search tasks, provide alternative names/keywords "
@@ -67,10 +67,10 @@ GUI_TASK_DEFINITION = ToolDefinition(
         "- Include constraints (save path, app preference) as bullet points.\n"
         "\n"
         "Good: 'Download a photo of the singer Kano (鹿乃) from her "
-        "Twitter/X page. Search keywords: 鹿乃, Kano, kano_hanano. "
-        "Save to ~/Pictures/kano.jpg.'\n"
-        "Bad: 'Go to https://twitter.com/kano_hanano and save a cute photo "
-        "for 老公 to monitor API requests.'"
+        "Twitter/X page https://x.com/kano_hanano (if it does not load, "
+        "search: 鹿乃, Kano, kano_hanano). Save to ~/Pictures/kano.jpg.'\n"
+        "Bad: 'Save a cute photo of her for 老公 from that account we "
+        "talked about.'"
     ),
     parameters={
         "intent": ToolParameter(

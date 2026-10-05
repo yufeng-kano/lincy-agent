@@ -684,6 +684,21 @@ def main(user: str, resume: str | None = None) -> None:
         web_fetch_summarizer=_wf_summarizer,
     )
 
+    # === compactor client ===
+    # Conversation compaction: summarizing sub-agent used before the local
+    # deterministic fallback. Built before the worker runner because worker
+    # notes compression reuses the same client.
+    compactor_agent_instance: CompactorAgent | None = None
+    compactor_client = None
+    compactor_config = config.agents.get("compactor")
+    if compactor_config and compactor_config.enabled:
+        compactor_client = _build_subagent_client(
+            "compactor", compactor_config, session_debug_label="compactor"
+        )
+        compactor_prompt = _load_agent_prompt("compactor")
+        if compactor_prompt is not None:
+            compactor_agent_instance = CompactorAgent(compactor_client, compactor_prompt)
+
     # === worker subagent runner ===
     # Built here (before AgentCore) because maintenance-driven memory
     # curation calls the runner directly from AgentCore, not only via the
@@ -709,6 +724,56 @@ def main(user: str, resume: str | None = None) -> None:
             )
         )
 
+        _worker_overrides = build_worker_file_tools(all_allowed_paths, agent_os_dir)
+        if gui_manager_instance is not None:
+            from ..gui.tool_adapter import GUI_TASK_DEFINITION, create_gui_task
+
+            # The worker escalates to GUI itself and needs the result inline,
+            # so it gets a synchronous gui_task (queue=None) that blocks on the
+            # shared gui_lock; the queue-bound one registered below reports to
+            # the brain's inbox. Overrides only apply to names in the source
+            # registry, which is cloned at run() time, after gui_task exists.
+            _worker_overrides["gui_task"] = (
+                create_gui_task(
+                    gui_manager_instance,
+                    gui_lock=gui_lock,
+                    agent_os_dir=agent_os_dir,
+                    queue=None,
+                ),
+                GUI_TASK_DEFINITION,
+            )
+
+        _worker_extra_tools = {}
+        _worker_notes = None
+        _worker_notes_summarizer = None
+        if worker_config.notes.enabled:
+            from functools import partial
+
+            from ..worker.notes import (
+                WORKER_NOTE_DEFINITION,
+                WorkerNotes,
+                compress_worker_notes,
+                create_worker_note,
+            )
+
+            _worker_notes = WorkerNotes(
+                agent_os_dir / worker_config.notes.path,
+                threshold_chars=worker_config.notes.compress_threshold_chars,
+                max_chars=worker_config.notes.max_chars,
+            )
+            _worker_extra_tools["worker_note"] = (
+                create_worker_note(_worker_notes),
+                WORKER_NOTE_DEFINITION,
+            )
+            if compactor_client is not None:
+                _worker_notes_summarizer = partial(
+                    compress_worker_notes,
+                    compactor_client,
+                    max_chars=worker_config.notes.max_chars,
+                )
+            else:
+                logger.info("Compactor disabled; worker notes compression is off")
+
         # Always exclude worker itself to prevent recursion.
         _excluded = frozenset(worker_config.excluded_tools) | {"worker"}
         _worker_runner = WorkerRunner(
@@ -723,9 +788,10 @@ def main(user: str, resume: str | None = None) -> None:
             provider=getattr(worker_config.llm, "provider", None),
             model=getattr(worker_config.llm, "model", None),
             ui_console=console,
-            tool_overrides=build_worker_file_tools(
-                all_allowed_paths, agent_os_dir
-            ),
+            tool_overrides=_worker_overrides,
+            extra_tools=_worker_extra_tools,
+            notes=_worker_notes,
+            notes_summarizer=_worker_notes_summarizer,
         )
         _worker_counter = WorkerCounter()
 
@@ -751,18 +817,6 @@ def main(user: str, resume: str | None = None) -> None:
     )
 
     # === Build AgentCore ===
-    # Conversation compaction: summarizing sub-agent used before the local
-    # deterministic fallback.
-    compactor_agent_instance: CompactorAgent | None = None
-    compactor_config = config.agents.get("compactor")
-    if compactor_config and compactor_config.enabled:
-        compactor_client = _build_subagent_client(
-            "compactor", compactor_config, session_debug_label="compactor"
-        )
-        compactor_prompt = _load_agent_prompt("compactor")
-        if compactor_prompt is not None:
-            compactor_agent_instance = CompactorAgent(compactor_client, compactor_prompt)
-
     agent = AgentCore(
         client=client,
         conversation=conversation,

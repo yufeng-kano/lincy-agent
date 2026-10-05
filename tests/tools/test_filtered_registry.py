@@ -101,6 +101,18 @@ class TestValidateExcludedTools:
 
         validate_excluded_tools(_source_registry(), agents)
 
+    def test_unregistered_conditional_tool_passes(self):
+        # gui_task only exists when the GUI manager is enabled.
+        agents = {"brain": _agent_config(["execute_shell", "gui_task"])}
+
+        validate_excluded_tools(_source_registry(), agents)
+
+    def test_typo_still_aborts_next_to_conditional_tool(self):
+        agents = {"brain": _agent_config(["gui_task", "typo_tool"])}
+
+        with pytest.raises(SystemExit, match="typo_tool"):
+            validate_excluded_tools(_source_registry(), agents)
+
 
 class TestWorkerToolOverrides:
     def test_override_replaces_source_implementation(self):

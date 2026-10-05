@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,20 @@ from ..llm.base import LLMClient
 from ..llm.schema import Message, make_tool_result_message
 from ..session.debug_client import DebugLoggingLLMClient
 from ..tools.registry import ToolRegistry
+from .notes import WorkerNotes
 
 logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 4
 _MESSAGE_OVERHEAD_TOKENS = 8
+_ACTION_LOG_MAX_CHARS = 4000
+_ACTION_ARGS_MAX_CHARS = 200
+_ACTION_RESULT_MAX_CHARS = 300
+_TURN_LIMIT_TOOL_RESULT = "Not executed: worker turn limit reached."
+_FORCED_REPORT_PROMPT = (
+    "Turn limit reached. Do not call tools. Report now: what was done, "
+    "exact values produced or submitted, what remains incomplete and why, "
+    "and the paths of any files or logs you left behind."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +43,7 @@ class WorkerResult:
     duration_ms: int
     truncated: bool
     error: str | None = None
+    action_log: str = ""
 
 
 def run_simple_tool_loop(
@@ -76,6 +88,9 @@ class WorkerRunner:
         model: str | None = None,
         ui_console: Any = None,
         tool_overrides: dict[str, tuple[Any, Any]] | None = None,
+        extra_tools: dict[str, tuple[Any, Any]] | None = None,
+        notes: WorkerNotes | None = None,
+        notes_summarizer: Callable[[str], str] | None = None,
     ) -> None:
         self._client = client
         self._source_registry = source_registry
@@ -83,6 +98,9 @@ class WorkerRunner:
         self._system_prompt = system_prompt
         self._ui_console = ui_console
         self._tool_overrides = tool_overrides or {}
+        self._extra_tools = extra_tools or {}
+        self._notes = notes
+        self._notes_summarizer = notes_summarizer
         self._max_turns = max_turns
         self._max_context_tokens = max_context_tokens
         self._cache_control = cache_control
@@ -95,6 +113,7 @@ class WorkerRunner:
 
         Names present in tool_overrides are registered with the override
         implementation instead (e.g. file tools without the memory guard).
+        extra_tools are worker-only tools absent from the source registry.
         """
         filtered = ToolRegistry()
         for name, (func, defn) in self._source_registry._tools.items():
@@ -104,6 +123,9 @@ class WorkerRunner:
             if override is not None:
                 filtered.register(name, override[0], override[1])
             else:
+                filtered.register(name, func, defn)
+        for name, (func, defn) in self._extra_tools.items():
+            if name not in self._excluded_tools:
                 filtered.register(name, func, defn)
         return filtered
 
@@ -115,6 +137,9 @@ class WorkerRunner:
     ) -> str:
         """Build user message with optional context file preamble."""
         parts: list[str] = []
+        notes_text = self._notes.read().strip() if self._notes is not None else ""
+        if notes_text:
+            parts.append(f"[Worker notes]\n{notes_text}\n[/Worker notes]")
         for path_str in context_files or []:
             resolved = Path(path_str).expanduser()
             if not resolved.is_absolute() and agent_os_dir:
@@ -293,65 +318,153 @@ class WorkerRunner:
         started_ms = _now_ms()
 
         try:
-            request_messages = advance_cache_breakpoint(
-                self._compact_messages(messages, worker_label)
-            )
-            response = client.chat_with_tools(request_messages, tool_defs)
-            tokens_used += response.total_tokens or 0
-
-            while response.tool_calls and turns < effective_max_turns:
-                # Capture assistant text if present
-                if response.content:
-                    last_text = response.content
-
-                messages.append(Message(
-                    role="assistant",
-                    content=response.content,
-                    tool_calls=response.tool_calls,
-                ))
-
-                for tc in response.tool_calls:
-                    self._print_tool_call(worker_label, tc)
-                    result = registry.execute(tc)
-                    self._print_tool_result(worker_label, tc, result.content)
-                    messages.append(make_tool_result_message(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        content=result.content,
-                    ))
-
-                turns += 1
+            try:
                 request_messages = advance_cache_breakpoint(
                     self._compact_messages(messages, worker_label)
                 )
                 response = client.chat_with_tools(request_messages, tool_defs)
                 tokens_used += response.total_tokens or 0
 
-            # Final response (no tool calls)
-            if response.content:
-                last_text = response.content
+                while response.tool_calls and turns < effective_max_turns:
+                    # Capture assistant text if present
+                    if response.content:
+                        last_text = response.content
 
-            truncated = bool(response.tool_calls) and turns >= effective_max_turns
-            return WorkerResult(
-                success=not truncated,
-                text=last_text or "",
-                turns_used=turns,
-                tokens_used=tokens_used,
-                duration_ms=_now_ms() - started_ms,
-                truncated=truncated,
-            )
+                    messages.append(Message(
+                        role="assistant",
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                    ))
 
-        except Exception as exc:
-            logger.warning("Worker %s failed: %s", worker_label, exc)
-            return WorkerResult(
-                success=False,
-                text=last_text or "",
-                turns_used=turns,
-                tokens_used=tokens_used,
-                duration_ms=_now_ms() - started_ms,
-                truncated=False,
-                error=str(exc),
-            )
+                    for tc in response.tool_calls:
+                        self._print_tool_call(worker_label, tc)
+                        result = registry.execute(tc)
+                        self._print_tool_result(worker_label, tc, result.content)
+                        messages.append(make_tool_result_message(
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                            content=result.content,
+                        ))
+
+                    turns += 1
+                    request_messages = advance_cache_breakpoint(
+                        self._compact_messages(messages, worker_label)
+                    )
+                    response = client.chat_with_tools(request_messages, tool_defs)
+                    tokens_used += response.total_tokens or 0
+
+                # Final response (no tool calls)
+                if response.content:
+                    last_text = response.content
+
+                truncated = bool(response.tool_calls) and turns >= effective_max_turns
+                if truncated:
+                    # Without a report the brain re-dispatches from scratch, so
+                    # close out the pending calls and ask for one tool-free answer.
+                    messages.append(Message(
+                        role="assistant",
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                    ))
+                    for tc in response.tool_calls:
+                        messages.append(make_tool_result_message(
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                            content=_TURN_LIMIT_TOOL_RESULT,
+                        ))
+                    messages.append(Message(role="user", content=_FORCED_REPORT_PROMPT))
+                    # Anthropic rejects a history containing tool_use/tool_result
+                    # blocks when the request defines no tools, so the tools stay
+                    # attached; the prompt forbids calling them and a call that
+                    # still comes back is ignored.
+                    try:
+                        report = client.chat_with_tools(
+                            advance_cache_breakpoint(self._compact_messages(messages, worker_label)),
+                            tool_defs,
+                        )
+                        tokens_used += report.total_tokens or 0
+                        if report.content and not report.tool_calls:
+                            last_text = report.content
+                    except Exception as exc:
+                        logger.warning(
+                            "Worker %s forced final report failed: %s", worker_label, exc,
+                        )
+
+                action_log = _build_action_log(messages)
+                return WorkerResult(
+                    success=not truncated,
+                    text=last_text or "",
+                    turns_used=turns,
+                    tokens_used=tokens_used,
+                    duration_ms=_now_ms() - started_ms,
+                    truncated=truncated,
+                    action_log=action_log,
+                )
+
+            except Exception as exc:
+                logger.warning("Worker %s failed: %s", worker_label, exc)
+                action_log = _build_action_log(messages)
+                return WorkerResult(
+                    success=False,
+                    text=last_text or "",
+                    turns_used=turns,
+                    tokens_used=tokens_used,
+                    duration_ms=_now_ms() - started_ms,
+                    truncated=False,
+                    error=str(exc),
+                    action_log=action_log,
+                )
+        finally:
+            # Runs on every return path; notes upkeep must never alter the result.
+            if self._notes is not None and self._notes_summarizer is not None:
+                try:
+                    self._notes.compress(self._notes_summarizer)
+                except Exception:
+                    logger.warning("Worker notes compression failed", exc_info=True)
+
+
+def _build_action_log(messages: list[Message]) -> str:
+    """Render executed tool calls as one deterministic line each.
+
+    Keeps the most recent entries when the log exceeds the char budget,
+    since the latest state is what the brain needs to resume.
+    """
+    results = {m.tool_call_id: m.content for m in messages if m.role == "tool"}
+    lines: list[str] = []
+    for message in messages:
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        for tc in message.tool_calls:
+            args = json.dumps(tc.arguments, ensure_ascii=False)
+            if len(args) > _ACTION_ARGS_MAX_CHARS:
+                args = args[:_ACTION_ARGS_MAX_CHARS] + "..."
+            content = results.get(tc.id)
+            if content is None:
+                result = "(no result)"
+            elif isinstance(content, str):
+                result = content
+            else:
+                result = " ".join(
+                    (part.text or "") if part.type == "text" else "[image]"
+                    for part in content
+                )
+            result = " ".join(result.split())
+            if len(result) > _ACTION_RESULT_MAX_CHARS:
+                result = result[:_ACTION_RESULT_MAX_CHARS] + "..."
+            lines.append(f"{len(lines) + 1}. {tc.name}({args}) -> {result}")
+
+    kept: list[str] = []
+    size = 0
+    for line in reversed(lines):
+        if kept and size + len(line) + 1 > _ACTION_LOG_MAX_CHARS:
+            break
+        kept.append(line)
+        size += len(line) + 1
+    kept.reverse()
+    omitted = len(lines) - len(kept)
+    if omitted:
+        kept.insert(0, f"({omitted} earlier entries omitted)")
+    return "\n".join(kept)
 
 
 def _now_ms() -> int:

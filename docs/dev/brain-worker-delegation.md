@@ -63,11 +63,30 @@ Worker 與 brain 共用 `src/lincy/context/cache_breakpoints.py`：
   - 是 **live view** 不是快照：startup 之後才註冊的工具（`send_message`、`worker` 等）也看得到
 - Worker：`WorkerRunner` 仍然拿 **raw registry** 自行 clone（`_build_filtered_registry`），兩邊的排除清單互相獨立
 - 啟動驗證：所有 `registry.register()` 跑完後呼叫 `validate_excluded_tools()`（`src/lincy/agent/tool_setup.py`），排除清單裡有未註冊的工具名就 `SystemExit`
-  - 注意 `gui_task` / `screenshot` / `screenshot_by_subagent` 是條件式註冊；若關掉 GUI 或改 vision 設定，worker 的排除清單要跟著調整
+  - `gui_task` / `screenshot` / `screenshot_by_subagent` 是條件式註冊（關掉 GUI 或改 vision 設定就不存在），驗證時對這三個名稱略過未註冊檢查；其他名稱仍維持 typo 保護
 
-目前設定：brain 排除 `execute_shell` + `shell_task`；worker 排除 `gui_task`、`screenshot`、`shell_task`（保留 `execute_shell`）。
+目前設定：brain 排除 `execute_shell`、`shell_task`、`gui_task`；worker 排除 `screenshot`、`shell_task`（保留 `execute_shell` 與 `gui_task`）。
 
 `screenshot_by_subagent` 不在排除清單內：brain 目前的 LLM chain 全為 vision 模型，`adaptive_own_vision` 不成立，該工具不會被註冊。若日後把 non-vision fallback 加回 brain chain，需同步補回排除項。
+
+## GUI 升級鏈
+
+Brain 不直接呼叫 `gui_task`，瀏覽器、登入、桌面 UI、視覺確認的工作一律派 worker：
+
+```
+brain --worker--> worker --gui_task (同步)--> GUIManager
+```
+
+- Worker 先走 HTTP / CLI / 官方 API / AppleScript；被擋（反爬蟲、CAPTCHA、登入牆、JS 殼頁、需視覺確認）才自行呼叫 `gui_task`，每個任務最多 2 次 GUI 嘗試。規則寫在 worker system prompt
+- agent-browser（外部 headless browser CLI skill）已退役，worker prompt 明令禁用
+- 同步版本：`cli/app.py` 用 `create_gui_task(..., queue=None)` 建一個同步 `gui_task`，併入 `tool_overrides`（與 `build_worker_file_tools` 同一個 dict）；結果是 `format_gui_result` 文字，直接回到 worker 的 tool loop。共用 registry 裡註冊的 `gui_task` 綁 brain 的 queue（結果送進 brain inbox），worker 不能用那個
+- `tool_overrides` 只對來源 registry 已有的名稱生效；`gui_task` 在 startup 較後面才註冊，但 `WorkerRunner._build_filtered_registry` 在 `run()` 時才 clone，所以能套到
+- GUI 關閉（`gui_manager_instance is None`）時不加 override，worker 也看不到 `gui_task`
+- **Slot 佔用**：同步 `gui_task` 以 blocking 方式取得共用 `gui_lock`。另一個 GUI 任務執行中時，等待的 worker 會持續佔住一個 `task_max_concurrency` slot，期間 brain 可能收到 `[WORKER BUSY]`
+
+## Worker 共用筆記
+
+Worker 有一份自由格式的共用筆記（預設 `worker-notes/notes.md`），每個任務開頭整份注入、任務結束可用 worker-only 工具 `worker_note` 補記，超過閾值由 compactor 壓縮。Brain 不讀也不維護它，任務單不需要重複筆記裡的操作經驗。詳見 [worker-notes.md](worker-notes.md)。
 
 ## 任務單規則（brain 端）
 
@@ -87,3 +106,11 @@ Worker system prompt 要求：缺必要資訊時停下來回報缺什麼，不�
 ## 回滾
 
 刪掉 `cfgs/agent.yaml` 中對應的 `excluded_tools` 條目即可恢復，程式碼不需改動。
+
+## 截斷與例外時的回報
+
+過去 worker 撞到 turn 上限或中途例外時只回空白或半句話，brain 只能從頭重派。現在 `WorkerRunner.run`（`src/lincy/worker/runner.py`）在這兩種情況都會留下可接續的資訊：
+
+- **Action log（確定性，不經 LLM）**：`WorkerResult.action_log` 由本次 tool loop 的 messages 逐筆產生，一個 tool call 一行：`N. tool(args) -> result`（args 截約 200 字、result 截約 300 字並壓成單行）。總長約 4000 字，超過時保留最後幾筆並在開頭標示省略筆數。所有 return 路徑（成功、截斷、例外）都會填。
+- **Turn 上限強制回報**：撞到 `max_turns` 且仍有待執行 tool call 時，把這些 call 補上 `Not executed: worker turn limit reached.` 的 tool result（id/name 對齊，provider 才接受歷史），再加一則 user 訊息要求不呼叫工具、直接回報已完成事項、實際產出或送出的值、未完成項與原因、留下的檔案路徑，然後以空 tool 清單再呼叫一次模型。回覆非空就作為 result text，否則沿用最後一段 assistant 文字；這次呼叫失敗只記 warning 並沿用舊行為。結果仍是 `truncated=True, success=False`，token 計入 `tokens_used`，不增加 `turns_used`。
+- **對 brain 的呈現**：`format_worker_result`（`src/lincy/worker/tool_adapter.py`）只在 TRUNCATED / FAILED 時，於 text / error 之後附上 `[Action log]` 區塊；SUCCESS 不附，worker 自己的回報已足夠。

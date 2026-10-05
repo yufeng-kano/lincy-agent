@@ -513,6 +513,11 @@ def setup_tools(
     return registry, allowed_paths, executor
 
 
+# Registered only when GUI / vision settings enable them, so excluding them
+# must not abort startup on a config that turns those features off.
+_CONDITIONAL_TOOLS = frozenset({"gui_task", "screenshot", "screenshot_by_subagent"})
+
+
 def validate_excluded_tools(
     registry: ToolRegistry,
     agents: dict[str, AgentConfig],
@@ -525,7 +530,9 @@ def validate_excluded_tools(
     """
     for agent_name, agent_config in agents.items():
         unknown = [
-            name for name in agent_config.excluded_tools if not registry.has_tool(name)
+            name
+            for name in agent_config.excluded_tools
+            if not registry.has_tool(name) and name not in _CONDITIONAL_TOOLS
         ]
         if unknown:
             raise SystemExit(

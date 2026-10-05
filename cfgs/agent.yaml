@@ -261,6 +261,7 @@ agents:
     excluded_tools:
       - execute_shell
       - shell_task
+      - gui_task # browser/GUI work goes through worker, which escalates to gui_task itself
     cache:
       enabled: true
       ttl: "24h"
@@ -296,8 +297,12 @@ agents:
     max_turns: 30
     max_context_tokens: 96000
     task_max_concurrency: 2 # background worker tasks running at once
-    excluded_tools:
-      - gui_task
+    notes: # shared free-form notes, see docs/dev/worker-notes.md
+      enabled: true
+      path: worker-notes/notes.md # relative to agent_os_dir, outside memory/
+      compress_threshold_chars: 8000 # compactor compresses after a task once above this
+      max_chars: 4000 # target size after compression (must be < threshold)
+    excluded_tools: # gui_task stays: worker escalates to it (sync override in cli/app.py)
       - screenshot
       - shell_task
     cache:
