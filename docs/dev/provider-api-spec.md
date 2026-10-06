@@ -44,8 +44,8 @@
 | `reasoning.effort` 值 | config 接受 low/medium/high/xhigh/max 並原樣送成 `reasoning_effort`；不代表每個 OpenAI 模型都支援完整集合；`max` 屬 passthrough，OpenAI 官方文件目前未列為 Chat Completions effort | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/openai.py` | 上游若不支援會回 request error；profile 內 `supported_efforts` 只保留已知/文件化提示，不作 hard gate |
 | `max_tokens` 在 reasoning 裡擋掉 | OpenAI provider schema 不提供 reasoning.max_tokens 欄位 | `src/lincy/core/provider_schema.py`（`OpenAIReasoningConfig`） | 本專案規則 |
 | `max_completion_tokens` 切換 | `OpenAIConfig.use_max_completion_tokens=true` 時，client 送 `max_completion_tokens` 並 null 掉 `max_tokens` | `src/lincy/llm/providers/openai.py` + `src/lincy/core/provider_schema.py` | GPT-5+ 必要 |
-| `prompt_cache_retention` passthrough | agent cache config `ttl: "24h"` 時，組裝層傳入 `prompt_cache_retention="24h"` 給 `OpenAIClient` | `src/lincy/cli/app.py` + `src/lincy/llm/providers/openai.py` | 不走 breakpoint path |
-| Cache TTL clamp | 組裝層依 provider 最大支援 TTL 做 clamp：OpenRouter `1h`、Anthropic/ClaudeCode `ephemeral`、OpenAI `24h` | `src/lincy/cli/app.py` | 避免 provider 切換時 silent misconfiguration |
+| `prompt_cache_retention` passthrough | agent cache config `ttl: "24h"` 時，組裝層傳入 `prompt_cache_retention="24h"` 給 `OpenAIClient` | `src/lincy/agent/build.py` + `src/lincy/llm/providers/openai.py` | 不走 breakpoint path |
+| Cache TTL clamp | 組裝層依 provider 最大支援 TTL 做 clamp：OpenRouter `1h`、Anthropic/ClaudeCode `ephemeral`、OpenAI `24h` | `src/lincy/agent/build.py` | 避免 provider 切換時 silent misconfiguration |
 
 ### 3. 逆向/實測資訊
 
@@ -305,7 +305,7 @@
 | `provider_routing` payload | YAML `provider_routing` 映射到 request `provider` object；`null` 時不送 `provider`（走 OpenRouter 預設路由） | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/openrouter.py` + `src/lincy/llm/providers/openai_compat.py` | 允許各 profile 個別固定 endpoint 或回到預設 |
 | Header 名稱 | 同時送 `X-OpenRouter-Title` + `X-Title` | `openrouter.py` | 官方 header + alias 相容 |
 | 連線參數 self-contained | `api_key_env`/`base_url`/`site_url` 在每個 LLM YAML；`site_name` null 時 fallback 到 agent name；`site_url` 在 `load_config()` 自動附加 `/{agent_name}`（可用 `agents.*.openrouter.site_url` 覆蓋） | `src/lincy/core/config.py`（`load_config()`） | YAML 可獨立使用（validate_llm.py 等） |
-| Cache breakpoint 注入 | `ContextBuilder` BP1 (system prompt) + BP2 (boot files)，`cache_control` passthrough via `_convert_content_parts()`；所有 per-turn dynamic note（`current_local_time` / `[Timing Notice]` / message-time common ground）必須留在 latest turn，不得新增 system-tier message；僅 OpenRouter provider 啟用 | `src/lincy/context/builder.py` + `src/lincy/agent/responder.py` + `openai_compat.py` + `cli/app.py` | 成本最佳化：1h TTL for heartbeat；重建同一輪長 prompt 時，cache hit 應維持 >90% |
+| Cache breakpoint 注入 | `ContextBuilder` BP1 (system prompt) + BP2 (boot files)，`cache_control` passthrough via `_convert_content_parts()`；所有 per-turn dynamic note（`current_local_time` / `[Timing Notice]` / message-time common ground）必須留在 latest turn，不得新增 system-tier message；僅 OpenRouter provider 啟用 | `src/lincy/context/builder.py` + `src/lincy/agent/responder.py` + `openai_compat.py` + `agent/build.py` | 成本最佳化：1h TTL for heartbeat；重建同一輪長 prompt 時，cache hit 應維持 >90% |
 
 ### 3. 逆向/實測資訊
 

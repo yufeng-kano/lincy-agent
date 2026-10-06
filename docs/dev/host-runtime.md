@@ -59,11 +59,12 @@ src/lincy/
     build.py                build_agent(...) -> BuiltAgent（原 cli/app.py main() 的組裝邏輯）
     handle.py               AgentHandle Protocol、AgentState、例外類別
     turn_cancel.py          TurnCancelController（原 tui/controller.py）
+    ui_event_stream.py      UiEventExportSink、UiEventStore（位置不變；export sink 永遠開啟）
     adapters/console.py     ConsoleAdapter，channel_name 仍為 "cli"（原 adapters/cli.py）
     ...（其餘不動）
   ui/
-    events.py               原 tui/events.py，事件型別全部保留（web 事件流的 wire schema 依賴它們）
-    sink.py                 原 tui/sink.py（UiSink、FanoutUiSink、UiEventExportSink 收在這裡）
+    events.py               原 tui/events.py，事件型別全部保留（web 事件流的 wire schema 依賴它們）；InterruptPhase 也定義在這裡
+    sink.py                 原 tui/sink.py，只剩 UiSink、FanoutUiSink
     formatting.py           原 tui/formatting.py
     formatter.py            原 cli/formatter.py
     claude_code_stream_json.py  原 cli/claude_code_stream_json.py
@@ -80,11 +81,12 @@ src/web_ui/                 原 src/chat_web_ui（Vue 專案，bun build 輸出 
 | 路徑 | 說明 |
 |---|---|
 | `src/chat_supervisor/` | 整個 package |
-| `src/chat_web_api/` | 搬進 `lincy/web/`，`settings.py` 與 `__main__.py` 刪除 |
+| `src/chat_web_api/` | 搬進 `lincy/web/`，`app.py` 與 `__main__.py` 刪除；`settings.py` 改為 `WebSettings.from_config(config)`，不再自己讀環境 |
 | `src/lincy/cli/` | `app.py` 拆成 `agent/build.py`；`commands.py` 刪除（slash command 不再存在）；`init.py`、`formatter.py`、`claude_code_stream_json.py` 搬走 |
 | `src/lincy/tui/` | `app.py`、`state.py` 刪除；`controller.py` 的 `TextualController` 刪除、`TurnCancelController` 搬到 `agent/turn_cancel.py`；其餘搬到 `ui/` |
 | `src/lincy/control.py` | 由 `host/control_api.py` 取代 |
 | `src/lincy/agent/web_chat.py`、`src/lincy/agent/adapters/web.py` | Web Chat channel 已被 Agent 頁取代，連同 `/api/chat/events` 一起刪除 |
+| `src/lincy/session/picker.py` | 互動式 session picker，`--resume` 改為必須帶 id（Phase B） |
 | `cfgs/supervisor.yaml` | 不再有 supervisor |
 | `docs/dev/cli-ui/` | TUI 文件 |
 
@@ -127,7 +129,7 @@ packages = ["src/lincy"]
 | 階段 | 做什麼 | 失敗 |
 |---|---|---|
 | `validate` | 設定與 workspace 就緒 | exit 1 |
-| `build` | 組出 agent，不寫檔、不連網、不開 thread | exit 1 |
+| `build` | 組出 agent，不寫檔（例外見 build 節）、不連網、不開 thread | exit 1 |
 | `run` | HTTP server 起來、agent 開始跑 | 之後是 runtime 錯誤 |
 | `web` | dashboard 資料初始化 | 非致命，health 回報 |
 
@@ -148,25 +150,38 @@ packages = ["src/lincy"]
    - `app.server` port 沒被佔用。
    - `src/web_ui/dist/index.html` 存在，否則印 `cd src/web_ui && bun run build` 後 exit 1。
    - `agents.gui_manager.enabled` 時 `ensure_binary()`，沒 cache 就 build（這是 cache 建置，允許）。
-9. session 選擇：`--new` → `None`；`--resume ID` → 該 id；預設 → `session_mgr.list_recent(user_id, limit=1)`，沒有就等同 `--new`。只讀。
+9. session 選擇：`--new` → `None`；`--resume ID` → 該 id；預設 → `session_mgr.list_recent(user_id, limit=1)`，沒有就等同 `--new`。只讀。`--resume` 的 id 是否存在不在這裡檢查，由 build 的 `session_mgr.load()` 判定。
 
 ### build
 
-輸入：`ValidatedEnv`。輸出：`BuiltAgent`。
+輸入：`BuildInputs`（`config`、`agent_os_dir`、`user_id`、`display_name`、`resume_id`、`ax_binary`、`upgrade_message`，由 host 從 `ValidatedEnv` 組出）。輸出：`BuiltAgent`。
 
-`build_agent()` 是原 `cli/app.py` `main()` 的組裝邏輯，純粹建物件。下表是原本混在組裝裡的副作用，以及它們的新歸宿：
+`build_agent(inputs)` 是原 `cli/app.py` `main()` 的組裝邏輯，純粹建物件。操作者可修正的問題 raise `BuildError`（`agent/build.py`），由 host 翻成 exit 1：
+
+- `--resume ID` 找不到 → `BuildError("Session not found: ...")`
+- brain / memory_editor / worker prompt 缺檔、`agents.memory_editor` 缺或未啟用
+
+`agents.gui_manager.enabled` 但 `ax_binary` 是 `None`（validate 沒拿到 AX binary）不是 build 錯誤：GUI 工具不註冊，log 一行 error，其餘照常組裝。
+
+下表是原本混在組裝裡的副作用，以及它們的新歸宿：
 
 | 原本的副作用 | 新歸宿 |
 |---|---|
 | `PersistentPriorityQueue.__init__` 內呼叫 `_recover()` | 建構子不再 recover；新增 `recover()` 方法，`BuiltAgent.start()` 呼叫 |
-| `session_mgr.create()` / resume 時 `rewrite_messages()` 修補 dangling tool call | `BuiltAgent.start()` |
+| `session_mgr.create()` / resume 時 `rewrite_messages()` 寫回修補後的歷史 | `BuiltAgent.start()`；`remove_dangling_tool_calls()` 本身留在 build（只改記憶體），因為 render cache 匯入要對著修補後的歷史比對 |
 | shared_state cache 的 rebuild 與 `save()` | `BuiltAgent.start()` |
 | `UiEventStore.rotate_on_start()` | `BuiltAgent.start()` |
 | `console.print_resume_history()` | `BuiltAgent.start()` |
 | `initializer.upgrade_kernel()`、`rebuild_personal_skills_index()` | validate |
 | `ensure_binary()` | validate，結果以 `ax_binary` 傳入 build |
 
-build 期間可以讀檔（session 內容、memory、boot files、prompt 模板）。`session_mgr.load(resume_id)` 是讀，允許在 build 做；修補寫回在 start。
+build 期間可以讀檔（session 內容、memory、boot files、prompt 模板）。`session_mgr.load(resume_id)` 在 build 做（見下方邊界）；dangling tool call 修補的寫回在 start。
+
+「build 不寫檔」的實際邊界，照實寫：
+
+- 新 session 路徑不寫任何檔案。`tests/agent/build/test_build_side_effects.py`（`resume_id=None`）斷言 build 前後 workspace 的檔案集合不變，並確認 queue recover、ui_events 輪替、session 建立都等到 `start()` 才發生。
+- 建構子仍會 `mkdir`：`SessionManager`、queue 的 `pending/` 與 `active/`、`MemoryBackupManager`、各 session store。測試只比對檔案，不比對目錄。
+- resume 路徑不是純讀：`session_mgr.load()` 把該 session 設為 current，且 `meta.json` 的 `status` 不是 `active` 時會改成 `active` 並寫回。這是 build 目前唯一的檔案內容寫入，測試沒有覆蓋 resume 路徑。
 
 建構子已確認不連網：LLM provider client 只在呼叫時發 request；`GmailAdapter` 只建 `httpx.Client`；`DiscordAdapter` 在 `start()` 才連線；`BM25MemorySearch` 只讀檔。
 
@@ -179,10 +194,19 @@ class BuiltAgent:
     handle: AgentHandle
     ui_event_store: UiEventStore
     shell_task_manager: ShellTaskManager
+    _startup: _Startup          # build 準備好、留給 start() 的狀態
     def start(self) -> None     # 上表列的副作用，依序執行
-    def run(self) -> ExitReason # 阻塞；回傳 SHUTDOWN 或 RESTART
-    def close(self) -> None     # shell_task_manager.shutdown() 等
+    def run(self) -> ExitReason # 先 handle.mark_ready()，再阻塞在 core.run()；回傳 SHUTDOWN 或 RESTART
+    def close(self) -> None     # shell_task_manager.shutdown()
 ```
+
+`start()` 的順序：
+
+1. `ui_event_store.rotate_on_start()`：最先做，之後發出的事件才會落在本次執行的檔案。
+2. `queue.recover()`。
+3. shared_state cache 需要重建時 rebuild + `save()`。
+4. 新 session → `session_mgr.create()`；resume → 有修補時 `rewrite_messages()` 並印 info，再印 `Resumed session ...`。
+5. resume 時 `console.print_resume_history()`。
 
 ### run
 
@@ -190,7 +214,7 @@ class BuiltAgent:
 2. 等 server `started`（上限 5 秒，否則 exit 1）。此時 `/api/agent/health` 的 `state` 是 `starting`。
 3. `built.start()`。
 4. 註冊 SIGTERM / SIGINT handler → `handle.request_shutdown(graceful=True)`。
-5. `state = ready`；主執行緒呼叫 `built.run()` 阻塞。
+5. 主執行緒呼叫 `built.run()` 阻塞；`run()` 自己先 `mark_ready()`，state 從此不再是 `starting`。
 6. `run()` 回傳：
    - `SHUTDOWN` → `built.close()`，exit 0。
    - `RESTART` → `built.close()`，`os.execv(sys.executable, [sys.executable, "-m", "lincy", "start"])`。cwd 與 env 不變。
@@ -220,6 +244,7 @@ class AgentError(Exception):
     status_code: int = 500
 
 class AgentBusy(AgentError):            # 409
+class InvalidRequest(AgentError):       # 400：content 空白、reload target 不認得、shell text/key 不合法
 class UnsupportedChannel(AgentError):   # 400
 class ShellSessionNotFound(AgentError): # 404
 
@@ -227,7 +252,7 @@ class AgentHandle(Protocol):
     def state(self) -> AgentState: ...
     def session_id(self) -> str | None: ...
     def channels(self) -> list[str]: ...
-    def submit(self, content: str, channel: str) -> None: ...
+    def submit(self, content: str, channel: str = "cli") -> None: ...
     def cancel_turn(self) -> None: ...
     def request_new_session(self) -> None: ...
     def request_compact(self) -> None: ...
@@ -241,7 +266,11 @@ class AgentHandle(Protocol):
     def shell_cancel(self, session_id: str) -> str: ...
 ```
 
-- `submit()` 的 channel 規則（預設 `cli`、`system` 不可送、必須是已註冊 adapter）從 `cli/app.py` 的 closure 搬進 handle 實作。`cli` 走 `ConsoleAdapter.submit()`，其他 channel 直接 `enqueue(InboundMessage(...))`，`metadata={"source": "web_console"}`。
+- `submit()` 的 channel 規則（預設 `cli`、`system` 不可送、必須是已註冊 adapter）從 `cli/app.py` 的 closure 搬進 handle 實作。channel 比對是精確比對，不做大小寫正規化。content strip 後為空 → `InvalidRequest`。`cli` 走 `ConsoleAdapter.submit()`，其他 channel 直接 `enqueue(InboundMessage(...))`，`metadata={"source": "web_console"}`。
+- `ConsoleAdapter.submit()` 在 agent loop 啟動 adapter 之前（HTTP server 已起、`run()` 還沒跑到）raise `AgentBusy("Agent is still starting.")`；上一個 `cli` turn 還沒結束時 raise `AgentBusy("Still processing the previous turn.")`。
+- `state()` 的優先序：`STOPPING` > `STARTING` > `BUSY` > `READY`。`request_shutdown()` / `request_restart()` 一呼叫就進 `STOPPING`；`mark_ready()` 之前是 `STARTING`。
+- `cancel_turn()` 只呼叫 `TurnCancelController.request()`，不丟 sentinel。
+- `token_status()` 回傳 `AgentCore.get_token_status_text()`。原本由 Textual 輪詢後發的 `CtxStatusEvent` 現在沒有任何地方發出（型別與 wire schema 的 `ctx_status` 仍保留）。
 - `request_*` 全部是對 queue 丟 sentinel，由 agent thread 在 turn 邊界處理。新增 `CompactSentinel`、`ClearSentinel`（priority 0，與 `NewSessionSentinel` 相同）和 `RestartSentinel`（priority 999，與 `MaintenanceSentinel` 相同）。
 - `RestartSentinel` 被 pop 出來時，依 priority queue 的定義，當下沒有任何 ready 的 inbound，這就是 idle。`AgentCore.run()` 執行 `graceful_exit()` 後回傳 `ExitReason.RESTART`。pop 之後才進來的訊息已持久化在 `queue/pending`，新程序 `recover()` 會撿回來（`cli` channel 除外，沿用現有 `discard_channels` 規則）。
 - `_perform_compact()` 與 `_perform_clear()` 從 `adapters/cli.py` 的 `_handle_command` 搬進 `AgentCore`，連同原本印給使用者的訊息。
@@ -374,6 +403,8 @@ ProcessType           Interactive
 | 搬移 | `tests/cli/test_formatter.py` → `tests/ui/`；`tests/tui/test_controller.py` 的 `TurnCancelController` 部分 → `tests/agent/test_turn_cancel.py`；`tests/web_api/*` → `tests/web/` |
 | 新增 | `tests/host/test_stages.py`、`test_control_api.py`、`test_upgrade.py`（subprocess 以 monkeypatch 取代）、`test_service.py`（plist 內容）、`test_cli.py`；`tests/test_import_direction.py` |
 
+`tests/agent/build/` 這個目錄名撞到兩個預設排除：pytest 預設 `norecursedirs` 含 `build`，`.gitignore` 也忽略 `build/`。因此 `pyproject.toml` 的 `[tool.pytest.ini_options]` 自訂了 `norecursedirs`（pytest 預設值去掉 `build`），`.gitignore` 加了 `!tests/agent/build/`。
+
 `tests/test_import_direction.py` 取代 `tests/tui/test_structure_rules.py`：掃 `src/lincy` 所有 `.py`，斷言沒有 `textual` / `prompt_toolkit`、`lincy.host` 只被 `lincy/__main__.py` 與 host 自己 import、`lincy/ui/` 不 import `lincy.agent`。
 
 ## 文件與 README
@@ -385,7 +416,7 @@ ProcessType           Interactive
 - `docs/dev/gui-computer-use.md`：`ax-server-build` oneshot 改為 validate 階段的 `ensure_binary()`。
 - `docs/dev/gmail-oauth-setup.md`：`uv run chat-cli --user` 改為 `.env` 設 `CHAT_AGENT_USER` 後 `uv run lincy start`。
 - `docs/dev/task/supervisor.md`：狀態改為「已被 host-runtime 取代」，移到 `task/archive/`。
-- `README.md`：Quick Start 改為 `uv sync` → `cp .env.example .env` → `uv run lincy init` → `cd src/web_ui && bun run build` → `uv run lincy start` 或 `uv run lincy service install`。刪除 tmux / TUI resize 疑難排解整段。Configuration 段刪 supervisor。
+- `README.md`：Quick Start 改為 `uv sync` → `cp .env.example .env` → `uv run lincy init` → `cd src/web_ui && bun install && bun run build`（新 clone 沒有 `node_modules`）→ `uv run lincy start` 或 `uv run lincy service install`，並列出 `status` / `stop` / `upgrade` / `check`。刪除 tmux / TUI resize 疑難排解整段。Configuration 段刪 supervisor。
 
 ## Migration
 

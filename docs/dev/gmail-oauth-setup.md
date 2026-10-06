@@ -63,8 +63,10 @@ GMAIL_REFRESH_TOKEN=你的-refresh-token
 
 ## Step 6：啟動驗證
 
+確認 `.env` 已設定 `CHAT_AGENT_USER=your-username`，然後啟動：
+
 ```bash
-uv run chat-cli --user your-username
+uv run lincy start
 ```
 
 正常的話不會有錯誤訊息。debug 模式下會顯示 `Gmail adapter registered`。

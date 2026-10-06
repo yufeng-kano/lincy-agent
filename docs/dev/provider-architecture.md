@@ -78,7 +78,7 @@ runtime policy（計費/分類優化類的請求路由）不是靜態模型設�
 - timeout / retry 等共通包裝
 - 不做 provider-specific 特判
 
-### `src/lincy/cli/app.py`
+### `src/lincy/agent/build.py`
 - app-level policy 與 runtime hints 的路由（例如 OpenAI cache retention）
 - 可做最小限度 provider-aware 判斷（組裝層例外）
 - 不直接組 provider payload

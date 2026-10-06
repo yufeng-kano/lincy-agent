@@ -54,17 +54,17 @@ MCP 工具全帶 `app` 參數（英文名或 bundle id；本地化名稱解析�
 ## Vendor 與供應鏈
 
 - 來源：[iFurySt/open-codex-computer-use](https://github.com/iFurySt/open-codex-computer-use)（MIT），**pin commit** 於 `gui/ax_runtime.py` 的 `DEFAULT_COMMIT`。
-- 建置：`chat-supervisor start` 的 `ax-server-build` oneshot（`python -m lincy.gui.ax_runtime`）→ shallow fetch pin commit（`GIT_LFS_SKIP_SMUDGE=1`，upstream LFS 額度已爆且 LFS 物件僅為逆向資產）→ `swift build -c release` → 快取到 `~/.cache/lincy/ocu/<commit12>/`。已快取則秒過。cli 組裝時也會 `ensure_binary()` 兜底。
+- 建置：`lincy start` / `lincy check` 的 validate 階段在 `gui_manager.enabled` 時呼叫 `ensure_binary()` → shallow fetch pin commit（`GIT_LFS_SKIP_SMUDGE=1`，upstream LFS 額度已爆且 LFS 物件僅為逆向資產）→ `swift build -c release` → 快取到 `~/.cache/lincy/ocu/<commit12>/`。已快取則秒過。結果以 `ax_binary` 傳給 build；拿不到 binary 時 build 不註冊 GUI 工具並 log error。需要事先手動建置時可跑 `uv run python -m lincy.gui.ax_runtime`。
 - 稽核（pin commit 當下）：Kit 與主程式零網路 API（無 URLSession/socket）、零外部 Swift 依賴。升級 pin 時重跑此稽核。
-- 前置需求：swift toolchain（缺失時 oneshot 早停並給出安裝指令）、Accessibility + Screen Recording 權限（授予宿主進程；`OpenComputerUse doctor` 可檢查）。**重編譯/更新 binary 後 TCC 權限可能要重新授予**。
+- 前置需求：swift toolchain（缺失時 `ensure_binary()` 早停並給出安裝指令）、Accessibility + Screen Recording 權限（授予宿主進程；`OpenComputerUse doctor` 可檢查）。**重編譯/更新 binary 後 TCC 權限可能要重新授予**。
 - 設定覆寫：`gui_manager.ax.repo/commit/binary_path`（預設 null = 用 pin 值）。
 
 ## 設定（cfgs/agent.yaml）
 
-`gui_manager.ax` 是 AX 後端的完整設定面。兩條消費路徑都讀同一份設定、行為一致：
+`gui_manager.ax` 是 AX 後端的完整設定面，分兩段消費：
 
-- **cli 組裝**：`cli/app.py` 把來源覆寫傳給 `ensure_binary()`、行為調校傳給 `GUIManager`
-- **supervisor oneshot**（`ax-server-build`）：`ax_runtime.resolve_build_params()` 讀 `cfgs/agent.yaml`；`gui_manager.enabled: false` 時直接跳過建置
+- **validate 階段**：來源覆寫（`repo/commit/binary_path`）傳給 `ensure_binary()`；`gui_manager.enabled: false` 時直接跳過建置
+- **build 階段**：`agent/build.py` 收到 `ax_binary`，行為調校傳給 `GUIManager`
 
 ```yaml
 agents:
@@ -92,7 +92,7 @@ agents:
 
 ## 舊 Swift 主機部署（如 Intel Sonoma VM）
 
-upstream `Package.swift` 要求 `swift-tools-version: 6.2`；macOS 14（Sonoma）的 CLT 上限為 Swift 6.0.x，**無法自建**（oneshot 會報 tools version 錯誤）。`platforms` 為 `.macOS(.v14)`、程式無更高 API floor，因此 **binary 本身相容 Sonoma 與 x86_64**——只是要在別台編。流程：
+upstream `Package.swift` 要求 `swift-tools-version: 6.2`；macOS 14（Sonoma）的 CLT 上限為 Swift 6.0.x，**無法自建**（`ensure_binary()` 會報 tools version 錯誤）。`platforms` 為 `.macOS(.v14)`、程式無更高 API floor，因此 **binary 本身相容 Sonoma 與 x86_64**——只是要在別台編。流程：
 
 ```bash
 # 在任一 Swift >= 6.2 機器（arm64 Mac 可直接交叉編譯 x86_64）

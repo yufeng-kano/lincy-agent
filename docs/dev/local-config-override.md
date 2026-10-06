@@ -36,7 +36,7 @@ list 不做元素級合併：`llm_fallbacks`、`excluded_tools`、`boot_files` �
 
 ## 邊界
 
-- 經 `load_config()` 的讀取路徑（agent 進程與 Web API）以 schema 的 `extra="forbid"` 驗證：override 打錯 key 會在啟動時報錯，不會 silent ignore。
+- 經 `load_config()` 的讀取路徑（`lincy` 程序，含 web dashboard）以 schema 的 `extra="forbid"` 驗證：override 打錯 key 會在啟動時報錯，不會 silent ignore。
 - 例外是**已退場的 key**（`_RETIRED_CONFIG_PATHS`，`src/lincy/core/config.py`）：這些 key 會被丟棄並印 warning，不讓舊 override 擋住啟動。`load_config()` 在 kernel migration 之前跑，而 `cfgs/agent.override.yaml` 不在 migrator 掃描的 workspace 範圍內，所以沒有其他機制能修它。清單只含實際移除過的 key，打錯字仍然照舊報錯。
 - 不支援「刪除 key」語義（沒有 null sentinel）。
 - **不覆蓋 `cfgs/llm/**`**。本機要用不同的 provider profile，就在 `cfgs/llm/` 下自建檔案再由
@@ -49,11 +49,9 @@ list 不做元素級合併：`llm_fallbacks`、`excluded_tools`、`boot_files` �
 避免 agent 進程與周邊服務對同一個值（如 `app.agent_os_dir`、`app.timezone`）看法不一致：
 
 - `load_config()` / `load_app_timezone()`（`src/lincy/core/config.py`）
-- `WebApiSettings.from_env()`（`src/chat_web_api/settings.py`，走 `load_config()`）
-- `chat_supervisor check`（`src/chat_supervisor/check.py`，同時會印出 override 是否套用）
+- `lincy check`（validate 階段走 `load_config()`，override 打錯 key 會在這裡失敗）
 
-supervisor 的 `enabled: auto`（依 agent 實際使用的 provider 決定要不要啟動對應 proxy）
-經由 `load_config()` 取值，因此會自動跟著 override 走。
+Web dashboard 不另外讀 yaml，直接用 host 已載入的 `AppConfig`（`WebSettings.from_config(config)`），所以與 agent 看到的值一定一致。
 
 套用時會在啟動 log 印出被覆蓋的路徑，例如：
 

@@ -21,7 +21,7 @@ agent_os_dir: ~/.agent
 ## 初始化
 
 ```bash
-uv run python -m lincy init
+uv run lincy init
 ```
 
 ## 文件列表

@@ -19,6 +19,7 @@
 | [kernel-restructure.md](kernel-restructure.md) | Kernel 目錄重構與 shutdown prompt | 2026-02-18 |
 | [cli-shutdown.md](cli-shutdown.md) | CLI 退出時自動存檔 | 2026-02-18 |
 | [memory-search.md](memory-search.md) | Memory 搜尋（取代 Pre-Reviewer） | 2026-02-18 |
+| [supervisor.md](supervisor.md) | Supervisor + Control API（已由 host-runtime 取代） | 2026-10-06 |
 
 ## 說明
 

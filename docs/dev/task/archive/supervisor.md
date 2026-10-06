@@ -1,6 +1,8 @@
+> **歸檔日期**：2026-10-06
+
 # Supervisor + Control API
 
-**狀態**：完成
+**狀態**：已由 host-runtime 取代（見 [docs/dev/host-runtime.md](../../host-runtime.md)）
 
 ## 一句話目標
 

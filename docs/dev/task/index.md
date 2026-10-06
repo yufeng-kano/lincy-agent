@@ -33,7 +33,6 @@
 | [message-timestamps.md](message-timestamps.md) | 訊息時間戳完整注入 + 移除 get_current_time | 完成 | mq-phase2 |
 | [sender-aware-messages.md](sender-aware-messages.md) | Sender-Aware 訊息標籤 + 移除靜態 current_user | 完成 | message-timestamps |
 | [common-ground-time-anchor.md](common-ground-time-anchor.md) | Common Ground 時間錨點（避免時間旅行解讀） | 完成 | sender-aware-messages, mq-phase1 |
-| [supervisor.md](supervisor.md) | Supervisor + Control API | 完成 | - |
 
 ## 狀態說明
 

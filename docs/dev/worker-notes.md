@@ -10,7 +10,7 @@ Worker 是沒有記憶的獨立子代理，每次任務都從零開始，同一�
 
 ## 運作
 
-實作在 `src/lincy/worker/notes.py`，接線在 `src/lincy/cli/app.py`。
+實作在 `src/lincy/worker/notes.py`，接線在 `src/lincy/agent/build.py`。
 
 - **注入**：`WorkerRunner._build_user_message` 在每個任務的 user message 最前面放整份筆記（`[Worker notes]...[/Worker notes]`），在 `context_files` 之前；檔案空或不存在就不放。maintenance 直接派工（記憶治理）走同一個 runner，也會看到
 - **補記**：worker-only 工具 `worker_note(text)`，經 `WorkerRunner(extra_tools=...)` 註冊（`tool_overrides` 只能替換共用 registry 已有的名稱，`worker_note` 不在共用 registry，brain 看不到）。每筆寫成 `- [YYYY-MM-DD] text`，在 lock 內 append
