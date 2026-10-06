@@ -34,6 +34,7 @@
 | [worker-notes.md](worker-notes.md) | Worker 自由格式共用筆記：任務開頭注入、`worker_note` 補記、超過閾值由 compactor 壓縮 |
 | [memory-curation.md](memory-curation.md) | 記憶檔案自動化重量管理（字元預算警告、超標佇列、curator 蒸餾）與對話 compaction 三層架構（codex remote / compactor agent / local） |
 | [local-config-override.md](local-config-override.md) | `cfgs/agent.override.yaml` 本機設定覆蓋：合併規則、統一讀取路徑 |
+| [host-runtime.md](host-runtime.md) | 單一 `lincy` 程序：host/agent/channels 分層、validate/build/run/web 四階段、`AgentHandle`、control API、手動升級與 rollback、launchd |
 
 ## 子資料夾
 
