@@ -1,6 +1,7 @@
-"""Environment checks: port probe, web UI dist, PATH enrichment, GUI permissions."""
+"""Environment checks: port probe, web UI build, PATH enrichment, GUI permissions."""
 
 import socket
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from lincy.host import check
 from lincy.host.check import check_environment, enriched_path, port_is_available
 from lincy.host.errors import EnvironmentCheckFailed
+from lincy.host.web_ui import WebUIBuildFailed, build_web_ui
 
 
 def _config(port: int):
@@ -31,6 +33,8 @@ def built_repo(tmp_path):
     dist = tmp_path / "src" / "web_ui" / "dist"
     dist.mkdir(parents=True)
     (dist / "index.html").write_text("<html></html>")
+    ok = lambda cmd, cwd, env: subprocess.CompletedProcess(cmd, 0, "", "")
+    build_web_ui(tmp_path / "src" / "web_ui", {}, ok)
     return tmp_path
 
 
@@ -48,10 +52,30 @@ def test_occupied_port_fails_only_when_probing(listening_port, built_repo):
     assert check_environment(_config(listening_port), built_repo, built_repo, probe_port=False) is None
 
 
-def test_missing_dist(tmp_path):
+def test_current_dist_skips_build(built_repo, monkeypatch):
+    monkeypatch.setattr(check, "build_web_ui", lambda *a: pytest.fail("rebuilt a current dist"))
+    assert check_environment(_config(1), built_repo, built_repo, probe_port=False) is None
+
+
+def test_stale_dist_rebuilds_with_enriched_path(built_repo, monkeypatch):
+    (built_repo / "src" / "web_ui" / "package.json").write_text("{}")
+    builds = []
+    monkeypatch.setattr(check, "build_web_ui", lambda web_ui_dir, env: builds.append((web_ui_dir, env)))
+    check_environment(_config(1), built_repo, built_repo, probe_port=False)
+    [(web_ui_dir, env)] = builds
+    assert web_ui_dir == built_repo / "src" / "web_ui"
+    assert "/usr/local/bin" in env["PATH"].split(":")
+
+
+def test_missing_dist_build_failure_stops_startup(tmp_path, monkeypatch):
+    def failing(web_ui_dir, env):
+        raise WebUIBuildFailed("bun run build failed (exit 2): TS2307")
+
+    monkeypatch.setattr(check, "build_web_ui", failing)
     with pytest.raises(EnvironmentCheckFailed) as exc:
         check_environment(_config(1), tmp_path, tmp_path, probe_port=False)
-    assert str(exc.value) == "Web UI is not built. Run: cd src/web_ui && bun run build"
+    assert "bun run build failed (exit 2): TS2307" in str(exc.value)
+    assert "cd src/web_ui && bun install && bun run build" in str(exc.value)
 
 
 def test_gui_permissions_checked_only_when_gui_enabled(built_repo, monkeypatch):
@@ -95,7 +119,7 @@ def test_enriched_path_prepends_missing_dirs(monkeypatch):
     assert any(p.endswith("/.bun/bin") for p in parts)
 
 
-def test_missing_binary_fails_before_dist_check(tmp_path, monkeypatch):
+def test_missing_binary_fails_before_web_ui_build(tmp_path, monkeypatch):
     monkeypatch.setattr(
         check.shutil, "which", lambda name, path=None: None if name == "node" else f"/bin/{name}"
     )

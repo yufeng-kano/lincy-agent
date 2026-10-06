@@ -9,8 +9,8 @@
 
 - 一個程序、一個名字：`lincy`。沒有 supervisor、沒有 TUI、沒有第二個 HTTP server。
 - 內部三層單向依賴：`host` → `agent` → `channels`。host 只透過 `AgentHandle` 碰 agent。
-- 啟動分四個階段 `validate → build → run → web`，前兩階段失敗就 exit 非零，不留副作用。
-- 升級是手動觸發（CLI 或 API），流程是 pull → sync → build → 子程序 `check` → 等 idle → `os.execv`。check 不過就 rollback 磁碟，繼續跑舊版。
+- 啟動分四個階段 `validate → build → run → web`，前兩階段失敗就 exit 非零，不留副作用（例外：kernel migration、GUI 權限紀錄、Web UI 重 build，見 validate 節）。
+- 升級是手動觸發（CLI 或 API），流程是 pull → sync → Web UI build → 子程序 `check` → 等 idle → `os.execv`。check 不過就 rollback 磁碟，繼續跑舊版。
 - crash 重啟交給 launchd（LaunchAgent，`KeepAlive.SuccessfulExit=false`）。
 - Web UI 的 Agent 頁補上 new session / compact / clear / reload / cancel 操作。
 
@@ -53,10 +53,11 @@ src/lincy/
     app.py                  create_app(handle, event_store, info, upgrade, config, web=True)、include_web()
     control_api.py          APIRouter：/api/agent/*；RuntimeInfo(started_at, git_sha)；install_error_handlers()
     errors.py               HostError 與子類別（見「錯誤處理與 logging」）
-    upgrade.py              UpgradeManager：git / uv sync / bun build / check / rollback / 狀態
+    upgrade.py              UpgradeManager：git / uv sync / Web UI build / check / rollback / 狀態
     upgrade_notice.py       kernel 升級摘要在 check 與正式 start 之間的暫存檔
     service.py              launchd plist 產生、launchctl 包裝
-    check.py                環境檢查：binary、PATH 補齊、port、web_ui dist、AX binary
+    check.py                環境檢查：binary、PATH 補齊、port、Web UI 新鮮度（過期就 build）、AX binary
+    web_ui.py               Web UI build：bun install + bun run build、來源指紋 stamp
     init.py                 `lincy init`（原 cli/init.py）
   agent/
     build.py                build_agent(...) -> BuiltAgent（原 cli/app.py main() 的組裝邏輯）
@@ -139,7 +140,7 @@ packages = ["src/lincy"]
 | `run` | HTTP server 起來、agent 開始跑 | 之後是 runtime 錯誤 |
 | `web` | dashboard 資料初始化 | 非致命，health 回報 |
 
-`lincy check` = `validate` + `build`。因為 build 沒有副作用，check 可以安全地把整個 agent 組一遍再丟掉，所以它驗的不只是 yaml，還有 import、tool 接線、prompt 檔存在與否。
+`lincy check` = `validate` + `build`。check 也會在 Web UI 過期時重 build（見 validate 節），upgrade 的 gate 因為 upgrade 自己剛 build 過、指紋相符，所以不會重 build 第二次。因為 build 沒有副作用，check 可以安全地把整個 agent 組一遍再丟掉，所以它驗的不只是 yaml，還有 import、tool 接線、prompt 檔存在與否。
 
 check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不挑、不載入任何 session）。原因是 upgrade 在線上程序仍在跑時執行 check：server 佔著 port，探測必然失敗；agent 也正在往最新的 session 追加內容，check 不該去讀它。代價是 check 不驗 resume 路徑（session 檔內容），這部分由真正啟動時的 build 負責。
 
@@ -151,13 +152,15 @@ check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不
 2. `configure_runtime_timezone(config.app.timezone)`。
 3. 解析使用者：`CHAT_AGENT_USER`（`.env` 優先，其次環境變數）。缺 → `ConfigInvalid`。
 4. workspace 已初始化，否則 `WorkspaceNotReady`（訊息帶 `Run: uv run lincy init`），exit 1。
-5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這與 GUI 權限檢查寫入的 `state/gui_permissions.json` 是 validate 裡僅有的兩個 workspace 寫入，理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。
+5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這與 GUI 權限檢查寫入的 `state/gui_permissions.json` 是 validate 裡僅有的兩個 workspace 寫入（另一個 repo 內的寫入是步驟 8 的 Web UI 重 build），理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。
 6. `rebuild_personal_skills_index()`。
 7. 使用者 selector 解析（失敗 → `WorkspaceNotReady`），並確保使用者 memory 檔存在（`ensure_user_memory_file`）。
 8. 環境檢查（`host/check.py`），失敗 → `EnvironmentCheckFailed`：
    - `git`、`uv`、`bun`、`node` 在補齊後的 PATH 上找得到（`check.py` 的 `REQUIRED_BINARIES`）。node 是 `vue-tsc` 的 shebang 需要；launchd 的 PATH 是空的，少了它 `lincy upgrade` 會在 bun build 失敗後 rollback。
    - `app.server` port 沒被佔用（`lincy check` 跳過）。
-   - `src/web_ui/dist/index.html` 存在，否則印 `cd src/web_ui && bun run build` 後 exit 1。
+   - Web UI 新鮮度（`host/web_ui.py`）：`dist/index.html` 存在，且 `dist/.lincy-source-fingerprint` 等於目前 `src/web_ui` 來源的指紋（所有檔案的相對路徑 + 內容做 sha256，略過 `node_modules/`、`dist/`、`.DS_Store`；含未 commit 的修改）。不符就跑 `bun install --frozen-lockfile` → `bun run build`（PATH 用補齊後的值），成功後寫入指紋；任一步失敗 → `EnvironmentCheckFailed`，訊息帶 stderr 尾段與手動指令。這是 validate 刻意的副作用：新 clone、手動 `git pull`、本機改前端後直接 `lincy start` 都會拿到對應的 `dist`；指紋相符時只花幾 ms，平常重啟不會 build。
+     - 指紋放在 `dist/` 內：vite build 開始時會清空 `dist/`，build 失敗或中斷就不會留下指紋，下次啟動會重 build。代價是手動 `bun run build` 也會清掉指紋，下一次啟動會多 build 一次。
+     - 前端 build 壞掉時 lincy 起不來（launchd 會一直重試失敗）。這是早停的取捨：寧可不啟動，也不 serve 跟程式碼不一致的舊 `dist`。
    - `agents.gui_manager.enabled` 時 `check_gui_permissions(state_dir)`（`gui/permissions.py`）：檢查輔助使用、螢幕錄製權限。回傳的問題清單非空 → `EnvironmentCheckFailed`，訊息就是清單本身。這是硬性早停：沒權限的 GUI agent 會全盲，寧可不啟動；launchd 下失敗訊息會進 `logs/lincy.log`。全部通過時把解析後的 Python binary（`os.path.realpath(sys.executable)`）記到 `state/gui_permissions.json`，之後路徑變了（venv 重建、升級 Python）且缺權限時，訊息會提示要重新授權。TCC 以負責程序計：從 Terminal 跑 `lincy check` 看到的是 Terminal 的權限，正式以 launchd 服務為準。是否阻擋以 `check_gui_permissions` 回傳的清單為準；依規格，鍵盤導覽與 Secure Input 只在 `lincy init` 提示。權限通過後再檢查 `gui_manager.desktop.default_input_source` 是已啟用的輸入法，否則同樣 `EnvironmentCheckFailed`。
 9. session 選擇：`--new` → `None`；`--resume ID` → 該 id；預設 → `session_mgr.list_recent(user_id, limit=1)`，沒有就等同 `--new`。只讀。`--resume` 的 id 是否存在不在這裡檢查，由 build 的 `session_mgr.load()` 判定。
 
@@ -366,16 +369,16 @@ pydantic 是 `extra="forbid"`，舊欄位留在 yaml 或 override 裡會在 vali
 
 狀態：`idle → fetching → pulling → syncing → building → checking → restart_pending`；失敗分支 `rolling_back → failed`；沒更新 `up_to_date`。
 
-每個子程序都用同一份 env：目前的 `os.environ`，`PATH` 換成 `check.enriched_path()` 補齊後的值（launchd 給的 PATH 幾乎是空的，uv / bun 在使用者目錄）。
+每個子程序都用同一份 env：目前的 `os.environ`，`PATH` 換成 `check.enriched_path()` 補齊後的值（launchd 給的 PATH 幾乎是空的，uv / bun / node 在使用者目錄）。
 
 1. `start()` 在 lock 內執行：狀態不是 `idle` / `failed` / `up_to_date` → `UpgradeInProgress`（409）。`from_sha` 在這裡同步取 `git rev-parse HEAD`（202 回應要帶它），狀態設為 `fetching`，其餘步驟在 daemon thread 跑。
 2. `git status --porcelain` 非空 → `failed`，error 說明 working tree dirty。rollback 會 `reset --hard`，髒的 tree 不能碰。
 3. branch 取 `git rev-parse --abbrev-ref HEAD`，不寫死；結果是 `HEAD`（detached）→ `failed`。`git fetch origin <branch>`；`origin/<branch> == from_sha` → `up_to_date`。
 4. `git pull --ff-only`。失敗 → `failed`，**不 rollback**：ff-only 失敗不會動到磁碟。步驟 2 到 4 的失敗都是直接 `failed`。
 5. `uv sync`。
-6. `bun run build`（cwd `src/web_ui`）。
+6. `web_ui.build_web_ui()`：`bun install --frozen-lockfile` → `bun run build`（cwd `src/web_ui`），成功後寫入來源指紋，step 7 的 check 因此不會再 build 一次。`bun install` 不能省：pull 可能改了依賴，`--frozen-lockfile` 讓 `package.json` 與 `bun.lock` 不一致時直接失敗。
 7. `<sys.executable> -m lincy check`。步驟 5 到 7 任一 exit 非零 → rollback。
-8. rollback：狀態 `rolling_back`，`git reset --hard <from_sha>`、`uv sync`、`bun run build`，最後 `failed`，error 帶失敗步驟的 stderr 尾段（最多 2000 字元）。rollback 自己某一步失敗時，在 error 後面附加 `rollback: ...` 一行，狀態仍是 `failed`（此時磁碟可能不一致，需要人工處理）。
+8. rollback：狀態 `rolling_back`，`git reset --hard <from_sha>`、`uv sync`、`build_web_ui()`（舊版的 `bun install` + build），最後 `failed`，error 帶失敗步驟的 stderr 尾段（最多 2000 字元）。rollback 自己某一步失敗時，在 error 後面附加 `rollback: ...` 一行，狀態仍是 `failed`（此時磁碟可能不一致，需要人工處理）。
 9. pull 之前的任何例外（含 runner 本身拋出的）→ `failed`，磁碟沒動過所以不 rollback。pull 之後的任何例外一律走 rollback，不只 exit 非零：`subprocess.run` 找不到 `uv` / `bun` 時拋的是 `FileNotFoundError`，不是回傳碼。thread 最外層再接一次，狀態不會卡在進行中，否則之後每次升級請求都會 409。
 10. check 通過：`handle.request_restart()`，狀態 `restart_pending`。agent 在 idle 時 `graceful_exit()`、回傳 `RESTART`，host `execv`。新程序起來後 `health.git_sha` 是新的、`upgrade.state` 是 `idle`。
 
@@ -436,7 +439,7 @@ ProcessType           Interactive
 - `host/errors.py` 定義 `HostError(Exception)`（`status_code = 500`）與子類別：
   - `ConfigInvalid`：設定檔錯誤（`load_config` 的各種失敗）、缺 `CHAT_AGENT_USER`。
   - `WorkspaceNotReady`：workspace 未初始化、使用者 selector 解析失敗。
-  - `EnvironmentCheckFailed`：必要執行檔不在 PATH、port 被佔用、`web_ui/dist` 沒 build、GUI 權限不足（`gui_manager.enabled` 時）。
+  - `EnvironmentCheckFailed`：必要執行檔不在 PATH、port 被佔用、Web UI 自動 build 失敗、GUI 權限不足（`gui_manager.enabled` 時）。
   - `BuildFailed`：包住 `agent/build.py` 的 `BuildError`。
   - `UpgradeInProgress`：`status_code = 409`。
 - `stages` 與 CLI client 指令的失敗都 raise 這些，`cli.main()` 只在最外層接一次、印 `Error: ...`、exit 1；經 HTTP 時由 `install_error_handlers` 依 `status_code` 回應。

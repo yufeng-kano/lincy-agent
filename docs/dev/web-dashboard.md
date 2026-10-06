@@ -290,15 +290,14 @@ Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
 
 ## 啟動
 
-dashboard 隨 `lincy` 一起起來，沒有獨立的服務；前端 `dist/` 要先 build 好：
+dashboard 隨 `lincy` 一起起來，沒有獨立的服務，前端也不用手動 build：
 
 ```bash
-cd src/web_ui && bun run build   # 第一次，或前端有改動時
 uv run lincy start               # 前景執行
 uv run lincy service install     # 或交給 launchd 常駐
 ```
 
-`lincy start` 的 validate 階段會檢查 `src/web_ui/dist/index.html` 是否存在、`app.server` port 是否可用；只做檢查不啟動時用 `uv run lincy check`。`lincy upgrade` 會在 pull 後自動重跑 `bun run build`，PATH 補齊邏輯在 `host/check.py`（launchd 的 PATH 是空的）。
+`lincy start` / `lincy check` 的 validate 階段會比對 `src/web_ui` 來源指紋與 `dist/` 內的 stamp，`dist` 不存在或過期就自動 `bun install --frozen-lockfile && bun run build`，失敗就不啟動（細節見 [host-runtime.md](host-runtime.md) validate 節）。`lincy upgrade` 在 pull 後也會跑同一套 build 並寫入指紋。PATH 補齊邏輯在 `host/check.py`（launchd 的 PATH 是空的）。
 
 手動 `cd src/web_ui && bun run build` 時，PATH 也必須找得到 `node`：`vue-tsc` 的 shebang 是 `#!/usr/bin/env node`。若 `node` 不在 PATH，bun 會改用自己的 runtime 執行 `vue-tsc`，Volar 解析失效，表面上看起來像「找不到所有 `.vue` 檔」（`TS2307`），其實檔案都在。lincy 上 node 通常在 `/usr/local/bin/node`。
 
@@ -327,4 +326,4 @@ Production 模式由 `lincy` 程序內的 server 直接 serve `src/web_ui/dist/`
 - provider 不支援 write cache 度量時，前端直接顯示「無法測量」
 - `watchfiles` 使用 OS 原生通知（macOS FSEvents），不是 polling
 - 前端 `node_modules/` 和 `dist/` 已加入 `.gitignore`
-- 新機器部署需先 `cd src/web_ui && bun install` 安裝 node 依賴
+- 新機器部署不需手動 `bun install`，第一次 `lincy start` 會自動安裝依賴並 build（機器上要有 `bun` 與 `node`）

@@ -8,6 +8,7 @@ import pytest
 
 from lincy.host.errors import UpgradeInProgress
 from lincy.host.upgrade import UpgradeManager
+from lincy.host.web_ui import web_ui_is_current
 
 FROM = "a" * 40
 TO = "b" * 40
@@ -36,6 +37,15 @@ class FakeRunner:
         return [" ".join(cmd) for cmd, _ in self.calls]
 
 
+@pytest.fixture
+def repo(tmp_path):
+    # The fake bun never writes dist/, so create the build output up front.
+    dist = tmp_path / "src" / "web_ui" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<html></html>")
+    return tmp_path
+
+
 class FakeHandle:
     def __init__(self) -> None:
         self.restarts = 0
@@ -50,9 +60,9 @@ def _run(manager: UpgradeManager, handle: FakeHandle):
     return started, manager.status()
 
 
-def test_dirty_tree_fails_without_touching_anything(tmp_path):
+def test_dirty_tree_fails_without_touching_anything(repo):
     runner = FakeRunner(dirty=" M src/x.py")
-    manager = UpgradeManager(tmp_path, run_cmd=runner)
+    manager = UpgradeManager(repo, run_cmd=runner)
 
     started, status = _run(manager, FakeHandle())
 
@@ -63,9 +73,9 @@ def test_dirty_tree_fails_without_touching_anything(tmp_path):
     assert runner.commands() == ["git rev-parse HEAD", "git status --porcelain"]
 
 
-def test_up_to_date_stops_after_fetch(tmp_path):
+def test_up_to_date_stops_after_fetch(repo):
     runner = FakeRunner(remote=FROM)
-    manager = UpgradeManager(tmp_path, run_cmd=runner)
+    manager = UpgradeManager(repo, run_cmd=runner)
 
     _, status = _run(manager, FakeHandle())
 
@@ -74,10 +84,10 @@ def test_up_to_date_stops_after_fetch(tmp_path):
     assert "git fetch origin main" in runner.commands()
 
 
-def test_happy_path_requests_restart(tmp_path):
+def test_happy_path_requests_restart(repo):
     runner = FakeRunner()
     handle = FakeHandle()
-    manager = UpgradeManager(tmp_path, run_cmd=runner)
+    manager = UpgradeManager(repo, run_cmd=runner)
 
     _, status = _run(manager, handle)
 
@@ -92,18 +102,22 @@ def test_happy_path_requests_restart(tmp_path):
         "git rev-parse origin/main",
         "git pull --ff-only",
         "uv sync",
+        "bun install --frozen-lockfile",
         "bun run build",
         f"{sys.executable} -m lincy check",
     ]
     cwds = {" ".join(cmd): cwd for cmd, cwd in runner.calls}
-    assert cwds["bun run build"] == tmp_path / "src" / "web_ui"
-    assert cwds["uv sync"] == tmp_path
+    assert cwds["bun install --frozen-lockfile"] == repo / "src" / "web_ui"
+    assert cwds["bun run build"] == repo / "src" / "web_ui"
+    assert cwds["uv sync"] == repo
+    # The stamp lets the `lincy check` gate (and the restart) skip a second build.
+    assert web_ui_is_current(repo / "src" / "web_ui")
 
 
-def test_check_failure_rolls_back_and_reports_stderr_tail(tmp_path):
+def test_check_failure_rolls_back_and_reports_stderr_tail(repo):
     runner = FakeRunner(failing="-m lincy check")
     handle = FakeHandle()
-    manager = UpgradeManager(tmp_path, run_cmd=runner)
+    manager = UpgradeManager(repo, run_cmd=runner)
 
     _, status = _run(manager, handle)
 
@@ -112,15 +126,16 @@ def test_check_failure_rolls_back_and_reports_stderr_tail(tmp_path):
     assert status.error.startswith("lincy check failed (exit 1): ")
     assert status.error.endswith("boom: check failed")
     assert len(status.error) < 2100
-    assert runner.commands()[-4:] == [
+    assert runner.commands()[-5:] == [
         f"{sys.executable} -m lincy check",
         f"git reset --hard {FROM}",
         "uv sync",
+        "bun install --frozen-lockfile",
         "bun run build",
     ]
 
 
-def test_runner_exception_after_pull_rolls_back(tmp_path):
+def test_runner_exception_after_pull_rolls_back(repo):
     runner = FakeRunner()
 
     def exploding(cmd, cwd, env):
@@ -129,7 +144,7 @@ def test_runner_exception_after_pull_rolls_back(tmp_path):
             raise FileNotFoundError("bun")
         return runner(cmd, cwd, env)
 
-    manager = UpgradeManager(tmp_path, run_cmd=exploding)
+    manager = UpgradeManager(repo, run_cmd=exploding)
     handle = FakeHandle()
 
     _, status = _run(manager, handle)
@@ -140,7 +155,7 @@ def test_runner_exception_after_pull_rolls_back(tmp_path):
     assert handle.restarts == 0
 
 
-def test_runner_exception_before_pull_fails_without_rollback(tmp_path):
+def test_runner_exception_before_pull_fails_without_rollback(repo):
     runner = FakeRunner()
 
     def exploding(cmd, cwd, env):
@@ -148,7 +163,7 @@ def test_runner_exception_before_pull_fails_without_rollback(tmp_path):
             raise OSError("network down")
         return runner(cmd, cwd, env)
 
-    manager = UpgradeManager(tmp_path, run_cmd=exploding)
+    manager = UpgradeManager(repo, run_cmd=exploding)
 
     _, status = _run(manager, FakeHandle())
 
@@ -157,7 +172,7 @@ def test_runner_exception_before_pull_fails_without_rollback(tmp_path):
     assert not any(c.startswith("git reset") for c in runner.commands())
 
 
-def test_concurrent_start_raises_in_progress(tmp_path):
+def test_concurrent_start_raises_in_progress(repo):
     release = threading.Event()
     runner = FakeRunner()
 
@@ -166,7 +181,7 @@ def test_concurrent_start_raises_in_progress(tmp_path):
             release.wait(5)
         return runner(cmd, cwd, env)
 
-    manager = UpgradeManager(tmp_path, run_cmd=blocking)
+    manager = UpgradeManager(repo, run_cmd=blocking)
     handle = FakeHandle()
     manager.start(handle)
     with pytest.raises(UpgradeInProgress):

@@ -36,7 +36,10 @@ class ValidatedEnv:
 
 
 def validate(*, new_session: bool, resume_id: str | None, probe_port: bool = True) -> ValidatedEnv:
-    """Check config, workspace and environment; the only write is kernel migration."""
+    """Check config, workspace and environment.
+
+    Writes: kernel migration, and a web UI rebuild when its sources changed.
+    """
     try:
         config = load_config()
     except (ValidationError, yaml.YAMLError, FileNotFoundError) as e:

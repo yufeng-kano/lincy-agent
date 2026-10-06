@@ -18,10 +18,8 @@ cp .env.example .env
 # Initialize workspace (first time only)
 uv run lincy init
 
-# Build the web dashboard (first time, and after frontend changes)
-(cd src/web_ui && bun install && bun run build)
-
 # Start the agent and the web dashboard in the foreground
+# (builds the web dashboard first when it is missing or out of date)
 uv run lincy start
 ```
 
@@ -38,7 +36,7 @@ uv run lincy service install
 ```bash
 uv run lincy status    # state、pid、session、git sha、升級狀態
 uv run lincy stop      # graceful shutdown
-uv run lincy upgrade   # git pull → uv sync → bun build → check，通過才重啟，失敗自動 rollback
+uv run lincy upgrade   # git pull → uv sync → bun install + build → check，通過才重啟，失敗自動 rollback
 uv run lincy check     # 只驗證設定與組裝，不啟動
 ```
 

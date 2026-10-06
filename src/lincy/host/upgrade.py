@@ -1,24 +1,21 @@
-"""Manual upgrade: pull, sync, build, gate on `lincy check`, roll back on failure."""
+"""Manual upgrade: pull, sync, build web UI, gate on `lincy check`, roll back on failure."""
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from ..agent.handle import AgentHandle
 from .check import enriched_path
 from .errors import HostError, UpgradeInProgress
+from .web_ui import RunCmd, build_web_ui, run_subprocess
 
 logger = logging.getLogger(__name__)
-
-RunCmd = Callable[[list[str], Path, dict[str, str]], subprocess.CompletedProcess]
 
 _IDLE_STATES = frozenset({"idle", "failed", "up_to_date"})
 _STDERR_TAIL = 2000
@@ -37,14 +34,10 @@ class _StepFailed(HostError):
     pass
 
 
-def _subprocess_run(cmd: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
-
-
 class UpgradeManager:
     """One upgrade at a time, run in a daemon thread; state is read by /health."""
 
-    def __init__(self, repo_root: Path, *, run_cmd: RunCmd = _subprocess_run) -> None:
+    def __init__(self, repo_root: Path, *, run_cmd: RunCmd = run_subprocess) -> None:
         self._repo_root = repo_root
         self._web_ui_dir = repo_root / "src" / "web_ui"
         self._run_cmd = run_cmd
@@ -81,8 +74,8 @@ class UpgradeManager:
             self._status = replace(self._status, **changes)
         logger.info("upgrade state: %s", self._status.state)
 
-    def _step(self, name: str, cmd: list[str], cwd: Path | None = None) -> str:
-        result = self._run_cmd(cmd, cwd or self._repo_root, self._env)
+    def _step(self, name: str, cmd: list[str]) -> str:
+        result = self._run_cmd(cmd, self._repo_root, self._env)
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "")[-_STDERR_TAIL:]
             raise _StepFailed(f"{name} failed (exit {result.returncode}): {tail}")
@@ -124,7 +117,7 @@ class UpgradeManager:
             self._set(state="syncing")
             self._step("uv sync", ["uv", "sync"])
             self._set(state="building")
-            self._step("bun run build", ["bun", "run", "build"], cwd=self._web_ui_dir)
+            build_web_ui(self._web_ui_dir, self._env, self._run_cmd)
             self._set(state="checking")
             self._step("lincy check", [sys.executable, "-m", "lincy", "check"])
         except Exception as e:
@@ -143,7 +136,7 @@ class UpgradeManager:
         try:
             self._git("reset", "--hard", from_sha)
             self._step("uv sync", ["uv", "sync"])
-            self._step("bun run build", ["bun", "run", "build"], cwd=self._web_ui_dir)
+            build_web_ui(self._web_ui_dir, self._env, self._run_cmd)
         except Exception as e:
             error = f"{error}\nrollback: {e}"
         self._set(state="failed", error=error)

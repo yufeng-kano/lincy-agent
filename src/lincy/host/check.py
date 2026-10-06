@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import socket
@@ -11,6 +12,9 @@ from ..core.schema import AppConfig
 from ..gui.input_source import list_input_sources
 from ..gui.permissions import check_gui_permissions
 from .errors import EnvironmentCheckFailed
+from .web_ui import WebUIBuildFailed, build_web_ui, web_ui_is_current
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -61,7 +65,7 @@ def port_is_available(host: str, port: int) -> bool:
 def check_environment(
     config: AppConfig, repo_root: Path, agent_os_dir: Path, *, probe_port: bool,
 ) -> None:
-    """Fail fast on environment problems.
+    """Fail fast on environment problems; rebuild the web UI when its sources changed.
 
     ``probe_port`` is off for ``lincy check``: upgrade runs it as a gate while
     the live server still holds the port.
@@ -80,8 +84,18 @@ def check_environment(
             f"Required binaries not found on PATH: {', '.join(missing)}"
         )
 
-    if not (repo_root / "src" / "web_ui" / "dist" / "index.html").is_file():
-        raise EnvironmentCheckFailed("Web UI is not built. Run: cd src/web_ui && bun run build")
+    # Building here (not only in upgrade) covers a fresh clone and a manual
+    # git pull; the fingerprint keeps a normal restart from rebuilding.
+    web_ui_dir = repo_root / "src" / "web_ui"
+    if not web_ui_is_current(web_ui_dir):
+        logger.info("Web UI dist is missing or stale; running bun install + bun run build")
+        try:
+            build_web_ui(web_ui_dir, {**os.environ, "PATH": search_path})
+        except WebUIBuildFailed as e:
+            raise EnvironmentCheckFailed(
+                f"Web UI build failed. {e}\n"
+                "Fix it, or run by hand: cd src/web_ui && bun install && bun run build"
+            ) from e
 
     # A GUI agent without Accessibility / Screen Recording is blind, so a
     # missing permission stops startup instead of degrading at task time.
