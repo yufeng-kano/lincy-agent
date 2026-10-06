@@ -4,8 +4,8 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from chat_web_api.settings import WebApiSettings
 from lincy.core import config as config_module
+from lincy.web.settings import WebSettings
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -313,7 +313,7 @@ def test_falsey_non_mapping_override_raises(monkeypatch, tmp_path: Path, payload
         config_module.load_config("agent.yaml")
 
 
-def test_web_api_settings_rejects_unknown_override_key(monkeypatch, tmp_path: Path):
+def test_web_settings_rejects_unknown_override_key(monkeypatch, tmp_path: Path):
     _write_base_agent_config(tmp_path)
     _write_yaml(
         tmp_path / "agent.override.yaml",
@@ -322,7 +322,7 @@ def test_web_api_settings_rejects_unknown_override_key(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
 
     with pytest.raises(ValidationError, match="soft_max_prompt_token"):
-        WebApiSettings.from_env()
+        WebSettings.from_config(config_module.load_config("agent.yaml"))
 
 
 @pytest.mark.parametrize(

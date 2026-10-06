@@ -217,9 +217,9 @@ logs
 .worktrees/
 
 # Frontend build artifacts
-src/chat_web_ui/node_modules/
-src/chat_web_ui/dist/
-src/chat_web_ui/.vite/
+src/web_ui/node_modules/
+src/web_ui/dist/
+src/web_ui/.vite/
 
 # Local config overrides (see cfgs/*.override.yaml.example)
 cfgs/*.override.yaml
