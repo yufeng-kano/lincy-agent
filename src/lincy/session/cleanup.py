@@ -77,13 +77,14 @@ def cleanup_sessions(
                 except OSError:
                     logger.warning("Failed to remove brain session: %s", entry)
 
-    # GUI sessions: each session is a .json file
+    # GUI sessions: <id>.json plus the <id>.steps.jsonl and <id>.jpg
+    # files written alongside it; the id is the part before the first dot.
     gui_dir = session_base_dir / "gui"
     if gui_dir.is_dir():
         for entry in gui_dir.iterdir():
-            if not entry.is_file() or entry.suffix != ".json":
+            if not entry.is_file():
                 continue
-            ts = _parse_session_timestamp(entry.stem)
+            ts = _parse_session_timestamp(entry.name.split(".", 1)[0])
             if ts is None:
                 continue
             if _is_expired_session_timestamp(ts, cutoff_local=cutoff, app_tz=app_tz):
@@ -91,6 +92,6 @@ def cleanup_sessions(
                     entry.unlink()
                     deleted += 1
                 except OSError:
-                    logger.warning("Failed to remove GUI session: %s", entry)
+                    logger.warning("Failed to remove GUI session file: %s", entry)
 
     return deleted

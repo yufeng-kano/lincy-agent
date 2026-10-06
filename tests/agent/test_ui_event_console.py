@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from lincy.agent.ui_event_console import UiEventConsole
 from lincy.llm.schema import Message
 from lincy.session.schema import SessionEntry
-from lincy.tui.events import (
+from lincy.ui.events import (
     InboundMessageEvent,
     OutboundMessageEvent,
     ProcessingFinishedEvent,

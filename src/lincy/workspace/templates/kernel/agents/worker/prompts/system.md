@@ -14,10 +14,20 @@ Notes:
 Web and GUI escalation:
 - Try the cheapest path first: plain HTTP (curl, web_fetch), a CLI, an official API, or AppleScript.
 - Escalate to `gui_task` only when that path is blocked: anti-bot or CAPTCHA, a login wall, a JS-only shell page, or the task needs visual confirmation of what is on screen.
-- Write the `gui_task` intent as a self-contained goal: what to achieve, the success criteria, and constraints (save path, app preference) as bullet points. The GUI agent has no chat context and no view of your task sheet, so include what it needs, such as where the page is and what your HTTP attempt found. Give credentials or field values only when your task sheet provided them.
+- What the GUI agent can do: it only sees the focused window's accessibility tree plus a screenshot, and acts with the real mouse and keyboard, like a person at the desk. It has no shell, cannot save or read files, cannot paste paths, and cannot see your files or this conversation. Typing goes key by key, so it is slower than you.
+- You do the preparation before calling `gui_task`: put any file it must upload or open on the Desktop with a simple name, compute every value it must enter, and open the target page or document yourself when you can (for example `open -a "Google Chrome" <url>`). Afterwards, verify the outcome yourself where possible (check the downloaded file, query the result over HTTP).
+- Write the `gui_task` intent with exactly these five parts, as bullet points, and no operating steps:
+  1. Goal: what to achieve.
+  2. Success criteria: what must be visible on screen when it is done.
+  3. Values to enter: every value, item by item, exactly as it must be typed. Give credentials or field values only when your task sheet provided them.
+  4. Already prepared: where the files are (full Desktop path), whether the page or app is already open, what your HTTP attempt found.
+  5. Forbidden actions: what it must not do (submit, send, delete, purchase) unless stated.
+- Pass `app` (English name or bundle id) when you know the target app; the runtime brings it to the front and maximizes it before the GUI agent starts.
 - If the task sheet's SKILL.md references an app-specific GUI guide, pass its workspace-relative path as `app_prompt`.
-- `gui_task` is synchronous for you: it returns the GUI result text (`[GUI SUCCESS]` / `[GUI FAILED]` / `[GUI BLOCKED]`). Read it and continue the task. To continue a blocked GUI session, call `gui_task` again with the same `session_id`.
-- At most 2 `gui_task` attempts per task. If they still fail, stop and report what was tried and what blocked it.
+- `gui_task` is synchronous for you: it returns `[GUI SUCCESS]`, `[GUI FAILED]`, `[GUI BLOCKED]`, or `[GUI PAUSED]` with a session id and the GUI agent's report. Read it and continue the task.
+- On `[GUI PAUSED]` (step budget used up, or a repeated action had no effect) or `[GUI BLOCKED]` (the GUI agent hit an obstacle), by default call `gui_task` again with the same `session_id` and a new instruction that answers the problem or says what to do next. Start a new session only when the report shows the approach itself is wrong (wrong app, wrong page, wrong plan).
+- Resuming the same session is unlimited. Calls without `session_id` start a new session; make at most 2 of those per task in total (the first one included). If they still fail, stop and report what was tried and what blocked it.
+- If your own turns run out while a GUI session is unfinished, your final report must include its session id and last status (for example `GUI session 20261006_175901_475dde: PAUSED`) so the task can be resumed.
 - Never use agent-browser or any other headless browser CLI to browse websites. Rendering a local HTML file to an image with headless Chrome is fine.
 - Never use GUI automation to open a terminal and type commands; run commands with your own shell tool.
 

@@ -1807,3 +1807,33 @@ class TestM0178WorkerNotes:
         M0178WorkerNotes().upgrade(kernel_dir, tmp_path / "templates")
 
         assert notes_path.read_text() == "- [2026-10-01] keep me\n"
+
+
+class TestM0179NativeGuiBackend:
+    """Tests for the native GUI backend prompt migration."""
+
+    def test_copies_gui_prompts(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0179_native_gui_backend import (
+            M0179NativeGuiBackend,
+        )
+
+        kernel_dir = tmp_path / "kernel"
+        templates_dir = tmp_path / "templates"
+        files = [
+            "agents/gui_manager/prompts/system.md",
+            "agents/worker/prompts/system.md",
+            "agents/brain/prompts/system.md",
+            "builtin-skills/skill-installer/SKILL.md",
+        ]
+        for rel in files:
+            src = templates_dir / rel
+            dst = kernel_dir / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(f"new::{rel}")
+            dst.write_text(f"old::{rel}")
+
+        M0179NativeGuiBackend().upgrade(kernel_dir, templates_dir)
+
+        for rel in files:
+            assert (kernel_dir / rel).read_text() == f"new::{rel}"

@@ -103,8 +103,8 @@ class SessionDebugStore:
 
         self._session_dir = session_dir
         self._session_id = session_id
+        # Created on first write so loading a session for resume stays read-only.
         self._checkpoints_dir = session_dir / "checkpoints"
-        self._checkpoints_dir.mkdir(parents=True, exist_ok=True)
         self._event_seq = self._count_jsonl_lines(session_dir / "events.jsonl")
         self._request_seq = self._count_jsonl_lines(session_dir / "requests.jsonl")
         self._response_seq = self._count_jsonl_lines(session_dir / "responses.jsonl")
@@ -452,6 +452,7 @@ class SessionDebugStore:
             saved_at=tz_now(),
             messages=messages,
         )
+        self._checkpoints_dir.mkdir(parents=True, exist_ok=True)
         path = self._checkpoints_dir / "latest.json"
         path.write_text(checkpoint.model_dump_json(indent=2) + "\n", encoding="utf-8")
         self._append_event(
@@ -478,6 +479,7 @@ class SessionDebugStore:
         import json
         import tempfile
 
+        self._checkpoints_dir.mkdir(parents=True, exist_ok=True)
         path = self._checkpoints_dir / "render_cache.jsonl"
         header = json.dumps({
             "version": 1,

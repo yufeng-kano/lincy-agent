@@ -4,7 +4,7 @@ Brain 不再擁有 shell 工具，所有指令執行都必須委派 `worker` 子
 
 ## Maintenance 直接派工（非同步 worker tool 的例外）
 
-`cli/app.py` 建立 `WorkerRunner` 的時機提前到 `AgentCore` 建構之前，同一個
+`agent/build.py` 建立 `WorkerRunner` 的時機提前到 `AgentCore` 建構之前，同一個
 runner 實例同時給兩個呼叫者用：
 
 - brain 的 async `worker` tool（本文件其餘部分描述的路徑）
@@ -41,8 +41,8 @@ runner 實例同時給兩個呼叫者用：
 
 ## CLI 顯示
 
-- `WorkerRunner(ui_console=...)` 接主 console；worker 每個內部 tool call / result 以 `worker-N tool_name` 為名即時顯示在 TUI（`UiEventConsole.print_subagent_tool_call/result`）
-- 顯示遵守 `tui.show_tool_use` 設定；失敗與帶 warning 的 result 一律顯示
+- `WorkerRunner(ui_console=...)` 接主 console；worker 每個內部 tool call / result 以 `worker-N tool_name` 為名即時發成 UI event（`UiEventConsole.print_subagent_tool_call/result`），Web Agent 頁依前綴歸到子代理分頁
+- 顯示遵守 `ui.show_tool_use` 設定；失敗與帶 warning 的 result 一律顯示
 - UI 發送包在 try/except：顯示層故障不得中斷 worker 執行
 
 ## Prompt cache
@@ -64,7 +64,7 @@ Worker 與 brain 共用 `src/lincy/context/cache_breakpoints.py`：
 - Worker：`WorkerRunner` 仍然拿 **raw registry** 自行 clone（`_build_filtered_registry`），兩邊的排除清單互相獨立
 - 啟動驗證：所有 `registry.register()` 跑完後呼叫 `validate_excluded_tools()`（`src/lincy/agent/tool_setup.py`），排除清單裡有未註冊的工具名就 `SystemExit`
   - `gui_task` / `screenshot` / `screenshot_by_subagent` 是條件式註冊（關掉 GUI 或改 vision 設定就不存在），驗證時對這三個名稱略過未註冊檢查；其他名稱仍維持 typo 保護
-  - 不在共用 registry 的 agent 專屬工具由呼叫端以 `extra_tools_by_agent` 傳入（`cli/app.py` 傳 `{"worker": _worker_extra_tools}`），只對該 agent 視為已知；例如 worker 可排除 `worker_note`，brain 排除它仍會被擋
+  - 不在共用 registry 的 agent 專屬工具由呼叫端以 `extra_tools_by_agent` 傳入（`agent/build.py` 傳 `{"worker": worker_extra_tools}`），只對該 agent 視為已知；例如 worker 可排除 `worker_note`，brain 排除它仍會被擋
 
 目前設定：brain 排除 `execute_shell`、`shell_task`、`gui_task`；worker 排除 `screenshot`、`shell_task`（保留 `execute_shell` 與 `gui_task`）。
 
@@ -78,9 +78,15 @@ Brain 不直接呼叫 `gui_task`，瀏覽器、登入、桌面 UI、視覺確認
 brain --worker--> worker --gui_task (同步)--> GUIManager
 ```
 
-- Worker 先走 HTTP / CLI / 官方 API / AppleScript；被擋（反爬蟲、CAPTCHA、登入牆、JS 殼頁、需視覺確認）才自行呼叫 `gui_task`，每個任務最多 2 次 GUI 嘗試。規則寫在 worker system prompt
+- Worker 先走 HTTP / CLI / 官方 API / AppleScript；被擋（反爬蟲、CAPTCHA、登入牆、JS 殼頁、需視覺確認）才自行呼叫 `gui_task`。規則寫在 worker system prompt
+- **能力範圍**：GUI agent 只有看（焦點視窗的 AX 樹 + 截圖）與真實鍵鼠，沒有 shell、不能存檔、不能貼路徑、讀不到 worker 的檔案。準備工作（要上傳的檔案放桌面、算好要填的值、能開的頁面先開好）與事後驗證歸 worker。架構細節見 [gui-computer-use.md](gui-computer-use.md)
+- **intent 五欄**：目標、成功條件、要填的值（逐項）、已準備好的東西（檔案在哪、頁面是否已開）、禁止事項；不寫操作步驟。知道目標 app 時帶 `app`（英文名或 bundle id），runtime 會在開始前帶到前景並放大
+- **結果**：`[GUI SUCCESS]` / `[GUI FAILED]` / `[GUI BLOCKED]` / `[GUI PAUSED]`，標頭帶 `session: <id>`。`max_steps` 是每次呼叫的步數，用完或重複動作無效時回 `PAUSED`（不是 `FAILED`），附 situation report
+- **續跑**：`PAUSED` 或 `BLOCKED` 時 worker 預設帶同一個 `session_id` 再呼叫 `gui_task`，intent 寫新指示；只有 report 顯示方向錯誤（錯的 app、錯的頁面、做法不對）才開新 session。續跑注入上一輪 report、最後完整 state 與最後截圖，步數從 0 起算
+- **attempt 語意**：同一 session 續跑不限次數；不帶 `session_id` 的呼叫會開新 session，每個任務合計至多 2 個（含第一個）。總步數因此由 worker 的 turn 上限間接管住
+- **跨 worker 接續**：worker 自己的 turn 用完時，強制回報（`worker/runner.py` 的 `_FORCED_REPORT_PROMPT`）必須帶出未完成 GUI session 的 `session_id` 與狀態。brain 看到回報中有 `PAUSED` 的 GUI session，不當失敗處理，以原任務單加上「續跑 GUI session <id>」重新委派，新 worker 用同一個 `session_id` 接著做
 - agent-browser（外部 headless browser CLI skill）已退役，worker prompt 明令禁用
-- 只有一個 `gui_task`，同步執行，註冊在共用 registry（`cli/app.py`）；結果是 `format_gui_result` 文字，直接回到呼叫者的 tool loop。Brain 透過 `excluded_tools` 排除它；worker 像其他工具一樣從共用 registry clone
+- 只有一個 `gui_task`，同步執行，註冊在共用 registry（`agent/build.py`）；結果是 `format_gui_result` 文字，直接回到呼叫者的 tool loop。Brain 透過 `excluded_tools` 排除它；worker 像其他工具一樣從共用 registry clone
 - GUI 關閉（`gui_manager_instance is None`）時不註冊，worker 也看不到 `gui_task`
 - **Slot 佔用**：同步 `gui_task` 等待共用 `gui_lock`，最多 `agents.gui_manager.lock_wait_seconds` 秒（預設 300），逾時回 `[GUI BUSY] ...` 且不執行任務。等待期間該 worker 持續佔住一個 `task_max_concurrency` slot，brain 可能收到 `[WORKER BUSY]`
 

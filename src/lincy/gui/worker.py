@@ -13,7 +13,7 @@ from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import ContentPart, Message
 from ..llm.json_extract import extract_json_object
-from .actions import take_screenshot
+from .capture import take_screenshot
 
 logger = logging.getLogger(__name__)
 

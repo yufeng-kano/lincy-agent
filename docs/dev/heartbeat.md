@@ -309,5 +309,5 @@ pending 的系統心跳會被自動推遲。
 | `src/lincy/tools/builtin/schedule_action.py` | schedule_action tool |
 | `src/lincy/agent/core.py` | `_schedule_next_heartbeat()` + promotion lifecycle |
 | `src/lincy/agent/turn_effects.py` | scheduled turn no-op / side-effect 判定 |
-| `src/lincy/cli/app.py` | 啟動整合 |
+| `src/lincy/agent/build.py` | 啟動整合 |
 | `src/lincy/core/schema.py` | `HeartbeatConfig` |

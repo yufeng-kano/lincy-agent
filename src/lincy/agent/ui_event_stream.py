@@ -1,7 +1,7 @@
 """Export typed UI events to a JSONL stream consumed by the web dashboard.
 
-This is a read-only tap on the existing ``UiSink`` pipeline: the TUI keeps its own
-sink untouched and a fan-out wrapper mirrors every event into a per-run JSONL file.
+Every typed UI event the agent emits is mirrored into a per-run JSONL file through
+``UiEventExportSink``; ``build_agent`` wires it behind a ``FanoutUiSink``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..tui.events import (
+from ..ui.events import (
     AssistantTextEvent,
     CtxStatusEvent,
     DebugEvent,
@@ -32,7 +32,6 @@ from ..tui.events import (
     WarningEvent,
 )
 from ..jsonl_store import JsonlStore
-from ..tui.sink import UiSink
 
 
 logger = logging.getLogger(__name__)
@@ -123,7 +122,7 @@ def serialize_ui_event(event: UiEvent, *, seq: int) -> UiEventRecord:
 
 
 class UiEventStore(JsonlStore[UiEventRecord]):
-    """Append-only JSONL store for exported UI events, one file per chat-cli run."""
+    """Append-only JSONL store for exported UI events, one file per lincy run."""
 
     model_type = UiEventRecord
     max_recent_limit = _MAX_RECENT_LIMIT
@@ -157,7 +156,7 @@ class UiEventExportSink:
         self._warned = False
 
     def emit(self, event: UiEvent) -> None:
-        # The export is a side channel: it must never break the TUI or the agent.
+        # The export is a side channel: it must never break the agent.
         try:
             record = serialize_ui_event(event, seq=self._store.next_seq())
             self._store.append(record)
@@ -168,17 +167,3 @@ class UiEventExportSink:
                     "UI event export failed; further failures stay silent",
                     exc_info=True,
                 )
-
-
-class FanoutUiSink:
-    """Forward every event to several sinks, isolating failures per sink."""
-
-    def __init__(self, sinks: tuple[UiSink, ...]) -> None:
-        self._sinks = sinks
-
-    def emit(self, event: UiEvent) -> None:
-        for sink in self._sinks:
-            try:
-                sink.emit(event)
-            except Exception:
-                logger.warning("UI sink %r failed to emit", sink, exc_info=True)

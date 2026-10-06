@@ -261,7 +261,7 @@ def make_heartbeat_message(
 | `src/lincy/agent/turn_overlay.py` | `[Runtime Context]` / `[Timing Notice]` 文字組裝（純函式） |
 | `src/lincy/agent/responder.py` | `_build_dynamic_turn_overlay`：組出 notes block 等並疊加到 outgoing request |
 | `src/lincy/tools/registry.py` | 修改：`add_side_effect_tools` method |
-| `src/lincy/cli/app.py` | 修改：初始化 stores、late tool registration |
+| `src/lincy/agent/build.py` | 修改：初始化 stores、late tool registration |
 
 ---
 

@@ -1,4 +1,4 @@
-from .cli import CLIAdapter
+from .console import ConsoleAdapter
 from .discord import DiscordAdapter
 from .formatting import markdown_to_plaintext
 from .gmail import GmailAdapter
@@ -7,7 +7,7 @@ from .scheduler import SchedulerAdapter
 
 __all__ = [
     "ChannelAdapter",
-    "CLIAdapter",
+    "ConsoleAdapter",
     "DiscordAdapter",
     "GmailAdapter",
     "SchedulerAdapter",

@@ -529,8 +529,13 @@ class TestCreateShellTask:
 
         assert "[SHELL DISPATCHED]" in output
         assert ui_sink.wait_for_count(1)
-        assert manager.send_down() == "Sent Down to shell session sh_0001."
-        assert manager.send_enter() == "Sent Enter to shell session sh_0001."
+        assert "POST /api/agent/shell/sessions/sh_0001/input" in ui_sink.events[0].message
+        assert manager.has_session("sh_0001")
+        [snapshot] = manager.list_sessions()
+        assert snapshot["session_id"] == "sh_0001"
+        assert snapshot["state"] == "waiting_user_input"
+        assert manager.send_key("down", session_id="sh_0001") == "Sent Down to shell session sh_0001."
+        assert manager.send_key("enter", session_id="sh_0001") == "Sent Enter to shell session sh_0001."
         assert queue.wait_for_count(1)
         msg = queue.items[0]
         assert "1b5b420a" in msg.content

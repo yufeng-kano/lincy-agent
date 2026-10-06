@@ -62,8 +62,6 @@ def scope_for_inbound(msg: InboundMessage) -> str | None:
     channel = _norm(msg.channel)
     if channel in (None, "system", "cli"):
         return None
-    if channel == "web":
-        return "web:chat:default"
     if channel == "discord":
         return _discord_inbound_scope(msg)
     if channel == "gmail":
@@ -86,8 +84,6 @@ def scope_for_send_message_call(
     ch = _norm(channel)
     if ch in (None, "system", "cli"):
         return None
-    if ch == "web":
-        return "web:chat:default"
 
     inbound_meta = inbound_metadata or {}
 

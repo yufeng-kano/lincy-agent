@@ -1,7 +1,4 @@
-"""Agent core logic: responder + memory sync.
-
-Extracted from cli/app.py to decouple agent logic from CLI adapter.
-"""
+"""Agent core logic: responder + memory sync."""
 
 from __future__ import annotations
 
@@ -10,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import threading
 from uuid import uuid4
 from typing import TYPE_CHECKING, Literal
 
@@ -48,7 +46,7 @@ from ..session import SessionManager
 from ..skills import rebuild_personal_skills_index
 from ..timezone_utils import get_tz, now as tz_now
 from ..tools import FilteredToolRegistry, ToolRegistry
-from ..tui.sink import UiSink
+from ..ui.sink import UiSink
 from ..workspace import WorkspaceManager
 from . import responder as _responder
 from .heartbeat import (
@@ -62,7 +60,7 @@ from .maintenance import MaintenanceScheduler
 from .compaction import ContextCompactionResult, ContextCompactor
 from .requeue import RequeuePolicy, TurnFailureCategory, classify_turn_failure, should_requeue_failed_turn
 from .token_telemetry import LatestTokenStatus, TokenTelemetry, TurnTokenUsage
-from .queue import PersistentPriorityQueue
+from .queue import PersistentPriorityQueue, QueueItem
 from .responder import (
     _CommonGroundTurnDebug,
     _build_common_ground_overlay,
@@ -74,12 +72,16 @@ from .run_helpers import (
     _surface_error_message,
     _strip_timestamp_prefix,
 )
+from .handle import ExitReason
 from .schema import (
+    ClearSentinel,
+    CompactSentinel,
     InboundMessage,
     MaintenanceSentinel,
     NewSessionSentinel,
     ReloadSentinel,
     ReloadSystemPromptSentinel,
+    RestartSentinel,
     ShutdownSentinel,
 )
 from .skill_governance import SkillGovernanceRegistry
@@ -283,6 +285,7 @@ class AgentCore:
         self._last_turn_failure_category: TurnFailureCategory | None = None
         self.task_store = task_store
         self.note_store = note_store
+        self._busy = threading.Event()
 
     def _maybe_rescan_skills(self) -> None:
         """Rescan skill roots if directory mtimes have changed."""
@@ -330,6 +333,8 @@ class AgentCore:
 
     def _finalize_turn_token_status(self) -> None:
         self._telemetry().finalize()
+        # The web Agent page header shows this; nothing else pushes it.
+        self.console.print_ctx_status(self.get_token_status_text())
 
     def get_token_status_text(self) -> str:
         return self._telemetry().status_text()
@@ -346,6 +351,10 @@ class AgentCore:
 
     def run_manual_compact(self) -> ContextCompactionResult:
         return self._compaction().run_manual_compact()
+
+    def is_busy(self) -> bool:
+        """Return True while an inbound turn is being processed (thread-safe)."""
+        return self._busy.is_set()
 
     def _make_turn_output(
         self,
@@ -1215,6 +1224,27 @@ class AgentCore:
             logger.warning("System prompt reload failed: %s", e)
             self.console.print_error(_surface_error_message(e))
 
+    def _perform_compact(self) -> None:
+        """Run a manual compaction on the agent thread and report the outcome."""
+        result = self.run_manual_compact()
+        if not result.changed:
+            self.console.print_info("Context is already compact.")
+            return
+        via = f" via {result.source_label}" if result.source_label else ""
+        if result.removed_messages > 0:
+            self.console.print_info(
+                f"Context compacted{via}: {result.removed_messages} messages removed."
+            )
+        else:
+            self.console.print_info(f"Context compacted{via}.")
+
+    def _perform_clear(self) -> None:
+        """Drop the in-memory conversation on the agent thread."""
+        self.conversation.clear()
+        if self.turn_context is not None:
+            self.turn_context.clear()
+        self.console.print_info("Conversation cleared.")
+
     def _rotate_session(self) -> None:
         """Finalize the current session and persist current conversation to a new one."""
         if self.session_mgr is None:
@@ -1553,14 +1583,7 @@ class AgentCore:
         """Register a channel adapter."""
         self.adapters[adapter.channel_name] = adapter
 
-    def enqueue(
-        self,
-        msg: InboundMessage
-        | ShutdownSentinel
-        | NewSessionSentinel
-        | ReloadSentinel
-        | ReloadSystemPromptSentinel,
-    ) -> None:
+    def enqueue(self, msg: QueueItem) -> None:
         """Push a message into the persistent queue (thread-safe)."""
         if self._queue is None:
             raise RuntimeError("No queue configured; call AgentCore with queue=...")
@@ -1593,8 +1616,20 @@ class AgentCore:
         """Signal the agent to reload only the system prompt."""
         self.enqueue(ReloadSystemPromptSentinel())
 
-    def run(self) -> None:
-        """Queue-based main loop.  Blocks until shutdown.
+    def request_compact(self) -> None:
+        """Signal the agent to compact the conversation."""
+        self.enqueue(CompactSentinel())
+
+    def request_clear(self) -> None:
+        """Signal the agent to clear the conversation."""
+        self.enqueue(ClearSentinel())
+
+    def request_restart(self) -> None:
+        """Signal the agent to exit for a restart once no ready inbound remains."""
+        self.enqueue(RestartSentinel())
+
+    def run(self) -> ExitReason:
+        """Queue-based main loop.  Blocks until shutdown or restart.
 
         Starts all registered adapters, then pulls messages from the
         persistent priority queue.  Each message is processed through
@@ -1625,7 +1660,11 @@ class AgentCore:
                 if isinstance(msg, ShutdownSentinel):
                     if msg.graceful:
                         self.graceful_exit()
-                    break
+                    return ExitReason.SHUTDOWN
+                if isinstance(msg, RestartSentinel):
+                    # Priority 999: popping it means no ready inbound is left, so the agent is idle.
+                    self.graceful_exit()
+                    return ExitReason.RESTART
                 if isinstance(msg, MaintenanceSentinel):
                     if self._queue.pending_inbound_count() == 0:
                         self._perform_maintenance()
@@ -1639,9 +1678,20 @@ class AgentCore:
                 if isinstance(msg, ReloadSystemPromptSentinel):
                     self._perform_reload_system_prompt()
                     continue
-                self._process_inbound(msg, receipt)
+                if isinstance(msg, CompactSentinel):
+                    self._perform_compact()
+                    continue
+                if isinstance(msg, ClearSentinel):
+                    self._perform_clear()
+                    continue
+                self._busy.set()
+                try:
+                    self._process_inbound(msg, receipt)
+                finally:
+                    self._busy.clear()
         except KeyboardInterrupt:
             self.graceful_exit()
+            return ExitReason.SHUTDOWN
         finally:
             self._queue.stop_promotion()
             if self._maintenance_scheduler:
@@ -1675,7 +1725,7 @@ class AgentCore:
                     msg.channel, msg.sender, turn_metadata
                 )
 
-            # Notify all adapters so terminal-owning ones (CLI) can suspend
+            # Notify all adapters so the console can arm turn cancellation
             for a in self.adapters.values():
                 a.on_turn_start(msg.channel)
 

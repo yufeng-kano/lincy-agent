@@ -116,7 +116,7 @@ class ShellExecutor:
                 full_command,
                 shell=True,
                 # Close stdin so subprocesses fail fast instead of hanging
-                # waiting for user input or stealing keystrokes from the TUI.
+                # waiting for user input on an inherited terminal stdin.
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

@@ -137,6 +137,8 @@ class TestRecovery:
         (qdir / "active" / "0000_00000001.json").write_text(data)
 
         q = PersistentPriorityQueue(qdir)
+
+        q.recover()
         assert q.pending_count() == 1
         got, _ = q.get()
         assert got.content == "crashed"
@@ -157,6 +159,8 @@ class TestRecovery:
         )
 
         q = PersistentPriorityQueue(qdir, discard_channels={"cli"})
+
+        q.recover()
         assert q.pending_count() == 1
         got, _ = q.get()
         assert got.content == "keep-line"
@@ -168,6 +172,7 @@ class TestRecovery:
 
         (qdir / "pending" / "0000_00000001.json").write_text("not json")
         q = PersistentPriorityQueue(qdir)
+        q.recover()
         assert q.pending_count() == 0
 
 

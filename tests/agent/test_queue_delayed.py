@@ -182,6 +182,8 @@ class TestRecoveryDelayed:
         (qdir / "pending" / "0005_00000001.json").write_text(data)
 
         q = PersistentPriorityQueue(qdir)
+
+        q.recover()
         assert q.pending_count() == 0
         with q._delayed_lock:
             assert len(q._delayed) == 1
@@ -196,6 +198,8 @@ class TestRecoveryDelayed:
         (qdir / "pending" / "0000_00000001.json").write_text(data)
 
         q = PersistentPriorityQueue(qdir)
+
+        q.recover()
         assert q.pending_count() == 1
 
     def test_no_not_before_recovered_to_mem(self, tmp_path):
@@ -207,6 +211,8 @@ class TestRecoveryDelayed:
         (qdir / "pending" / "0000_00000001.json").write_text(data)
 
         q = PersistentPriorityQueue(qdir)
+
+        q.recover()
         assert q.pending_count() == 1
 
 

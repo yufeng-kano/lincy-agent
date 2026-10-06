@@ -28,12 +28,13 @@
 | [token-only-context-policy.md](token-only-context-policy.md) | Token-only 上下文策略（soft limit、Copilot usage 缺值、overflow fallback） |
 | [agent-task-system.md](agent-task-system.md) | Agent Task System：結構化待辦 + 排程重複 + heartbeat 注入 |
 | [macos-app-tools.md](macos-app-tools.md) | macOS 原生個人資料工具：Calendar / Reminders / Notes / Photos 的 tool 設計與使用規則 |
-| [web-dashboard.md](web-dashboard.md) | Web Dashboard：chat_web_api + chat_web_ui 架構、API、前端設計、注意事項 |
-| [gui-computer-use.md](gui-computer-use.md) | GUI Computer Use：AX-first 架構、MCP server vendor 規範、context 管理策略 |
+| [web-dashboard.md](web-dashboard.md) | Web Dashboard：`lincy/web` + `web_ui` 架構、API、Agent 頁、前端設計、注意事項 |
+| [gui-computer-use.md](gui-computer-use.md) | GUI Computer Use：pyobjc 原生後端（AX 樹 + 截圖 + 真實鍵鼠）、state 格式與座標、loop 治理與 PAUSED 續跑、權限與部署 |
 | [brain-worker-delegation.md](brain-worker-delegation.md) | Brain 無 shell 工具：per-agent `excluded_tools` 機制、任務單規則、worker fail-closed 協定 |
 | [worker-notes.md](worker-notes.md) | Worker 自由格式共用筆記：任務開頭注入、`worker_note` 補記、超過閾值由 compactor 壓縮 |
 | [memory-curation.md](memory-curation.md) | 記憶檔案自動化重量管理（字元預算警告、超標佇列、curator 蒸餾）與對話 compaction 三層架構（codex remote / compactor agent / local） |
 | [local-config-override.md](local-config-override.md) | `cfgs/agent.override.yaml` 本機設定覆蓋：合併規則、統一讀取路徑 |
+| [host-runtime.md](host-runtime.md) | 單一 `lincy` 程序：host/agent/channels 分層、validate/build/run/web 四階段、`AgentHandle`、control API、手動升級與 rollback、launchd |
 
 ## 子資料夾
 
@@ -44,4 +45,3 @@
 | [project-setup/](project-setup/index.md) | 專案環境設置文件 |
 | [task/](task/index.md) | 待辦任務 |
 | [memory-system/](memory-system/index.md) | 記憶系統設計 |
-| [cli-ui/](cli-ui/index.md) | CLI UI（Textual）架構與擴充指南 |

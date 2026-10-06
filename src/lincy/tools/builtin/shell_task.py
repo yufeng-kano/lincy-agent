@@ -53,6 +53,9 @@ SHELL_TASK_DEFINITION = ToolDefinition(
 )
 
 
+SHELL_KEYS = ("enter", "up", "down", "left", "right", "tab", "esc")
+
+
 class ShellTaskManager:
     """Own background shell session lifecycle, commands, and shutdown."""
 
@@ -128,9 +131,9 @@ class ShellTaskManager:
     ) -> None:
         """Surface a shell handoff event directly to the UI."""
         action = (
-            "Waiting for input. Use /shell-input, /shell-enter, /shell-up, /shell-down, /shell-left, /shell-right, /shell-tab, /shell-esc, or /shell-cancel."
+            f"Waiting for input. Use POST /api/agent/shell/sessions/{snapshot.session_id}/input to respond."
             if state == "waiting_user_input"
-            else "Waiting for external action. Complete the external step, then use /shell-status or wait."
+            else "Waiting for external action. Complete the external step, then check GET /api/agent/shell/sessions or wait."
         )
         lines = [
             f"[shell_task {snapshot.session_id}] {action}",
@@ -141,14 +144,14 @@ class ShellTaskManager:
             lines.extend(f"  {line}" for line in snapshot.tail_lines[-4:])
         message = "\n".join(lines)
         if self._ui_sink is not None:
-            from ...tui.events import WarningEvent
+            from ...ui.events import WarningEvent
 
             self._ui_sink.emit(WarningEvent(message=message))
         else:
             logger.warning("%s", message)
 
     def format_status(self, session_id: str | None = None) -> str:
-        """Render current shell session status for slash commands."""
+        """Render current shell session status as human-readable text."""
         session, error = self._resolve_session(session_id, allow_any_state=True)
         if session_id is not None:
             if session is None:
@@ -162,6 +165,46 @@ class ShellTaskManager:
 
         parts = [self._format_snapshot(item.snapshot()) for item in sessions]
         return "\n\n".join(parts)
+
+    def list_sessions(self) -> list[dict]:
+        """Return a JSON-ready snapshot of every tracked shell session."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+        result = []
+        for session in sessions:
+            snapshot = session.snapshot()
+            result.append(
+                {
+                    "session_id": snapshot.session_id,
+                    "command": snapshot.command,
+                    "cwd": str(snapshot.cwd),
+                    "state": snapshot.state,
+                    "idle_seconds": round(snapshot.idle_seconds, 1),
+                    "tail_lines": list(snapshot.tail_lines),
+                    "process_alive": snapshot.process_alive,
+                }
+            )
+        return result
+
+    def has_session(self, session_id: str) -> bool:
+        """Return whether *session_id* is currently tracked."""
+        with self._lock:
+            return session_id in self._sessions
+
+    def send_key(self, key: str, session_id: str | None = None) -> str:
+        """Send one named control key (see SHELL_KEYS) to a waiting shell session."""
+        senders = {
+            "enter": self.send_enter,
+            "up": self.send_up,
+            "down": self.send_down,
+            "left": self.send_left,
+            "right": self.send_right,
+            "tab": self.send_tab,
+            "esc": self.send_escape,
+        }
+        if key not in senders:
+            raise ValueError(f"unsupported shell key: {key}")
+        return senders[key](session_id=session_id)
 
     def send_input(self, text: str, session_id: str | None = None) -> str:
         """Forward text input to a waiting shell session."""

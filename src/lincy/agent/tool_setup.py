@@ -15,12 +15,11 @@ from dotenv import dotenv_values
 if TYPE_CHECKING:
     from .contact_map import ContactMap
 
-from ..cli.claude_code_stream_json import (
+from ..ui.claude_code_stream_json import (
     extract_text_from_claude_code_stream_json_lines,
 )
 from ..core.schema import AgentConfig, ToolsConfig
 from ..gui import (
-    GUIManager,
     GUIWorker,
     SCREENSHOT_BY_SUBAGENT_DEFINITION,
     SCREENSHOT_DEFINITION,
@@ -152,7 +151,6 @@ def setup_tools(
     use_own_vision_ability: bool = False,
     own_vision_active: Callable[[], bool] | None = None,
     vision_agent: VisionAgent | None = None,
-    gui_manager: GUIManager | None = None,
     gui_worker: GUIWorker | None = None,
     gui_lock: threading.Lock | None = None,
     screenshot_max_width: int | None = None,
@@ -193,8 +191,6 @@ def setup_tools(
 
     allowed_paths = list(tools_config.allowed_paths)
     allowed_paths.insert(0, str(agent_os_dir))
-    if gui_manager is not None:
-        allowed_paths.append(gui_manager.capture_dir)
     if extra_allowed_paths:
         allowed_paths.extend(extra_allowed_paths)
 

@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
 
 from ..timezone_utils import now as tz_now
 from typing import Iterator, Protocol
 
-from ..cli.claude_code_stream_json import parse_claude_code_stream_json_line
-from ..cli.formatter import (
+from ..ui.claude_code_stream_json import parse_claude_code_stream_json_line
+from ..ui.formatter import (
     format_gui_tool_call,
     format_gui_tool_result,
     format_tool_call,
@@ -21,8 +20,9 @@ from ..context.conversation import split_turns
 from ..llm.content import content_to_text
 from ..llm.schema import ContentPart, ToolCall
 from ..session.schema import SessionEntry
-from ..tui.events import (
+from ..ui.events import (
     AssistantTextEvent,
+    CtxStatusEvent,
     DebugEvent,
     ErrorEvent,
     InboundMessageEvent,
@@ -35,7 +35,7 @@ from ..tui.events import (
     ToolStreamEvent,
     WarningEvent,
 )
-from ..tui.sink import UiSink
+from ..ui.sink import UiSink
 
 
 class AgentUiPort(Protocol):
@@ -70,12 +70,10 @@ class AgentUiPort(Protocol):
     def print_info(self, message: str) -> None: ...
     def print_debug(self, label: str, message: str) -> None: ...
     def print_debug_block(self, label: str, content: str) -> None: ...
+    def print_ctx_status(self, text: str) -> None: ...
     def print_goodbye(self) -> None: ...
     def set_timezone(self, timezone: str) -> None: ...
     def spinner(self, text: str = "Thinking...") -> Iterator[None]: ...
-
-
-CtxStatusProvider = Callable[[], str | None]
 
 
 class UiEventConsole:
@@ -87,7 +85,6 @@ class UiEventConsole:
         self.show_tool_use = show_tool_use
         self._current_user: str | None = None
         self._timezone: str | None = None
-        self._ctx_status_provider = None
 
     def set_current_user(self, user_id: str) -> None:
         self._current_user = user_id
@@ -100,9 +97,6 @@ class UiEventConsole:
 
     def set_show_tool_use(self, enabled: bool) -> None:
         self.show_tool_use = enabled
-
-    def set_ctx_status_provider(self, provider: CtxStatusProvider | None) -> None:
-        self._ctx_status_provider = provider
 
     @staticmethod
     def _is_failed_tool_result(result: str) -> bool:
@@ -198,8 +192,6 @@ class UiEventConsole:
         max_steps: int,
         elapsed_sec: float = 0.0,
         total_elapsed_sec: float = 0.0,
-        *,
-        worker_timing: dict[str, float] | None = None,
     ) -> None:
         if not self.show_tool_use:
             return
@@ -209,11 +201,6 @@ class UiEventConsole:
             timing += f" {elapsed_sec:.1f}s"
         if total_elapsed_sec > 0:
             timing += f" total={total_elapsed_sec:.1f}s"
-        if worker_timing:
-            timing += (
-                f" ss={worker_timing.get('screenshot', 0.0):.1f}s"
-                f" inf={worker_timing.get('inference', 0.0):.1f}s"
-            )
         self._ui.emit(
             ToolCallEvent(
                 name="gui_task",
@@ -297,6 +284,9 @@ class UiEventConsole:
     def print_info(self, message: str) -> None:
         self._ui.emit(ResumeHistoryEvent(summary=message))
 
+    def print_ctx_status(self, text: str) -> None:
+        self._ui.emit(CtxStatusEvent(text=text))
+
     def print_debug(self, label: str, message: str) -> None:
         if self.debug:
             self._ui.emit(DebugEvent(label=label, message=message))
@@ -305,9 +295,6 @@ class UiEventConsole:
         if not self.debug:
             return
         self._ui.emit(DebugEvent(label=label, message=content))
-
-    def print_welcome(self) -> None:
-        self._ui.emit(ResumeHistoryEvent(summary="Chat started. Type /help for commands."))
 
     def print_goodbye(self) -> None:
         self._ui.emit(ResumeHistoryEvent(summary="Bye!"))

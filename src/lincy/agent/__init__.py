@@ -1,4 +1,4 @@
-from .adapters import ChannelAdapter, CLIAdapter
+from .adapters import ChannelAdapter, ConsoleAdapter
 from .core import AgentCore
 from .tool_setup import setup_tools
 from .queue import PersistentPriorityQueue
@@ -7,7 +7,7 @@ from .schema import InboundMessage, OutboundMessage, PendingOutbound, ShutdownSe
 __all__ = [
     "AgentCore",
     "ChannelAdapter",
-    "CLIAdapter",
+    "ConsoleAdapter",
     "InboundMessage",
     "OutboundMessage",
     "PendingOutbound",

@@ -149,6 +149,6 @@ maintenance:
 - `src/lincy/core/schema.py`：`MemoryEditWarningsConfig`、`MaintenanceConfig`
 - `src/lincy/agent/compaction.py`：`ContextCompactor.compact`（兩層路由）、`compact_via_compactor_agent`（第 1 層）
 - `src/lincy/agent/compactor_agent.py`：`CompactorAgent`（第 1 層摘要子代理）
-- `src/lincy/cli/app.py`：`agents.compactor` wiring（含 session debug label）
+- `src/lincy/agent/build.py`：`agents.compactor` wiring（含 session debug label）
 - `src/lincy/workspace/templates/kernel/agents/compactor/prompts/system.md`：第 1 層 prompt template
 - `src/lincy/workspace/migrations/m0172_compactor_agent.py`：既有 workspace 補齊 `agents.compactor`

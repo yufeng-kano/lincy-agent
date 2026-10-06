@@ -3,22 +3,17 @@
 import threading
 from unittest.mock import MagicMock
 
+from lincy.gui.manager import GUITaskResult
 from lincy.gui.tool_adapter import create_gui_task
 
+_RESULT = GUITaskResult(
+    status="success", summary="Done", steps_used=1, session_id="s1", elapsed_sec=0.5,
+)
 
-def _make_manager(success=True):
-    """Create a mock GUIManager."""
+
+def _make_manager():
     mgr = MagicMock()
-    result = MagicMock()
-    result.success = success
-    result.needs_input = False
-    result.steps_used = 1
-    result.elapsed_sec = 0.5
-    result.session_id = "s1"
-    result.summary = "Done"
-    result.screenshot_path = None
-    result.report = None
-    mgr.execute_task.return_value = result
+    mgr.execute_task.return_value = _RESULT
     return mgr
 
 
@@ -43,18 +38,9 @@ class TestGuiLock:
         lock = threading.Lock()
         lock_was_held = []
 
-        def fake_execute(intent, session_id=None, app_prompt_text=None):
+        def fake_execute(intent, session_id=None, app=None, app_prompt_text=None):
             lock_was_held.append(lock.locked())
-            result = MagicMock()
-            result.success = True
-            result.needs_input = False
-            result.steps_used = 1
-            result.elapsed_sec = 0.1
-            result.session_id = "s1"
-            result.summary = "ok"
-            result.screenshot_path = None
-            result.report = None
-            return result
+            return _RESULT
 
         mgr = MagicMock()
         mgr.execute_task.side_effect = fake_execute
@@ -63,7 +49,6 @@ class TestGuiLock:
         fn(intent="check lock")
 
         assert lock_was_held == [True]
-        # Lock is released after execution
         assert not lock.locked()
 
     def test_gui_task_returns_busy_when_lock_wait_times_out(self):

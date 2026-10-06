@@ -1,50 +1,55 @@
-# Web Dashboard（chat_web_api + chat_web_ui）
+# Web Dashboard（lincy/web + web_ui）
 
-監控 dashboard，即時顯示 token 用量、成本、read cache rate，並提供本機遠端 TUI 介面（`/chat` Agent 頁）。
+監控 dashboard，即時顯示 token 用量、成本、read cache rate，並提供本機的 agent 操作介面（`/chat` Agent 頁）。
 
 ## 架構
 
+dashboard 不是獨立程序。它跑在 `lincy` 程序裡：host 在 daemon thread 起一個 uvicorn，bind `cfgs/agent.yaml` 的 `app.server`（預設 `127.0.0.1:9002`），同一個 FastAPI app 掛 control router 與 web router。分層、啟動階段與 control API 見 [host-runtime.md](host-runtime.md)。
+
 ```
-Browser → uvicorn (:9002) → FastAPI (chat_web_api)
-                             ├── /health
-                             ├── /api/*        REST endpoints
+Browser → uvicorn (app.server, 預設 :9002，lincy 程序內的 thread) → FastAPI
+                             ├── /api/agent/*  control router（host/control_api.py，見 host-runtime.md）
+                             ├── /api/*        dashboard REST endpoints（lincy/web/api.py）
                              ├── /ws           WebSocket 即時推送
                              └── /*            Vue dist/ 靜態檔 + SPA fallback
 ```
 
 資料流：JSONL append → watchfiles 偵測 → incremental read → cache 更新 → WebSocket push → Vue reactive 更新
 
-送訊資料流（遠端 TUI）：
+送訊資料流（Agent 頁）：
 
 ```
 Browser（Agent 頁 composer，選定 send channel，預設 cli）
-        → chat_web_api /api/chat/messages {content, channel}
-        → chat-cli control API → AgentCore queue（該 channel 的 inbound）
+        → POST /api/agent/messages {content, channel}
+        → AgentHandle.submit() → AgentCore queue（該 channel 的 inbound）
         → runtime UI event → agent 活動流 → /ws agent_event → 前端時間軸
 ```
+
+同一程序內直接呼叫 `AgentHandle`，沒有 HTTP 轉發。
 
 送出回應只是 `{"status": "accepted", "channel": "..."}`（HTTP 202），**不回傳訊息物件**；使用者送出的內容要等 `inbound_message` 事件從活動流回來才會出現在畫面上。
 
 Agent 活動流資料流（見「Agent 活動流」章節）：
 
 ```
-runtime UI event → FanoutUiSink（cli/app.py 組裝層）
+runtime UI event → FanoutUiSink（agent/build.py 組裝層）
         → state/ui_events/events.jsonl（每次啟動輪替）
         → watch_ui_events → /ws agent_event + GET /api/agent/events
 ```
 
-## 後端 (`src/chat_web_api/`)
+## 後端 (`src/lincy/web/`)
 
 | 檔案 | 職責 |
 |------|------|
-| `settings.py` | 經 `load_config()` 讀 `cfgs/agent.yaml`（含 `agent.override.yaml`）：`agent_os_dir`、`soft_max_prompt_tokens` |
+| `settings.py` | `WebSettings.from_config(config)`：從 host 已載入的 `AppConfig` 推出 sessions 目錄、`ui_events` 事件檔、`soft_max_prompt_tokens`、pricing 來源與 cache、`src/web_ui/dist` 位置；不自己讀 yaml 或環境 |
+| `state.py` | `WebState`：lifespan 與 router 共用的 runtime 狀態（`MetricsCache`，lifespan 載入完成前為 `None`；WebSocket 連線管理與 broadcast） |
+| `lifespan.py` | server lifespan：載入 pricing、建 `MetricsCache`、啟動 watchers；失敗只 log，health 的 `web` 欄位回報 `unavailable`，不影響 agent |
+| `api.py` | APIRouter：dashboard REST、`/ws`、靜態檔 + SPA fallback |
 | `pricing.py` | 從 LiteLLM GitHub JSON 抓取 model pricing，本地 cache 24h |
 | `session_reader.py` | 增量 JSONL 讀取器（byte offset seek，只讀新行） |
 | `cache.py` | In-memory metrics cache：sessions、turns、responses 聚合 |
-| `watcher.py` | `watchfiles.awatch()` 監控 session 目錄、Web Chat 事件檔、Agent 活動事件檔 |
-| `app.py` | FastAPI factory：REST + WebSocket + 靜態檔 serving |
-
-Web Chat 事件模型與 JSONL store 位於 `src/lincy/agent/web_chat.py`，adapter 位於 `src/lincy/agent/adapters/web.py`。事件檔固定在 `agent_os_dir/state/web_chat/events.jsonl`。
+| `watcher.py` | `watchfiles.awatch()` 監控 session 目錄、Agent 活動事件檔 |
+| `context_composition.py` | Context 頁的 prompt 組成分析（見「Context 頁」） |
 
 Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.py`，事件檔固定在 `agent_os_dir/state/ui_events/events.jsonl`。
 
@@ -56,6 +61,17 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 | GET | `/api/sessions?from=&to=&limit=&offset=` | Session 列表 |
 | GET | `/api/sessions/{id}` | Session 細節：turns + per-request breakdown |
 | GET | `/api/requests?from=&to=&limit=&offset=` | 跨 session 的全域 request log |
+| GET | `/api/live` | 當前 active session 的 token 位置（brain-only，見「Live token 口徑」） |
+| GET | `/api/context/composition` | 即時分析最新一筆 brain request 的 prompt 組成（segments + token 估計），每次請求都重新解析 `requests.jsonl`、不進快取；session/brain request 不存在時回 `available: false`，見「Context 頁」 |
+| WS | `/ws` | 即時推送：`session_updated`、`live_token_update`、`session_created`、`agent_event` |
+
+`/api/agent/*`（`health`、`shutdown`、`upgrade`、`channels`、`messages`、`turn/cancel`、`session/new|compact|clear`、`reload`、`events`、`shell/*`）是 host 的 control router，不在 `lincy/web` 裡，規格見 [host-runtime.md](host-runtime.md) 的「HTTP API」。Agent 頁用到的是 `channels`、`messages`、`events`、`turn/cancel`、`session/*`、`reload`。
+
+WebSocket 的 `agent_event` 格式：
+
+```json
+{"type": "agent_event", "event": {"id": "...", "seq": 42, "type": "tool_call", "agent": "worker-3"}}
+```
 
 ### 日期篩選語意
 
@@ -77,20 +93,6 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 - `null` 一律當未知處理：前端不顯示任何標記，舊 session 的畫面與改動前相同
 - cost / pricing 仍以 `provider` + `model`（主 profile）計價，尚未改用 served model 計價
 - 前端在 Requests 表與 session 展開列的 model 欄位下，於 `served_by_fallback === true` 時加一行 `-> provider:model` 的琥珀色註記
-| GET | `/api/live` | 當前 active session 的 token 位置（brain-only，見「Live token 口徑」） |
-| GET | `/api/context/composition` | 即時分析最新一筆 brain request 的 prompt 組成（segments + token 估計），每次請求都重新解析 `requests.jsonl`、不進快取；session/brain request 不存在時回 `available: false`，見「Context 頁」 |
-| GET | `/api/chat/events?limit=` | Web Chat 最近事件（舊介面遺留；Agent 頁已不使用） |
-| GET | `/api/chat/channels` | 可選的送出 channel 清單（轉發 control API），回 `{"channels": ["cli", "discord", ...]}`；**永遠不含 `web` / `system`** |
-| POST | `/api/chat/messages` | 轉送訊息到 chat-cli control API，body `{"content": "...", "channel": "cli"}`（`channel` 預設 `cli`）；成功回 202 `{"status": "accepted", "channel": "..."}`，正在處理上一輪時回 409 |
-| GET | `/api/agent/events?limit=` | Agent 活動事件（預設 500，範圍 1..2000；只有當次 chat-cli 執行的資料） |
-| WS | `/ws` | 即時推送：`session_updated`、`live_token_update`、`session_created` |
-
-WebSocket 另會推送 `chat_event` 與 `agent_event`：
-
-```json
-{"type": "chat_event", "event": {"id": "...", "kind": "message", "role": "assistant"}}
-{"type": "agent_event", "event": {"id": "...", "seq": 42, "type": "tool_call", "agent": "worker-3"}}
-```
 
 ### Token 計費邏輯
 
@@ -104,7 +106,7 @@ cost = base_input × input_rate + cache_read × cr_rate + cache_write × cw_rate
 
 Pricing 來源：`https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`
 
-本專案可在 `src/chat_web_api/pricing.py` 維護本地 override，處理 LiteLLM 尚未更新或價格不符合本專案口徑的模型。DeepSeek V4 目前使用官方原價計算，不使用 DeepSeek 官網列出的 75% 折扣價；override 會帶 `pricing_source=local_override`、`pricing_source_url` 與 stale 狀態，前端會在 Total Cost 與 request breakdown 顯示。
+本專案可在 `src/lincy/web/pricing.py` 維護本地 override，處理 LiteLLM 尚未更新或價格不符合本專案口徑的模型。DeepSeek V4 目前使用官方原價計算，不使用 DeepSeek 官網列出的 75% 折扣價；override 會帶 `pricing_source=local_override`、`pricing_source_url` 與 stale 狀態，前端會在 Total Cost 與 request breakdown 顯示。
 
 ### 增量讀取
 
@@ -120,26 +122,26 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 
 ### Live token 口徑
 
-`/api/live` 與 top bar 的 Token Bar 顯示的是 **brain agent 當前輪的 prompt token**，與 TUI 狀態列同一口徑（見 `docs/dev/token-only-context-policy.md` 的「顯示口徑」）：
+`/api/live` 與 top bar 的 Token Bar 顯示的是 **brain agent 當前輪的 prompt token**，與 `AgentHandle.token_status()`（`AgentCore.get_token_status_text()`）同一口徑（見 `docs/dev/token-only-context-policy.md` 的「顯示口徑」）：
 
 - 取「目前最新 turn 的 brain responses 的 `max(prompt_tokens)`」，直接讀 `responses.jsonl`，**不等 `turns.jsonl` 落地**
   - `turns.jsonl` 只在 `finish_turn()` 才 append，若以它為來源，turn 進行中整條 bar 會停在**上一輪**的數字，直到本輪結束才跳一次——這正是「不是當下 turn 的真實消耗」的來源
-  - 取 max 而非最後一筆，是為了與 TUI 的 `_TurnTokenUsage` 完全一致（turn 內若發生 compaction，prompt 不保證單調遞增）
+  - 取 max 而非最後一筆，是為了與 `src/lincy/agent/token_telemetry.py` 的 `TurnTokenUsage` 完全一致（turn 內若發生 compaction，prompt 不保證單調遞增）
 - `client_label != "brain"` 的 response（worker-N / memory_sync / compactor / web_fetch_summarizer）**不計入**：它們是獨立的 context，不佔 brain 的 context window
 - `hard_limit` 由**最後一筆 brain response** 的 provider/model 解析；不得用 `responses[-1]`，那可能是剛結束的 worker，會讓 bar 的天花板莫名跳動
 
 ## Agent 活動流
 
-把 chat-cli 的 typed UI event（tool call/result、assistant text、inbound/outbound、warning/error 等）鏡射到 Web，讓 `/chat` 頁能像 Claude Code 一樣看 brain 主時間軸與各子代理分頁。
+把 `lincy` 的 typed UI event（tool call/result、assistant text、inbound/outbound、warning/error 等）鏡射到 Web，讓 `/chat` 頁能像 Claude Code 一樣看 brain 主時間軸與各子代理分頁。
 
 ### 架構
 
-- 組裝層（`src/lincy/cli/app.py` 的 `main()`）保留原本的 `QueueUiSink` 給 Textual app（它需要 `drain()` / `set_on_emit()`），其餘所有元件改吃 `FanoutUiSink((ui_sink, UiEventExportSink(store)))`
-- 只有 `config.channels.web.enabled` 時才掛 export sink；關掉時 `sink_for_agents` 就是原本的 `ui_sink`
-- fanout 在 workspace 檢查與 resume replay 之前就建立，所以 `console.print_resume_history()` 重播的歷史事件也會進 export
-- `UiEventExportSink.emit` 全程包 try/except：export 失敗只 warn 一次就靜默，不得影響 TUI 或 agent；`FanoutUiSink` 也逐個 sink 隔離例外
-- **`src/lincy/tui/` 與 `src/lincy/agent/ui_event_console.py` 完全沒動**，TUI 行為與改動前一致
-- 事件檔 `agent_os_dir/state/ui_events/events.jsonl` 每次 chat-cli 啟動先 `rotate_on_start()`（舊檔改名 `events.prev.jsonl`，覆蓋更舊的），`seq` 每次執行從 1 重新計數；因此 Web 上只看得到「當次執行」的活動
+- 組裝層（`src/lincy/agent/build.py` 的 `build_agent()`）建立 `FanoutUiSink((UiEventExportSink(store),))`，所有元件都吃這個 sink
+- export sink **永遠開啟**，沒有 config gate（`channels.web` 已刪除）
+- UI 事件型別與 sink protocol 在 `src/lincy/ui/`（`events.py`、`sink.py`）；`UiEventExportSink` / `UiEventStore` 留在 `src/lincy/agent/ui_event_stream.py`
+- `BuiltAgent.start()` 第一步就 `rotate_on_start()`，之後才 recover queue、建立或修補 session、`console.print_resume_history()`，所以 resume 重播的歷史事件也會進本次的事件檔
+- `UiEventExportSink.emit` 全程包 try/except：export 失敗只 warn 一次就靜默，不得影響 agent；`FanoutUiSink` 也逐個 sink 隔離例外
+- 事件檔 `agent_os_dir/state/ui_events/events.jsonl` 每次 `lincy` 啟動先 `rotate_on_start()`（舊檔改名 `events.prev.jsonl`，覆蓋更舊的），`seq` 每次執行從 1 重新計數；因此 Web 上只看得到「當次執行」的活動
 - 單一字串欄位上限 16000 字元，超過截斷並附 `... [truncated]`，避免單筆 JSONL 爆掉
 
 ### Wire schema
@@ -148,7 +150,7 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 {"id": "<uuid4 hex>", "seq": 42, "ts": "<ISO datetime with tz>", "type": "tool_call", "agent": "worker-3", "data": {"name": "execute_shell", "summary": "..."}}
 ```
 
-`type` 與 `data` 一對一對應 `src/lincy/tui/events.py` 的 dataclass 欄位（`timestamp` 改名為 `ts`）：
+`type` 與 `data` 一對一對應 `src/lincy/ui/events.py` 的 dataclass 欄位（`timestamp` 改名為 `ts`）：
 
 | type | data 欄位 |
 |------|-----------|
@@ -161,7 +163,7 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 | `tool_stream` | `line` |
 | `warning` / `error` | `message` |
 | `debug` | `label`, `message` |
-| `ctx_status` | `text` |
+| `ctx_status` | `text`（`AgentCore` 每個 turn 結束、token 統計定案時發出，內容同 `get_token_status_text()`） |
 | `resume_history` | `summary` |
 | `outbound_message` | `channel`, `recipient`, `content` |
 | `interrupt_state` | `phase`, `message` |
@@ -176,17 +178,18 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 
 這是在還原 `UiEventConsole.print_subagent_tool_call` / `print_subagent_tool_result`（`f"{label} {tool_name}"`）與 `print_gui_step`（固定 `gui_task`）的命名摺疊慣例。**改動那兩處命名時必須同步改 `ui_event_stream.py` 的 `_SUBAGENT_NAME_RE`**，否則子代理分頁會失效。
 
-### Agent 頁（遠端 TUI）
+### Agent 頁
 
-`pages/ChatPage.vue` 是 chat-cli TUI 的遠端鏡像，路由仍是 `/chat`，sidebar 名稱為「Agent」。**它不是獨立的「Web Chat」頻道**：composer 只是把訊息「以某個 channel 的身分」丟進 agent queue。時間軸本體是 agent 活動事件（等同 TUI 的 log），但 `inbound_message` / `outbound_message` 以聊天泡泡呈現（右 = 人類、左 = agent），一眼就能分辨誰在說話；其餘事件型別（tool_call/tool_result/assistant_text/warning/error/tool_stream/interrupt/debug）維持置中卡片列的 system-row 樣式，不套用泡泡。
+`pages/ChatPage.vue` 是 `lincy` agent 的操作介面與活動鏡像，路由仍是 `/chat`，sidebar 名稱為「Agent」。**它不是獨立的「Web Chat」頻道**：composer 只是把訊息「以某個 channel 的身分」丟進 agent queue。時間軸本體是 agent 活動事件，但 `inbound_message` / `outbound_message` 以聊天泡泡呈現（右 = 人類、左 = agent），一眼就能分辨誰在說話；其餘事件型別（tool_call/tool_result/assistant_text/warning/error/tool_stream/interrupt/debug）維持置中卡片列的 system-row 樣式，不套用泡泡。
 
-- Header：標題、狀態點、最新 `ctx_status` chip、Debug 開關（預設關；關閉時 `debug`、`processing_started`、`processing_finished`、`resume_history` 都不進時間軸）
-- 狀態點來源是 agent 事件而非 Web Chat 事件：最新的 `processing_*` 事件是 `processing_started` → Processing（黑點 pulse），否則 Ready（綠點）；只有送出失敗才顯示 Error（紅點），與 TUI 的 `busy` 判定一致
+- Header：標題、狀態點、最新 `ctx_status` chip（每個 turn 結束更新一次）、Debug 開關（預設關；關閉時 `debug`、`processing_started`、`processing_finished`、`resume_history` 都不進時間軸）
+- Header 操作按鈕：New session、Compact、Clear、Reload、Cancel，分別打 `POST /api/agent/session/new`、`/session/compact`、`/session/clear`、`/reload`、`/turn/cancel`。Cancel 只在 Processing 時可按。成功後不做樂觀更新，等事件流回來
+- 狀態點來源是 agent 事件：最新的 `processing_*` 事件是 `processing_started` → Processing（黑點 pulse），否則 Ready（綠點）；只有送出失敗才顯示 Error（紅點）
 - Tab bar：`Brain` + 每個子代理一個分頁（worker-N / gui_task），有未完成 tool call 時分頁點會 pulse
-- Brain 分頁時間軸只有 `buildAgentRows(brain 軌事件)` 一個來源，不再合併任何 Web Chat 泡泡
+- Brain 分頁時間軸只有 `buildAgentRows(brain 軌事件)` 一個來源
 - 渲染規則：
   - `tool_call` 一列（mono 工具名 + 單行摘要），可展開看完整摘要與配對到的 result；result 未到前顯示 pulse 點，`failed` 紅、`warning` 琥珀
-  - result 配對規則：同一 `(agent, name)` 依 seq FIFO；沒有對應 call 的 result（`tui.show_tool_use` 關閉時只會送 failed/warning result）自成一列
+  - result 配對規則：同一 `(agent, name)` 依 seq FIFO；沒有對應 call 的 result（`ui.show_tool_use` 關閉時只會送 failed/warning result）自成一列
   - `tool_stream` 併入該軌目前開著的 tool_call，否則自成 mono 一列
   - `assistant_text` 為 inner monologue 灰塊，超過 3 行折疊
   - `inbound_message`（人類）與 `outbound_message`（agent）都渲染成聊天泡泡，顯示完整內容（Markdown → HTML，經 DOMPurify 消毒後 `v-html`；不截斷）。tool / debug / monologue 仍維持純文字：
@@ -200,18 +203,18 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
   - 除聊天泡泡外，其餘事件型別（`tool_call`/`tool_result`/`assistant_text`/`warning`/`error`/`tool_stream`/`interrupt_state`/`debug`）維持現有卡片/列表樣式（置中或滿版），不套用左右泡泡
 - Composer 上方有 live 子代理列（`worker-3 running - execute_shell`），點擊跳到該分頁；沒有 live 時隱藏
 - 捲動：使用者在距底部 80px 內才自動貼底，否則顯示「Jump to latest」；切分頁會重置
-- 空狀態且 WebSocket 斷線時提示 chat-cli 沒有在跑
+- 空狀態且 WebSocket 斷線時提示 `lincy` 沒有在跑
 
 Composer（送出 channel 選擇）：
 
-- 左側 mono `<select>` 選送出 channel，清單來自掛載時的 `GET /api/chat/channels`；請求失敗時至少提供 `["cli"]`
+- 左側 mono `<select>` 選送出 channel，清單來自掛載時的 `GET /api/agent/channels`（`cli` 在前，不含 `system`）；請求失敗時至少提供 `["cli"]`
 - 選擇存在 `localStorage` 的 `lincy.agent.send-channel`；缺值或不在清單內就退回 `cli`
 - Enter 送出、Shift+Enter 換行、送出中禁用；成功只清空輸入框，訊息本身要等 `inbound_message` 事件回來才出現
-- 送出失敗（含 409「Still processing the previous turn.」）顯示紅色錯誤橫幅，狀態點同時轉為 Error
+- 送出走 `POST /api/agent/messages`，成功回 202 `{"status": "accepted", "channel": "..."}`；失敗（409「Still processing the previous turn.」或「Agent is still starting.」、400 channel 不合法或內容空白）顯示紅色錯誤橫幅，狀態點同時轉為 Error
 
 前端檔案：`stores/agentEvents.ts`（Pinia store：events 依 seq 排序、以 `id` 去重、上限 3000 筆，另輸出 `busy`；同檔另外輸出配對與時間軸組裝的純函式，因為 `src/lib/` 被 `.gitignore` 排除）、`stores/chat.ts`（只負責 composer：channel 清單、選定 channel、送出狀態與錯誤）、`components/agent/AgentTimeline.vue`（渲染）。
 
-## 前端 (`src/chat_web_ui/`)
+## 前端 (`src/web_ui/`)
 
 Tech stack：Vue 3 + Vite + Bun + shadcn-vue + Tailwind CSS + Chart.js
 
@@ -223,7 +226,7 @@ Tech stack：Vue 3 + Vite + Bun + shadcn-vue + Tailwind CSS + Chart.js
 | `/monitor/requests` | MonitorRequests | 跨 session request log，按 session 分組 |
 | `/monitor/context` | MonitorContext | Brain agent 最新一輪 prompt 組成視覺化：donut + sequence bar + files + breakdown table |
 | `/monitor/:id` | MonitorSession | 單一 session：turn timeline + expandable responses |
-| `/chat` | ChatPage | 遠端 TUI：Brain 時間軸 + 子代理分頁 + 帶 channel 選擇的 composer |
+| `/chat` | ChatPage | Agent 頁：Brain 時間軸 + 子代理分頁 + session 操作按鈕 + 帶 channel 選擇的 composer |
 | `/settings` | SettingsPlaceholder | 預留 |
 
 Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
@@ -232,7 +235,7 @@ Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
 
 `/monitor/context` 即時視覺化 brain agent 最新一輪 prompt 的組成，用來檢查 prompt cache 前綴大小與各段落佔比。
 
-- 後端分析模組 `src/chat_web_api/context_composition.py`：純函式，不 import FastAPI；輸入 `sessions_dir` + `soft_max_prompt_tokens`，輸出 JSON-safe dict，由 `GET /api/context/composition` 透過 `run_in_threadpool` 呼叫（見上方 API 表）
+- 後端分析模組 `src/lincy/web/context_composition.py`：純函式，不 import FastAPI；輸入 `sessions_dir` + `soft_max_prompt_tokens`，輸出 JSON-safe dict，由 `GET /api/context/composition` 透過 `run_in_threadpool` 呼叫（見上方 API 表）
 - **不進快取、每次請求都重新 parse**：streaming 讀 `requests.jsonl` 找最新一筆 `client_label == "brain"` 的 request（`requests.jsonl` 含完整 message payload，可能 10MB+，依專案慣例不得存進 `cache.py` 或被 `watcher.py` 監控，見「注意事項」）
 - Token 數為估計值：ASCII 固定 3.6 chars/token；CJK 比率從**該筆 request 自己的 response**（`responses.jsonl` 中同 `request_id` 的 `prompt_tokens`）反推校準，並 clamp 在 `[0.5, 3.0]` tok/char 之間；找不到對應 response、或反推值超出 clamp 範圍時，退回固定 1.5 tok/char 並標記 `calibrated: false`
 - **校準基準必須是同一筆 request 的 response，不是整個 turn 的 `max_prompt_tokens`**：頁面顯示的是「最新一筆 brain request 的組成」，但 turn-level 的 `max_prompt_tokens` 是該 turn 所有 round 的最大值，且要等 `finish_turn()` 才落地。用後者校準會有兩個錯：
@@ -282,59 +285,46 @@ Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
 - `stores/websocket.ts`：singleton WebSocket，3 秒自動重連
 - `stores/live.ts`：active session token 位置，WebSocket `live_token_update` 更新
 - `stores/dashboard.ts`：收到 `session_updated` / `session_created` 時自動 refresh
-- `stores/chat.ts`：載入 `/api/chat/channels`，送出 `/api/chat/messages`；不再訂閱 `chat_event`
+- `stores/chat.ts`：載入 `/api/agent/channels`，送出 `/api/agent/messages`
 - `stores/agentEvents.ts`：載入 `/api/agent/events`，收到 `agent_event` 時依 `seq` 插入（以 `id` dedupe）
 
-## Supervisor 整合
+## 啟動
 
-```yaml
-# cfgs/supervisor.yaml
-chat-web-ui-build:       # oneshot：bun run build → dist/
-  auto_restart: false
-  
-chat-web-api:            # daemon：uvicorn :9002
-  depends_on: [chat-web-ui-build]
-  
-chat-cli:
-  depends_on: [..., chat-web-api]
-```
-
-啟動順序：build frontend → start API（health check）→ start chat-cli
-
-### 環境檢查
+dashboard 隨 `lincy` 一起起來，沒有獨立的服務；前端 `dist/` 要先 build 好：
 
 ```bash
-chat-supervisor check    # 檢查 bun/uv/node 是否在 PATH、sessions 目錄是否存在、dist/ 是否已 build
+cd src/web_ui && bun run build   # 第一次，或前端有改動時
+uv run lincy start               # 前景執行
+uv run lincy service install     # 或交給 launchd 常駐
 ```
 
-Supervisor 在子 process 環境自動補充 `~/.local/bin`、`~/.bun/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等路徑。
+`lincy start` 的 validate 階段會檢查 `src/web_ui/dist/index.html` 是否存在、`app.server` port 是否可用；只做檢查不啟動時用 `uv run lincy check`。`lincy upgrade` 會在 pull 後自動重跑 `bun run build`，PATH 補齊邏輯在 `host/check.py`（launchd 的 PATH 是空的）。
 
-手動 `cd src/chat_web_ui && bun run build` 時，PATH 也必須找得到 `node`：`vue-tsc` 的 shebang 是 `#!/usr/bin/env node`。若 `node` 不在 PATH，bun 會改用自己的 runtime 執行 `vue-tsc`，Volar 解析失效，表面上看起來像「找不到所有 `.vue` 檔」（`TS2307`），其實檔案都在。lincy 上 node 通常在 `/usr/local/bin/node`。
+手動 `cd src/web_ui && bun run build` 時，PATH 也必須找得到 `node`：`vue-tsc` 的 shebang 是 `#!/usr/bin/env node`。若 `node` 不在 PATH，bun 會改用自己的 runtime 執行 `vue-tsc`，Volar 解析失效，表面上看起來像「找不到所有 `.vue` 檔」（`TS2307`），其實檔案都在。lincy 上 node 通常在 `/usr/local/bin/node`。
 
 ## 開發模式
 
 ```bash
-# Terminal 1：後端
-uv run chat-web-api serve          # :9002
+# Terminal 1：後端（沒有獨立的 API server，就是 lincy 本身）
+uv run lincy start                 # app.server，預設 :9002
 
 # Terminal 2：前端（HMR）
-cd src/chat_web_ui && bun run dev  # :5173，proxy /api → :9002
+cd src/web_ui && bun run dev       # :5173，proxy /api → :9002
 ```
 
-Production 模式由 `chat-web-api` 直接 serve `dist/` 靜態檔。
+Production 模式由 `lincy` 程序內的 server 直接 serve `src/web_ui/dist/` 靜態檔。
 
 ## 注意事項
 
 - Agent 頁是本機單使用者介面，信任 loopback service，不做登入、附件與 token streaming。
-- Agent 頁只是 TUI 的鏡像：它自己沒有「回覆」概念，模型的可見回覆會走使用者選定的那個 channel（例如選 `discord` 送出，回覆就送到 Discord）。
-- `web` / `system` 不在可選 channel 清單裡；舊 `web` channel 的歷史事件若還在活動流，就當成一般 channel badge 列渲染。
-- `channels.web.enabled` 仍控制是否註冊 WebAdapter、以及是否輸出 Agent 活動事件（export sink）。Agent 頁送訊不再走 `web` channel；`history_limit` 只影響殘留的 web_chat JSONL 讀取，前端已不依賴它。
-- Agent 活動事件是**當次執行**的快照：chat-cli 重啟就輪替檔案，Web 端讀不到上一輪歷史（`events.prev.jsonl` 只留給人工檢查）。
-- Agent 活動 export 是唯讀旁路，不得反向影響 TUI；新增事件型別時要同步更新 `ui_event_stream.py` 的 `_EVENT_SPECS` 與前端 `AgentUiEventType`。
+- Agent 頁只是 agent 的操作介面與活動鏡像：它自己沒有「回覆」概念，模型的可見回覆會走使用者選定的那個 channel（例如選 `discord` 送出，回覆就送到 Discord）。
+- `system` 不在可選 channel 清單裡；`web` channel 已刪除，舊資料中殘留的 `web` 事件就當成一般 channel badge 列渲染。
+- Agent 活動事件是**當次執行**的快照：`lincy` 重啟就輪替檔案，Web 端讀不到上一輪歷史（`events.prev.jsonl` 只留給人工檢查）。
+- Agent 活動 export 是唯讀旁路，不得反向影響 agent；新增事件型別時要同步更新 `ui_event_stream.py` 的 `_EVENT_SPECS` 與前端 `AgentUiEventType`。
 - `requests.jsonl` 含完整 message payload，**不要全部載入 cache**；`context_composition.py`（Context 頁）示範了 on-demand、每次請求重新 parse 的做法，之後若有新功能要讀 `requests.jsonl` 應比照此模式
 - `read_cache_rate = cache_read_tokens / prompt_tokens`
 - `write_cache` 和 `read_cache_rate` 分開顯示
 - provider 不支援 write cache 度量時，前端直接顯示「無法測量」
 - `watchfiles` 使用 OS 原生通知（macOS FSEvents），不是 polling
 - 前端 `node_modules/` 和 `dist/` 已加入 `.gitignore`
-- 新機器部署需先 `cd src/chat_web_ui && bun install` 安裝 node 依賴
+- 新機器部署需先 `cd src/web_ui && bun install` 安裝 node 依賴

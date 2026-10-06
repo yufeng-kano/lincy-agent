@@ -20,7 +20,6 @@ from ..skills import (
     SKILL_METADATA_FILE,
     SkillMetadata,
     parse_skill_frontmatter,
-    rebuild_personal_skills_index,
 )
 
 if TYPE_CHECKING:
@@ -122,8 +121,9 @@ class SkillGovernanceRegistry:
         governance_config: SkillGovernanceConfig | None = None,
     ) -> "SkillGovernanceRegistry":
         """Load skills from three roots with priority-based dedup."""
+        # Read-only: personal-skills/index.md is rebuilt by the host's validate
+        # stage and by AgentCore's skill rescan, so loading stays side-effect free.
         config = governance_config or SkillGovernanceConfig()
-        rebuild_personal_skills_index(agent_os_dir)
         skills: dict[str, _RegisteredSkill] = {}
 
         # Priority order: builtin > personal > external
