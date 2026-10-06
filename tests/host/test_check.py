@@ -76,3 +76,16 @@ def test_enriched_path_prepends_missing_dirs(monkeypatch):
     assert parts.count("/opt/homebrew/bin") == 1
     assert "/usr/local/bin" in parts
     assert any(p.endswith("/.bun/bin") for p in parts)
+
+
+def test_missing_binary_fails_before_dist_check(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        check.shutil, "which", lambda name, path=None: None if name == "node" else f"/bin/{name}"
+    )
+    with pytest.raises(EnvironmentCheckFailed, match="Required binaries not found on PATH: node"):
+        check_environment(_config(1), tmp_path, probe_port=False)
+
+
+def test_all_binaries_present_passes(built_repo, monkeypatch):
+    monkeypatch.setattr(check.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    assert check_environment(_config(1), built_repo, probe_port=False) is None

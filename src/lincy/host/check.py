@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 from pathlib import Path
 
@@ -11,6 +12,11 @@ from ..gui.ax_runtime import AXRuntimeError, ensure_binary, resolve_build_params
 from .errors import EnvironmentCheckFailed
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# git/uv for upgrade, bun for the web UI build, node because vue-tsc's shebang
+# is `#!/usr/bin/env node` (bun silently falls back to its own runtime and the
+# build fails with bogus "cannot find module '*.vue'" errors without it).
+REQUIRED_BINARIES = ("git", "uv", "bun", "node")
 
 
 def enriched_path() -> str:
@@ -62,6 +68,13 @@ def check_environment(config: AppConfig, repo_root: Path, *, probe_port: bool) -
         raise EnvironmentCheckFailed(
             f"Server address {server.host}:{server.port} is already in use "
             "(is lincy already running? try: uv run lincy status)"
+        )
+
+    search_path = enriched_path()
+    missing = [name for name in REQUIRED_BINARIES if shutil.which(name, path=search_path) is None]
+    if missing:
+        raise EnvironmentCheckFailed(
+            f"Required binaries not found on PATH: {', '.join(missing)}"
         )
 
     if not (repo_root / "src" / "web_ui" / "dist" / "index.html").is_file():

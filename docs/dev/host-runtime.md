@@ -154,6 +154,7 @@ check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不
 6. `rebuild_personal_skills_index()`。
 7. 使用者 selector 解析（失敗 → `WorkspaceNotReady`），並確保使用者 memory 檔存在（`ensure_user_memory_file`）。
 8. 環境檢查（`host/check.py`），失敗 → `EnvironmentCheckFailed`：
+   - `git`、`uv`、`bun`、`node` 在補齊後的 PATH 上找得到（`check.py` 的 `REQUIRED_BINARIES`）。node 是 `vue-tsc` 的 shebang 需要；launchd 的 PATH 是空的，少了它 `lincy upgrade` 會在 bun build 失敗後 rollback。
    - `app.server` port 沒被佔用（`lincy check` 跳過）。
    - `src/web_ui/dist/index.html` 存在，否則印 `cd src/web_ui && bun run build` 後 exit 1。
    - `agents.gui_manager.enabled` 時 `ensure_binary()`，沒 cache 就 build（這是 cache 建置，允許）。
@@ -409,6 +410,16 @@ ProcessType           Interactive
 - execv 不換 PID，launchd 不會察覺升級重啟。
 - install 之後執行 `launchctl bootstrap gui/<uid> <plist>`；uninstall 執行 `launchctl bootout gui/<uid>/com.lincy.agent` 再刪檔。
 - `.env` 由 lincy 自己讀（`load_config` 與 `_resolve_user` 都走 dotenv），plist 不放 secret。
+
+## 從舊架構切換到 host runtime 的部署順序
+
+部署機器上若還有舊的 `chat-supervisor` 在跑，它每分鐘會自動 pull `main`。這個分支合併進 `main` 後被它拉下來，`uv sync` 會移除 `chat-cli` / `chat-supervisor` 腳本，restart cycle 失敗，self-restart 執行的 `python -m chat_supervisor start` 也不存在，服務會直接死掉且無法自救。順序必須是：
+
+1. 在部署機器上先停掉舊 supervisor（或先把它的 `upgrade.auto_check` 關掉）。
+2. 合併分支、`git pull`。
+3. `uv sync`，`cd src/web_ui && bun install && bun run build`。
+4. 檢查 `cfgs/agent.override.yaml`：含 `app.control`、`tui`、`channels.web` 的話會在 validate 直接報錯，這是預期的，改成新欄位。
+5. `uv run lincy check` 通過後 `uv run lincy service install`。
 
 ## Shell handoff
 
