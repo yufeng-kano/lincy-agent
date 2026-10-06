@@ -195,6 +195,22 @@ class TestLoadNonexistent:
         assert entries == []
 
 
+class TestLoadIsReadOnly:
+    def test_load_leaves_meta_until_mark_active(self, mgr: SessionManager, sessions_dir: Path):
+        from lincy.session.schema import SessionMetadata
+
+        sid = mgr.create("alice", "Alice")
+        mgr.finalize("exited")
+        meta_path = sessions_dir / sid / "meta.json"
+        before = meta_path.read_text()
+
+        mgr.load(sid)
+        assert meta_path.read_text() == before
+
+        mgr.mark_active()
+        assert SessionMetadata.model_validate_json(meta_path.read_text()).status == "active"
+
+
 class TestRewriteMessages:
     def test_rewrite(self, mgr: SessionManager):
         sid = mgr.create("alice", "Alice")

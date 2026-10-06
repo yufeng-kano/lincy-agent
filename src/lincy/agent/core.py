@@ -333,6 +333,8 @@ class AgentCore:
 
     def _finalize_turn_token_status(self) -> None:
         self._telemetry().finalize()
+        # The web Agent page header shows this; nothing else pushes it.
+        self.console.print_ctx_status(self.get_token_status_text())
 
     def get_token_status_text(self) -> str:
         return self._telemetry().status_text()

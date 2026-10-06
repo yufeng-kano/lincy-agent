@@ -2,10 +2,10 @@
 
 The AX-first GUI stack drives a local MCP server (open-codex-computer-use,
 MIT) built from a pinned commit. The binary is cached per-commit under the
-user cache dir so `chat-supervisor start` only pays the build cost once.
+user cache dir so `lincy start` / `lincy check` only pay the build cost once.
 
-Run as a module (``python -m lincy.gui.ax_runtime``) this becomes the
-oneshot build step wired into supervisor.yaml.
+Run as a module (``python -m lincy.gui.ax_runtime``) to pre-build the binary
+by hand; the validate stage calls ensure_binary() itself.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def ensure_binary(
     """Return path to a ready MCP server binary, building it if needed.
 
     Fails fast with an actionable message when prerequisites are missing,
-    so problems surface at supervisor start instead of first GUI task.
+    so problems surface in the validate stage instead of the first GUI task.
     """
     if override_path:
         expanded = os.path.expanduser(override_path)
@@ -135,7 +135,7 @@ def resolve_build_params(config: object | None) -> dict | None:
     """Map an AppConfig to ensure_binary kwargs; None means skip the build.
 
     Skips when gui_manager is absent or disabled. Config overrides
-    (repo/commit/binary_path) are honored so the supervisor oneshot builds
+    (repo/commit/binary_path) are honored so a manual pre-build produces
     the same binary the agent will use.
     """
     if config is None:

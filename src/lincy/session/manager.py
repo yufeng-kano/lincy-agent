@@ -87,7 +87,8 @@ class SessionManager:
             self._write_meta(self._current_dir, meta)
 
     def load(self, session_id: str) -> list[SessionEntry]:
-        """Load entries from a session. Sets it as the current session."""
+        """Load entries from a session and make it current. Read-only on disk;
+        call mark_active() once the resume is committed."""
         session_dir = self._sessions_dir / session_id
         if not session_dir.is_dir():
             raise FileNotFoundError(f"Session not found: {session_id}")
@@ -95,13 +96,6 @@ class SessionManager:
         self._current_id = session_id
         self._current_dir = session_dir
         self._debug_store = SessionDebugStore(session_dir, session_id)
-
-        # Mark resumed session as active
-        meta = self._read_meta(session_dir)
-        if meta and meta.status != "active":
-            meta.status = "active"  # type: ignore[assignment]
-            meta.updated_at = tz_now()
-            self._write_meta(session_dir, meta)
 
         jsonl_path = session_dir / "messages.jsonl"
         if not jsonl_path.exists():
@@ -142,6 +136,16 @@ class SessionManager:
             meta.updated_at = tz_now()
             self._write_meta(self._current_dir, meta)
         self.write_checkpoint(entries)
+
+    def mark_active(self) -> None:
+        """Set the current session's meta.json status back to active."""
+        if self._current_dir is None:
+            return
+        meta = self._read_meta(self._current_dir)
+        if meta and meta.status != "active":
+            meta.status = "active"  # type: ignore[assignment]
+            meta.updated_at = tz_now()
+            self._write_meta(self._current_dir, meta)
 
     def finalize(self, status: str) -> None:
         """Mark the current session's status in meta.json."""

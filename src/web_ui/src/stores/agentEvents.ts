@@ -90,7 +90,7 @@ export function buildAgentRows(events: AgentUiEvent[]): TimelineRow[] {
         if (openRows && index >= 0) openRows.splice(index, 1)
         continue
       }
-      // Orphan result: tool calls stay hidden when tui.show_tool_use is off.
+      // Orphan result: tool calls stay hidden when ui.show_tool_use is off.
       rows.push(newRow(event))
       continue
     }

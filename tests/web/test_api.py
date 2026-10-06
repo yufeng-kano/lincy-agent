@@ -139,6 +139,16 @@ def test_spa_serves_public_files_and_assets(settings):
     assert client.get("/assets/app.js").text == "console.log(1)"
 
 
+def test_spa_fallback_does_not_serve_files_outside_static_dir(settings, tmp_path):
+    (tmp_path / "secret.txt").write_text("secret")
+    client = _client(settings, WebState(cache=_FakeCache()))
+
+    resp = client.get("/%2e%2e/secret.txt")
+
+    assert resp.status_code == 200
+    assert resp.text == "<html>spa</html>"
+
+
 def test_removed_routes_fall_through_to_spa(settings):
     client = _client(settings, WebState(cache=_FakeCache()))
 

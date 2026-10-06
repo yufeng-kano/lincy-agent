@@ -125,6 +125,32 @@ def test_token_status_text_includes_cache_breakdown(tmp_path):
     )
 
 
+def test_finalize_turn_token_status_emits_ctx_status_event(tmp_path):
+    from lincy.agent.ui_event_console import UiEventConsole
+    from lincy.ui.events import CtxStatusEvent
+
+    core = _make_core(tmp_path, provider="kano_proxy", soft_limit=128_000)
+    emitted: list[object] = []
+    core.console = UiEventConsole(SimpleNamespace(emit=emitted.append))
+
+    core._record_brain_response_usage(
+        LLMResponse(
+            content="ok",
+            tool_calls=[],
+            prompt_tokens=3_200,
+            completion_tokens=80,
+            total_tokens=3_280,
+            usage_available=True,
+        )
+    )
+    core._finalize_turn_token_status()
+
+    assert len(emitted) == 1
+    assert isinstance(emitted[0], CtxStatusEvent)
+    assert emitted[0].text == core.get_token_status_text()
+    assert emitted[0].text.startswith("tok 3,200/128,000")
+
+
 def test_token_status_text_shows_zero_cache_rate_on_miss(tmp_path):
     core = _make_core(tmp_path, provider="openai", soft_limit=128_000)
 

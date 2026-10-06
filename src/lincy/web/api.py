@@ -158,6 +158,7 @@ def mount_static(app: FastAPI, settings: WebSettings) -> None:
     """Serve the built Vue SPA. Call after every API router is included:
     the fallback route matches any path."""
     static_dir = settings.static_dir
+    static_root = static_dir.resolve()
     assets_dir = static_dir / "assets"
     if assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
@@ -165,7 +166,8 @@ def mount_static(app: FastAPI, settings: WebSettings) -> None:
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
         # Serve static files from public root (favicon.svg, icons.svg, etc.)
-        candidate = static_dir / full_path
-        if full_path and candidate.is_file():
+        candidate = (static_dir / full_path).resolve()
+        # full_path arrives URL-decoded, so "%2e%2e/" can escape static_dir.
+        if full_path and candidate.is_relative_to(static_root) and candidate.is_file():
             return FileResponse(str(candidate))
         return FileResponse(str(static_dir / "index.html"))

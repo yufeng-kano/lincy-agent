@@ -281,6 +281,7 @@ class BuiltAgent:
             startup.session_mgr.create(inputs.user_id, inputs.display_name)
             return
 
+        startup.session_mgr.mark_active()
         # A killed process can leave tool calls without results on disk;
         # build already dropped them in memory, persist the repaired history.
         if startup.repaired_tool_calls:

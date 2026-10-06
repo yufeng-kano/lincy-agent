@@ -163,7 +163,7 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 | `tool_stream` | `line` |
 | `warning` / `error` | `message` |
 | `debug` | `label`, `message` |
-| `ctx_status` | `text`（型別保留，但目前 runtime 沒有任何地方發出） |
+| `ctx_status` | `text`（`AgentCore` 每個 turn 結束、token 統計定案時發出，內容同 `get_token_status_text()`） |
 | `resume_history` | `summary` |
 | `outbound_message` | `channel`, `recipient`, `content` |
 | `interrupt_state` | `phase`, `message` |
@@ -182,7 +182,7 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
 
 `pages/ChatPage.vue` 是 `lincy` agent 的操作介面與活動鏡像，路由仍是 `/chat`，sidebar 名稱為「Agent」。**它不是獨立的「Web Chat」頻道**：composer 只是把訊息「以某個 channel 的身分」丟進 agent queue。時間軸本體是 agent 活動事件，但 `inbound_message` / `outbound_message` 以聊天泡泡呈現（右 = 人類、左 = agent），一眼就能分辨誰在說話；其餘事件型別（tool_call/tool_result/assistant_text/warning/error/tool_stream/interrupt/debug）維持置中卡片列的 system-row 樣式，不套用泡泡。
 
-- Header：標題、狀態點、最新 `ctx_status` chip（目前沒有事件來源，見 Wire schema 表）、Debug 開關（預設關；關閉時 `debug`、`processing_started`、`processing_finished`、`resume_history` 都不進時間軸）
+- Header：標題、狀態點、最新 `ctx_status` chip（每個 turn 結束更新一次）、Debug 開關（預設關；關閉時 `debug`、`processing_started`、`processing_finished`、`resume_history` 都不進時間軸）
 - Header 操作按鈕：New session、Compact、Clear、Reload、Cancel，分別打 `POST /api/agent/session/new`、`/session/compact`、`/session/clear`、`/reload`、`/turn/cancel`。Cancel 只在 Processing 時可按。成功後不做樂觀更新，等事件流回來
 - 狀態點來源是 agent 事件：最新的 `processing_*` 事件是 `processing_started` → Processing（黑點 pulse），否則 Ready（綠點）；只有送出失敗才顯示 Error（紅點）
 - Tab bar：`Brain` + 每個子代理一個分頁（worker-N / gui_task），有未完成 tool call 時分頁點會 pulse

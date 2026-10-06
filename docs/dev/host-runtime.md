@@ -50,7 +50,9 @@ src/lincy/
     cli.py                  argparse 進入點（console script `lincy`）
     stages.py               validate() / build() / run()，web 初始化掛在 server lifespan
     runtime.py              HostRuntime：持有 BuiltAgent、server thread、狀態、signal、exit/exec
-    control_api.py          APIRouter：/api/agent/*
+    app.py                  create_app(handle, event_store, info, upgrade, config, web=True)、include_web()
+    control_api.py          APIRouter：/api/agent/*；RuntimeInfo(started_at, git_sha)；install_error_handlers()
+    errors.py               HostError 與子類別（見「錯誤處理與 logging」）
     upgrade.py              UpgradeManager：git / uv sync / bun build / check / rollback / 狀態
     service.py              launchd plist 產生、launchctl 包裝
     check.py                環境檢查：binary、PATH 補齊、port、web_ui dist、AX binary
@@ -71,7 +73,9 @@ src/lincy/
   web/
     api.py                  APIRouter：/api/dashboard、/api/sessions、/api/requests、/api/live、
                             /api/context/composition、/ws；static SPA mount
-    lifespan.py             pricing 載入、MetricsCache、watchers
+    lifespan.py             web_lifespan：背景載入 pricing、MetricsCache、watchers
+    settings.py             WebSettings.from_config(config)
+    state.py                WebState：MetricsCache 與 WebSocket 連線，router 與 lifespan 共用
     cache.py / pricing.py / session_reader.py / watcher.py / context_composition.py（原 chat_web_api）
 src/web_ui/                 原 src/chat_web_ui（Vue 專案，bun build 輸出 dist/）
 ```
@@ -108,7 +112,7 @@ packages = ["src/lincy"]
 | 指令 | 做什麼 |
 |---|---|
 | `lincy start [--new \| --resume ID]` | 前景跑四個階段。預設接續最近一個 session |
-| `lincy check` | 跑 validate + build 後退出。upgrade 流程用子程序跑它當 gate |
+| `lincy check` | 跑 validate（不探測 port、不載入 session）+ build 後退出。upgrade 流程用子程序跑它當 gate |
 | `lincy init` | 初始化 workspace（原 `python -m lincy init`） |
 | `lincy status` | `GET /api/agent/health`，印出 state、pid、session、git sha、upgrade 狀態 |
 | `lincy stop` | `POST /api/agent/shutdown`，graceful，exit 0 |
@@ -118,9 +122,10 @@ packages = ["src/lincy"]
 | `lincy service start` | `launchctl kickstart -k` |
 | `lincy service status` | `launchctl print` 摘要 |
 
-- `--user` 刪除。使用者只從 `.env` 的 `CHAT_AGENT_USER` 來，缺就 exit 非零。
+- `--user` 刪除。使用者只從 `CHAT_AGENT_USER` 來（`.env` 優先，其次環境變數），缺就是 `ConfigInvalid`，exit 1。
 - `--continue` 刪除（是預設行為）。`--resume` 必須帶 session id，互動式 picker 刪除。
-- `status` / `stop` / `upgrade` 的連線位址讀 `cfgs/agent.yaml` 的 `app.server`，沒有 `--host` / `--port`。
+- `status` / `stop` / `upgrade` 的連線位址讀 `cfgs/agent.yaml` 的 `app.server`，沒有 `--host` / `--port`。連不上時印 `Error: lincy is not running at ...`，exit 1。
+- 只有 `start` / `check` 設定 logging；其他指令只印結果。
 - `lincy` 不接受裸跑，沒有 subcommand 就印 usage 並 exit 2。
 - 人類日常使用：`uv run lincy <cmd>`。launchd 與 execv 直接用 `.venv/bin/python -m lincy start`，不經過 `uv run`（`uv run` 預設每次會先 sync）。
 
@@ -135,19 +140,21 @@ packages = ["src/lincy"]
 
 `lincy check` = `validate` + `build`。因為 build 沒有副作用，check 可以安全地把整個 agent 組一遍再丟掉，所以它驗的不只是 yaml，還有 import、tool 接線、prompt 檔存在與否。
 
+check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不挑、不載入任何 session）。原因是 upgrade 在線上程序仍在跑時執行 check：server 佔著 port，探測必然失敗；agent 也正在往最新的 session 追加內容，check 不該去讀它。代價是 check 不驗 resume 路徑（session 檔內容），這部分由真正啟動時的 build 負責。
+
 ### validate
 
 輸入：argv。輸出：`ValidatedEnv`（config、agent_os_dir、user_id、display_name、timezone、ax_binary、session 選擇）。
 
-1. `load_config()`：agent.yaml + agent.override.yaml 合併、pydantic 嚴格驗證。
+1. `load_config()`：agent.yaml + agent.override.yaml 合併、pydantic 嚴格驗證。`load_config` 的 `SystemExit`（它用來回報部分設定錯誤）、pydantic `ValidationError`、`yaml.YAMLError`、`FileNotFoundError` 一律轉成 `ConfigInvalid`。
 2. `configure_runtime_timezone(config.app.timezone)`。
-3. 解析使用者：`.env` 的 `CHAT_AGENT_USER`。
-4. workspace 已初始化，否則印 `run: uv run lincy init` 後 exit 1。
+3. 解析使用者：`CHAT_AGENT_USER`（`.env` 優先，其次環境變數）。缺 → `ConfigInvalid`。
+4. workspace 已初始化，否則 `WorkspaceNotReady`（訊息帶 `Run: uv run lincy init`），exit 1。
 5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這是 validate 裡唯一會寫入 workspace 的步驟，理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。
 6. `rebuild_personal_skills_index()`。
-7. 使用者 memory 檔存在（`ensure_user_memory_file`）。
-8. 環境檢查（`host/check.py`）：
-   - `app.server` port 沒被佔用。
+7. 使用者 selector 解析（失敗 → `WorkspaceNotReady`），並確保使用者 memory 檔存在（`ensure_user_memory_file`）。
+8. 環境檢查（`host/check.py`），失敗 → `EnvironmentCheckFailed`：
+   - `app.server` port 沒被佔用（`lincy check` 跳過）。
    - `src/web_ui/dist/index.html` 存在，否則印 `cd src/web_ui && bun run build` 後 exit 1。
    - `agents.gui_manager.enabled` 時 `ensure_binary()`，沒 cache 就 build（這是 cache 建置，允許）。
 9. session 選擇：`--new` → `None`；`--resume ID` → 該 id；預設 → `session_mgr.list_recent(user_id, limit=1)`，沒有就等同 `--new`。只讀。`--resume` 的 id 是否存在不在這裡檢查，由 build 的 `session_mgr.load()` 判定。
@@ -169,6 +176,8 @@ packages = ["src/lincy"]
 |---|---|
 | `PersistentPriorityQueue.__init__` 內呼叫 `_recover()` | 建構子不再 recover；新增 `recover()` 方法，`BuiltAgent.start()` 呼叫 |
 | `session_mgr.create()` / resume 時 `rewrite_messages()` 寫回修補後的歷史 | `BuiltAgent.start()`；`remove_dangling_tool_calls()` 本身留在 build（只改記憶體），因為 render cache 匯入要對著修補後的歷史比對 |
+| `session_mgr.load()` 把 `meta.json` 的 `status` 改回 `active` 並寫回 | 拆成 `SessionManager.mark_active()`，`BuiltAgent.start()` 在 resume 路徑呼叫 |
+| `SessionDebugStore.__init__` 建 `checkpoints/` | 延到第一次寫 checkpoint / render cache 時才 `mkdir` |
 | shared_state cache 的 rebuild 與 `save()` | `BuiltAgent.start()` |
 | `UiEventStore.rotate_on_start()` | `BuiltAgent.start()` |
 | `console.print_resume_history()` | `BuiltAgent.start()` |
@@ -181,7 +190,7 @@ build 期間可以讀檔（session 內容、memory、boot files、prompt 模板�
 
 - 新 session 路徑不寫任何檔案。`tests/agent/build/test_build_side_effects.py`（`resume_id=None`）斷言 build 前後 workspace 的檔案集合不變，並確認 queue recover、ui_events 輪替、session 建立都等到 `start()` 才發生。
 - 建構子仍會 `mkdir`：`SessionManager`、queue 的 `pending/` 與 `active/`、`MemoryBackupManager`、各 session store。測試只比對檔案，不比對目錄。
-- resume 路徑不是純讀：`session_mgr.load()` 把該 session 設為 current，且 `meta.json` 的 `status` 不是 `active` 時會改成 `active` 並寫回。這是 build 目前唯一的檔案內容寫入，測試沒有覆蓋 resume 路徑。
+- resume 路徑也不寫檔：`session_mgr.load()` 只讀 `messages.jsonl`，並在記憶體裡把該 session 設為 current；`meta.json` 的 status 寫回在 `start()` 的 `mark_active()`。`test_build_resume_reads_session_without_writing` 建一個 `status=exited`、含 dangling tool call 的 session，斷言 build 前後所有檔案內容逐位元組不變，`start()` 之後 status 為 `active`、修補後的歷史已寫回。
 
 建構子已確認不連網：LLM provider client 只在呼叫時發 request；`GmailAdapter` 只建 `httpx.Client`；`DiscordAdapter` 在 `start()` 才連線；`BM25MemorySearch` 只讀檔。
 
@@ -205,25 +214,41 @@ class BuiltAgent:
 1. `ui_event_store.rotate_on_start()`：最先做，之後發出的事件才會落在本次執行的檔案。
 2. `queue.recover()`。
 3. shared_state cache 需要重建時 rebuild + `save()`。
-4. 新 session → `session_mgr.create()`；resume → 有修補時 `rewrite_messages()` 並印 info，再印 `Resumed session ...`。
+4. 新 session → `session_mgr.create()`；resume → `session_mgr.mark_active()`，有修補時 `rewrite_messages()` 並印 info，再印 `Resumed session ...`。
 5. resume 時 `console.print_resume_history()`。
 
 ### run
 
-1. 建 FastAPI app：`control_api` router、`web.api` router、static SPA。一個 uvicorn，在 daemon thread 跑，bind `app.server`。
-2. 等 server `started`（上限 5 秒，否則 exit 1）。此時 `/api/agent/health` 的 `state` 是 `starting`。
-3. `built.start()`。
-4. 註冊 SIGTERM / SIGINT handler → `handle.request_shutdown(graceful=True)`。
-5. 主執行緒呼叫 `built.run()` 阻塞；`run()` 自己先 `mark_ready()`，state 從此不再是 `starting`。
-6. `run()` 回傳：
-   - `SHUTDOWN` → `built.close()`，exit 0。
-   - `RESTART` → `built.close()`，`os.execv(sys.executable, [sys.executable, "-m", "lincy", "start"])`。cwd 與 env 不變。
+1. `RuntimeInfo(started_at, git_sha)`：`git_sha` 取 `git rev-parse --short HEAD`，失敗為 `unknown`。
+2. 建 FastAPI app：`host/app.py` 的 `create_app(handle=, event_store=, info=, upgrade=, config=, web=True)` 依序 `install_error_handlers()`、include control router、`web=True` 時 `include_web()`（web router、web lifespan、最後掛 static SPA，因為 SPA fallback 會吃掉所有沒匹配的路徑）。`include_web()` 在函式內 import `lincy.web`，讓測試能只組 control app；這是 host 唯一的延遲 import，它只在啟動時跑一次，不會落在 upgrade 的 pull 之後。
+3. 一個 uvicorn 在 daemon thread 跑，bind `app.server`。`log_config=None`：不用 uvicorn 自己的 logging 設定，uvicorn logger 往 root 的 stderr handler 傳。
+4. 等 server `started`（上限 5 秒）。uvicorn bind 失敗時是結束 thread 而不是 raise，所以等待迴圈一看到 thread 死掉就立刻 `HostError`（exit 1），不等滿 5 秒。此時 `/api/agent/health` 的 `state` 是 `starting`。
+5. `built.start()`。
+6. 註冊 SIGTERM / SIGINT handler → `handle.request_shutdown(graceful=True)`；`run()` 結束後（含例外）還原原本的 handler。
+7. 主執行緒呼叫 `built.run()` 阻塞；`run()` 自己先 `mark_ready()`，state 從此不再是 `starting`。
+8. `run()` 回傳（`finally` 內 `built.close()`、通知 server 結束並 join 最多 5 秒）：
+   - `SHUTDOWN` → exit 0。
+   - `RESTART` → 先 flush stdout / stderr（`execv` 不會 flush Python 的 buffer），再 `os.execv(sys.executable, [sys.executable, "-m", "lincy", "start"])`。cwd 與 env 不變。
 
 agent loop 在主執行緒而不是 daemon thread，signal 才能直接進 queue。HTTP server 在 thread 是因為它只是旁路，agent 死了它也該跟著結束。
 
 ### web
 
-掛在 server lifespan：載入 pricing、建 `MetricsCache`、啟動 session / ui_events watchers。這一段失敗只 log 並在 health 的 `web` 欄位回報 `unavailable`，不影響 agent。理由：它是觀察者，pricing 來源是外網，不該讓離線時 agent 起不來。
+掛在 server lifespan（`include_web()` 設定 `app.router.lifespan_context`）。`web_lifespan` 把初始化（載入 pricing、建 `MetricsCache` 並在 thread 內 `refresh_all()`、啟動 session / ui_events watchers）丟進背景 task 後立刻 yield，server 與 `/api/agent/health` 不必等 pricing 的網路請求。
+
+- `app.state.web_status`（health 的 `web` 欄位）：初始化完成前 `loading`，成功 `ready`；任何例外只 log 並設為 `unavailable`，不影響 agent。理由：它是觀察者，pricing 來源是外網，不該讓離線時 agent 起不來。`create_app(web=False)` 不掛 web，health 回 `disabled`（只用於測試）。
+- cache 還沒就緒（`loading` 或 `unavailable`）時，需要 `MetricsCache` 的 routes（`/api/dashboard`、`/api/sessions`、`/api/sessions/{id}`、`/api/requests`、`/api/live`）回 503 `{"detail": "dashboard data is not available"}`。`/api/context/composition` 直接讀檔，不受影響。
+- server 關閉時 lifespan 設 stop event 並 cancel 初始化 task 與 watchers。
+
+`lincy.web` 對 host 的介面（`host/app.py` 只用這些）：
+
+| 介面 | 位置 | 說明 |
+|---|---|---|
+| `WebSettings.from_config(config)` | `web/settings.py` | 路徑與參數都由已載入的 `AppConfig` 推出，不讀環境 |
+| `WebState()` | `web/state.py` | router 與 lifespan 共用：`cache`（就緒前為 `None`）、WebSocket 連線 |
+| `create_router(settings, state)` | `web/api.py` | dashboard 的 `APIRouter` 與 `/ws` |
+| `web_lifespan(app, settings, state)` | `web/lifespan.py` | async context manager，設定 `app.state.web_status`，初始化失敗不 raise |
+| `mount_static(app, settings)` | `web/api.py` | `/assets` 與 SPA fallback，必須最後掛 |
 
 ## AgentHandle
 
@@ -244,7 +269,7 @@ class AgentError(Exception):
     status_code: int = 500
 
 class AgentBusy(AgentError):            # 409
-class InvalidRequest(AgentError):       # 400：content 空白、reload target 不認得、shell text/key 不合法
+class InvalidRequest(AgentError):       # 400：content 空白、shell text/key 不合法（reload target 經 HTTP 時先被 FastAPI 以 422 擋下）
 class UnsupportedChannel(AgentError):   # 400
 class ShellSessionNotFound(AgentError): # 404
 
@@ -270,7 +295,7 @@ class AgentHandle(Protocol):
 - `ConsoleAdapter.submit()` 在 agent loop 啟動 adapter 之前（HTTP server 已起、`run()` 還沒跑到）raise `AgentBusy("Agent is still starting.")`；上一個 `cli` turn 還沒結束時 raise `AgentBusy("Still processing the previous turn.")`。
 - `state()` 的優先序：`STOPPING` > `STARTING` > `BUSY` > `READY`。`request_shutdown()` / `request_restart()` 一呼叫就進 `STOPPING`；`mark_ready()` 之前是 `STARTING`。
 - `cancel_turn()` 只呼叫 `TurnCancelController.request()`，不丟 sentinel。
-- `token_status()` 回傳 `AgentCore.get_token_status_text()`。原本由 Textual 輪詢後發的 `CtxStatusEvent` 現在沒有任何地方發出（型別與 wire schema 的 `ctx_status` 仍保留）。
+- `token_status()` 回傳 `AgentCore.get_token_status_text()`。`CtxStatusEvent`（wire `ctx_status`）原本由 Textual 輪詢後發出，現在由 `AgentCore._finalize_turn_token_status()` 在 brain turn 的 responder 結束、token 統計定案時，經 `UiEventConsole.print_ctx_status()` 發出，`text` 同 `get_token_status_text()`。Web Agent 頁 header 的 chip 靠它更新。
 - `request_*` 全部是對 queue 丟 sentinel，由 agent thread 在 turn 邊界處理。新增 `CompactSentinel`、`ClearSentinel`（priority 0，與 `NewSessionSentinel` 相同）和 `RestartSentinel`（priority 999，與 `MaintenanceSentinel` 相同）。
 - `RestartSentinel` 被 pop 出來時，依 priority queue 的定義，當下沒有任何 ready 的 inbound，這就是 idle。`AgentCore.run()` 執行 `graceful_exit()` 後回傳 `ExitReason.RESTART`。pop 之後才進來的訊息已持久化在 `queue/pending`，新程序 `recover()` 會撿回來（`cli` channel 除外，沿用現有 `discard_channels` 規則）。
 - `_perform_compact()` 與 `_perform_clear()` 從 `adapters/cli.py` 的 `_handle_command` 搬進 `AgentCore`，連同原本印給使用者的訊息。
@@ -294,20 +319,22 @@ class AgentHandle(Protocol):
 | POST | `/session/new` | archive + 新 session | 202 |
 | POST | `/session/compact` | 手動 compact | 202 |
 | POST | `/session/clear` | 清空對話 | 202 |
-| POST | `/reload` | body `{target: "all" \| "system-prompt"}`，預設 `all` | 202 |
-| GET | `/events?limit=` | 當次執行的 UI event（原 `/api/agent/events`） | `{events: [...]}` |
+| POST | `/reload` | body `{target: "all" \| "system-prompt"}`，預設 `all`；型別是 `Literal`，target 不合法由 FastAPI 回 422 | 202 `{status: "accepted", target}`；target 錯 422 |
+| GET | `/events?limit=` | 當次執行的 UI event（原 `/api/agent/events`）。`limit` 預設 500，範圍 1..2000，超出範圍 422 | `{events: [...]}` |
 | GET | `/shell/sessions` | shell_task 互動 session 清單 | `{sessions: [...]}` |
 | POST | `/shell/sessions/{id}/input` | body `{text}` 或 `{key}`，key 為 `enter/up/down/left/right/tab/esc` | 200 `{result}` |
 | POST | `/shell/sessions/{id}/cancel` | | 200 `{result}` |
 
 - `health.upgrade`：`{state, from_sha, to_sha, error, started_at}`，`state` 見升級流程。
 - `health.web`：`loading` / `ready` / `unavailable`。
-- `AgentError` 子類別由一個 exception handler 翻成 `{error: message}` 加對應 status code。endpoint 內沒有 try/except，沒有 None 判斷。
+- `install_error_handlers(app)` 在 app 層註冊 exception handler，涵蓋 `AgentError` 與 `HostError`（例如 `UpgradeInProgress` → 409），翻成 `{error: message}` 加該類別的 `status_code`。endpoint 內沒有 try/except，沒有 None 判斷。body / query 驗證錯誤是 FastAPI 預設的 422 `{detail: [...]}`。
 - 所有 `request_*` 類 endpoint 回 202，因為動作是排進 queue 等 turn 邊界執行，不是同步完成。
 
 ### Web（`web/api.py`）
 
 `/api/dashboard`、`/api/sessions`、`/api/sessions/{id}`、`/api/requests`、`/api/live`、`/api/context/composition`、`/ws`、static SPA fallback。行為與 `docs/dev/web-dashboard.md` 現有描述相同，差別只有：
+
+- SPA fallback 只回傳 resolve 後仍在 `static_dir` 內的檔案；路徑是 URL decode 後才進 route，`/%2e%2e/...` 這類路徑會跳出 `static_dir`，一律改回 `index.html`。
 
 - `/api/chat/*` 全部刪除。channels 與 messages 改用 `/api/agent/channels`、`/api/agent/messages`，不再經過 HTTP 轉發。
 - `/api/agent/events` 移到 control router。
@@ -338,15 +365,18 @@ pydantic 是 `extra="forbid"`，舊欄位留在 yaml 或 override 裡會在 vali
 
 狀態：`idle → fetching → pulling → syncing → building → checking → restart_pending`；失敗分支 `rolling_back → failed`；沒更新 `up_to_date`。
 
-1. 進行中 → 409。
+每個子程序都用同一份 env：目前的 `os.environ`，`PATH` 換成 `check.enriched_path()` 補齊後的值（launchd 給的 PATH 幾乎是空的，uv / bun 在使用者目錄）。
+
+1. `start()` 在 lock 內執行：狀態不是 `idle` / `failed` / `up_to_date` → `UpgradeInProgress`（409）。`from_sha` 在這裡同步取 `git rev-parse HEAD`（202 回應要帶它），狀態設為 `fetching`，其餘步驟在 daemon thread 跑。
 2. `git status --porcelain` 非空 → `failed`，error 說明 working tree dirty。rollback 會 `reset --hard`，髒的 tree 不能碰。
-3. branch 取 `git rev-parse --abbrev-ref HEAD`，不寫死。`git fetch origin <branch>`；`HEAD == origin/<branch>` → `up_to_date`。
-4. 記 `from_sha`。`git pull --ff-only`。
+3. branch 取 `git rev-parse --abbrev-ref HEAD`，不寫死；結果是 `HEAD`（detached）→ `failed`。`git fetch origin <branch>`；`origin/<branch> == from_sha` → `up_to_date`。
+4. `git pull --ff-only`。失敗 → `failed`，**不 rollback**：ff-only 失敗不會動到磁碟。步驟 2 到 4 的失敗都是直接 `failed`。
 5. `uv sync`。
-6. `bun run build`（cwd `src/web_ui`，PATH 用 `check.py` 的補齊邏輯，launchd 的 PATH 是空的）。
-7. `<sys.executable> -m lincy check`，繼承目前 env。exit 非零 → rollback。
-8. rollback：`git reset --hard <from_sha>`、`uv sync`、`bun run build`，狀態 `failed`，error 帶 check 的 stderr 尾段。磁碟與記憶體都回到舊版。
-9. check 通過：`handle.request_restart()`，狀態 `restart_pending`。agent 在 idle 時 `graceful_exit()`、回傳 `RESTART`，host `execv`。新程序起來後 `health.git_sha` 是新的、`upgrade.state` 是 `idle`。
+6. `bun run build`（cwd `src/web_ui`）。
+7. `<sys.executable> -m lincy check`。步驟 5 到 7 任一 exit 非零 → rollback。
+8. rollback：狀態 `rolling_back`，`git reset --hard <from_sha>`、`uv sync`、`bun run build`，最後 `failed`，error 帶失敗步驟的 stderr 尾段（最多 2000 字元）。rollback 自己某一步失敗時，在 error 後面附加 `rollback: ...` 一行，狀態仍是 `failed`（此時磁碟可能不一致，需要人工處理）。
+9. thread 內任何未預期的例外都被接住、log，狀態設為 `failed`。不會卡在進行中的狀態，否則之後每次升級請求都會 409。
+10. check 通過：`handle.request_restart()`，狀態 `restart_pending`。agent 在 idle 時 `graceful_exit()`、回傳 `RESTART`，host `execv`。新程序起來後 `health.git_sha` 是新的、`upgrade.state` 是 `idle`。
 
 步驟 4 到 7 之間，程序繼續接訊息。pull 之後若執行到還沒 import 過的模組會讀到新版程式碼，這個窗口以秒計，host 層本身不得有 lazy import。
 
@@ -354,7 +384,7 @@ pydantic 是 `extra="forbid"`，舊欄位留在 yaml 或 override 裡會在 vali
 
 kernel migration 在 check 的 validate 階段已經套用，rollback 不會還原它。舊程式碼配新 kernel 與使用者手動降版是同一種情況，接受。
 
-`lincy upgrade` CLI：POST 後每秒 GET health，直到 `upgrade.state` 是 `up_to_date` / `failed`，或連線斷掉後重新連上且 `git_sha` 變了（代表 execv 完成）。上限 15 分鐘。
+`lincy upgrade` CLI：先 GET health 記下 `git_sha`，POST 後每秒 GET health。任何一次 poll 看到 `git_sha` 與起始值不同就算完成（execv 後的新程序，exit 0）；`upgrade.state` 是 `up_to_date` → exit 0，`failed` → 印 error、exit 1。poll 期間的連線錯誤（execv 重啟中）一律忽略、繼續等。上限 15 分鐘，逾時 exit 1。
 
 ## launchd
 
@@ -390,7 +420,13 @@ ProcessType           Interactive
 
 ## 錯誤處理與 logging
 
-- `host` 層定義 `HostError(Exception)`，`stages` 的失敗都 raise 它的子類別，`cli.main()` 只在最外層接一次、印訊息、exit 1。
+- `host/errors.py` 定義 `HostError(Exception)`（`status_code = 500`）與子類別：
+  - `ConfigInvalid`：設定檔錯誤（`load_config` 的各種失敗）、缺 `CHAT_AGENT_USER`。
+  - `WorkspaceNotReady`：workspace 未初始化、使用者 selector 解析失敗。
+  - `EnvironmentCheckFailed`：port 被佔用、`web_ui/dist` 沒 build、AX binary 拿不到。
+  - `BuildFailed`：包住 `agent/build.py` 的 `BuildError`。
+  - `UpgradeInProgress`：`status_code = 409`。
+- `stages` 與 CLI client 指令的失敗都 raise 這些，`cli.main()` 只在最外層接一次、印 `Error: ...`、exit 1；經 HTTP 時由 `install_error_handlers` 依 `status_code` 回應。
 - logging 走 stderr，格式 `%(asctime)s [%(name)s] %(levelname)s: %(message)s`。launchd 把 stderr 導到 `logs/lincy.log`。沒有 fd 2 dup2，沒有 `chat-cli.stderr.log`。
 - `AgentCore.run()` 內 per-turn 的例外處理不變。
 
@@ -401,7 +437,7 @@ ProcessType           Interactive
 | 刪除 | `tests/supervisor/`、`tests/tui/test_app.py`、`tests/tui/test_state.py`、`tests/lincy/test_control.py`、`tests/lincy/test_main_tty.py`、`tests/cli/test_commands.py`、`tests/web_api/test_chat.py` |
 | 搬移並改指向 | `tests/cli/test_*wiring*.py`、`test_app_memory_editor_schema.py`、`test_app_startup_diagnostics.py` → `tests/agent/build/`，對象改為 `build_agent` |
 | 搬移 | `tests/cli/test_formatter.py` → `tests/ui/`；`tests/tui/test_controller.py` 的 `TurnCancelController` 部分 → `tests/agent/test_turn_cancel.py`；`tests/web_api/*` → `tests/web/` |
-| 新增 | `tests/host/test_stages.py`、`test_control_api.py`、`test_upgrade.py`（subprocess 以 monkeypatch 取代）、`test_service.py`（plist 內容）、`test_cli.py`；`tests/test_import_direction.py` |
+| 新增 | `tests/host/test_stages.py`、`test_runtime.py`、`test_check.py`、`test_control_api.py`、`test_upgrade.py`（subprocess 以 monkeypatch 取代）、`test_service.py`（plist 內容）、`test_cli.py`；`tests/test_import_direction.py` |
 
 `tests/agent/build/` 這個目錄名撞到兩個預設排除：pytest 預設 `norecursedirs` 含 `build`，`.gitignore` 也忽略 `build/`。因此 `pyproject.toml` 的 `[tool.pytest.ini_options]` 自訂了 `norecursedirs`（pytest 預設值去掉 `build`），`.gitignore` 加了 `!tests/agent/build/`。
 
@@ -424,12 +460,12 @@ ProcessType           Interactive
 
 ## 實作順序
 
-| 階段 | 內容 | 相依 |
-|---|---|---|
-| A | `build_agent` 從 `cli/app.py` 抽出；`tui/` → `ui/`；`AgentHandle`、sentinel、`ConsoleAdapter`；刪 Textual 與 slash command；`tests/cli` 搬移改指向 | 無，獨佔 |
-| B | `host/`：cli、stages、runtime、control_api、upgrade、service、check、init 搬移 | A |
-| C | `chat_web_api` → `lincy/web/`；`chat_web_ui` → `web_ui`；前端路徑與 Agent 頁操作；`bun run build` 過 | A |
-| D | 文件與 README | A |
-| E | 刪 `chat_supervisor`、`cfgs/supervisor.yaml`、pyproject scripts 與 packages、`tests/test_import_direction.py`、全套 `uv run pytest` | B、C、D |
+| 階段 | 內容 | 相依 | 狀態 |
+|---|---|---|---|
+| A | `build_agent` 從 `cli/app.py` 抽出；`tui/` → `ui/`；`AgentHandle`、sentinel、`ConsoleAdapter`；刪 Textual 與 slash command；`tests/cli` 搬移改指向 | 無，獨佔 | 完成 |
+| B | `host/`：cli、stages、runtime、control_api、upgrade、service、check、init 搬移 | A | 完成 |
+| C | `chat_web_api` → `lincy/web/`；`chat_web_ui` → `web_ui`；前端路徑與 Agent 頁操作；`bun run build` 過 | A | 完成 |
+| D | 文件與 README | A | 完成 |
+| E | 刪 `chat_supervisor`、`cfgs/supervisor.yaml`、pyproject scripts 與 packages、`tests/test_import_direction.py`、全套 `uv run pytest` | B、C、D | 完成 |
 
-每個階段一個 commit，分支 `host-runtime-refactor`，不 push。
+每個階段一個 commit，分支 `host-runtime-refactor`，不 push。E 另外收掉各階段 review 找到的問題：resume 的 build 不再寫 `meta.json`（`mark_active()`）、`ctx_status` 事件來源、SPA fallback 的 path traversal，並把 B 的實作細節併回本文件。

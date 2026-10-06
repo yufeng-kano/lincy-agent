@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -23,6 +22,7 @@ from ..llm.schema import ContentPart, ToolCall
 from ..session.schema import SessionEntry
 from ..ui.events import (
     AssistantTextEvent,
+    CtxStatusEvent,
     DebugEvent,
     ErrorEvent,
     InboundMessageEvent,
@@ -70,12 +70,10 @@ class AgentUiPort(Protocol):
     def print_info(self, message: str) -> None: ...
     def print_debug(self, label: str, message: str) -> None: ...
     def print_debug_block(self, label: str, content: str) -> None: ...
+    def print_ctx_status(self, text: str) -> None: ...
     def print_goodbye(self) -> None: ...
     def set_timezone(self, timezone: str) -> None: ...
     def spinner(self, text: str = "Thinking...") -> Iterator[None]: ...
-
-
-CtxStatusProvider = Callable[[], str | None]
 
 
 class UiEventConsole:
@@ -87,7 +85,6 @@ class UiEventConsole:
         self.show_tool_use = show_tool_use
         self._current_user: str | None = None
         self._timezone: str | None = None
-        self._ctx_status_provider = None
 
     def set_current_user(self, user_id: str) -> None:
         self._current_user = user_id
@@ -100,9 +97,6 @@ class UiEventConsole:
 
     def set_show_tool_use(self, enabled: bool) -> None:
         self.show_tool_use = enabled
-
-    def set_ctx_status_provider(self, provider: CtxStatusProvider | None) -> None:
-        self._ctx_status_provider = provider
 
     @staticmethod
     def _is_failed_tool_result(result: str) -> bool:
@@ -296,6 +290,9 @@ class UiEventConsole:
 
     def print_info(self, message: str) -> None:
         self._ui.emit(ResumeHistoryEvent(summary=message))
+
+    def print_ctx_status(self, text: str) -> None:
+        self._ui.emit(CtxStatusEvent(text=text))
 
     def print_debug(self, label: str, message: str) -> None:
         if self.debug:

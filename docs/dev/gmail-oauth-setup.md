@@ -69,7 +69,7 @@ GMAIL_REFRESH_TOKEN=你的-refresh-token
 uv run lincy start
 ```
 
-正常的話不會有錯誤訊息。debug 模式下會顯示 `Gmail adapter registered`。
+正常的話 log（stderr；launchd 下為 `logs/lincy.log`）不會有 Gmail 相關錯誤。`Gmail adapter registered` 是 `logger.debug` 等級，預設的 INFO logging 不會印出，UI 也不會顯示。
 
 ---
 

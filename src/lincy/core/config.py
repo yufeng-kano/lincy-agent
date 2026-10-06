@@ -259,8 +259,8 @@ def load_raw_agent_config(
 ) -> dict:
     """Read the agent config as a raw dict, merging its local override file.
 
-    All agent.yaml readers go through here so the agent process, supervisor and
-    web API never disagree about values such as ``app.agent_os_dir``.
+    All agent.yaml readers go through here so the agent, the web dashboard and
+    the CLI client commands never disagree about values such as ``app.agent_os_dir``.
     """
     full_path = _resolve_cfg_relative_path(config_path)
     raw = _load_yaml(full_path) or {}
