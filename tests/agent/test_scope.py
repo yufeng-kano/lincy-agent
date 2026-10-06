@@ -35,17 +35,6 @@ def test_scope_for_inbound_gmail_prefers_thread():
     assert scope_for_inbound(msg) == "gmail:thread:t-1"
 
 
-def test_scope_for_inbound_web_uses_default_chat_scope():
-    msg = InboundMessage(
-        channel="web",
-        content="hi",
-        priority=0,
-        sender="web",
-        metadata={"source": "web_chat"},
-    )
-    assert scope_for_inbound(msg) == "web:chat:default"
-
-
 def test_scope_for_outbound_reply_mode_uses_inbound_discord_dm():
     scope = DEFAULT_SCOPE_RESOLVER.outbound(
         channel="discord",
@@ -69,14 +58,3 @@ def test_scope_for_outbound_gmail_explicit_recipient_fallback_sender_scope():
     )
     assert scope == "gmail:sender:husband@example.com"
 
-
-def test_scope_for_outbound_web_uses_default_chat_scope():
-    scope = DEFAULT_SCOPE_RESOLVER.outbound(
-        channel="web",
-        to=None,
-        metadata={"web_request_id": "r1"},
-        inbound_channel="web",
-        inbound_sender="web",
-        inbound_metadata={"source": "web_chat"},
-    )
-    assert scope == "web:chat:default"

@@ -7,13 +7,13 @@ import pytest
 from lincy.agent.ui_event_stream import (
     MAX_FIELD_CHARS,
     TRUNCATION_MARKER,
-    FanoutUiSink,
     UiEventExportSink,
     UiEventRecord,
     UiEventStore,
     serialize_ui_event,
 )
-from lincy.tui.events import (
+from lincy.ui.sink import FanoutUiSink
+from lincy.ui.events import (
     AssistantTextEvent,
     CtxStatusEvent,
     DebugEvent,

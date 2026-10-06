@@ -47,7 +47,6 @@ class ShutdownSentinel:
     graceful: bool = True
 
 
-
 @dataclass
 class MaintenanceSentinel:
     """Transient control signal to trigger daily maintenance. Never persisted."""
@@ -72,5 +71,26 @@ class ReloadSentinel:
 @dataclass
 class ReloadSystemPromptSentinel:
     """Transient control signal to reload only the system prompt."""
+
+    pass
+
+
+@dataclass
+class CompactSentinel:
+    """Transient control signal to compact the conversation. Never persisted."""
+
+    pass
+
+
+@dataclass
+class ClearSentinel:
+    """Transient control signal to clear the conversation. Never persisted."""
+
+    pass
+
+
+@dataclass
+class RestartSentinel:
+    """Transient control signal to exit for a process restart once idle. Never persisted."""
 
     pass

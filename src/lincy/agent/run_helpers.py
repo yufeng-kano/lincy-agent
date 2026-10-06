@@ -166,7 +166,7 @@ def _emit_reasoning_block_if_needed(
     channel: str | None,
     sender: str | None,
 ) -> None:
-    """Show tool-loop reasoning in TUI as a side-channel block."""
+    """Show tool-loop reasoning in the UI event stream as a side-channel block."""
     if not response.has_tool_calls():
         return
     text = (response.reasoning_content or "").strip()

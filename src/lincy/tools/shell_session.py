@@ -204,7 +204,7 @@ class InteractiveShellSession:
         return self._write_control_bytes(b"\x1b", "Escape", preserve_waiting_state=True)
 
     def snapshot(self) -> ShellSessionSnapshot:
-        """Return a thread-safe snapshot for UI and slash commands."""
+        """Return a thread-safe snapshot for UI events and the shell control API."""
         with self._lock:
             tail = tuple(self._tail_lines)
             current = self._current_line

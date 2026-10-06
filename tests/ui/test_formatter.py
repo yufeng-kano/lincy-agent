@@ -2,7 +2,7 @@
 
 import json
 
-from lincy.cli.formatter import (
+from lincy.ui.formatter import (
     format_tool_call,
     format_tool_result,
     format_gui_tool_call,

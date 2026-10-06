@@ -92,46 +92,6 @@ def test_discord_channel_config_defaults():
     assert discord_cfg.presence_idle_after_seconds == 300
 
 
-def test_web_channel_config_defaults_and_override():
-    config = AppConfig.model_validate(
-        {
-            "channels": {
-                "web": {
-                    "enabled": True,
-                    "history_limit": 50,
-                }
-            },
-            "agents": {
-                "brain": {
-                    "llm": _ollama_llm(),
-                }
-            },
-        }
-    )
-
-    assert config.channels.web.enabled is True
-    assert config.channels.web.history_limit == 50
-
-
-def test_web_channel_config_rejects_unknown_fields():
-    with pytest.raises(ValidationError):
-        AppConfig.model_validate(
-            {
-                "channels": {
-                    "web": {
-                        "enabled": True,
-                        "unknown": True,
-                    }
-                },
-                "agents": {
-                    "brain": {
-                        "llm": _ollama_llm(),
-                    }
-                },
-            }
-        )
-
-
 def test_context_config_boot_files_include_builtin_skills_index():
     config = AppConfig.model_validate(
         {
@@ -608,3 +568,25 @@ def test_worker_notes_config_rejects_max_chars_at_or_above_threshold():
 def test_worker_notes_config_rejects_paths_outside_workspace_or_in_memory(path):
     with pytest.raises(ValidationError, match="notes.path"):
         AgentConfig.model_validate({"llm": _ollama_llm(), "notes": {"path": path}})
+
+
+def test_server_config_defaults_to_local_9002():
+    config = AppConfig.model_validate({"agents": {"brain": {"llm": _ollama_llm()}}})
+
+    assert config.app.server.host == "127.0.0.1"
+    assert config.app.server.port == 9002
+    assert config.ui.replay_turns == 5
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        {"tui": {"debug": True}},
+        {"app": {"control": {"enabled": True, "port": 9001}}},
+        {"channels": {"web": {"enabled": True}}},
+        {"channels": {"line_crack": {}}},
+    ],
+)
+def test_removed_config_keys_are_rejected(removed):
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({**removed, "agents": {"brain": {"llm": _ollama_llm()}}})

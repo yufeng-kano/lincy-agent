@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -60,6 +61,7 @@ def _make_core(tmp_path, *, provider: str, preserve_turns: int = 2, soft_limit: 
     core.shared_state_store = None
     core.scope_resolver = None
     core._maintenance_scheduler = None
+    core._busy = threading.Event()
     core._turns_since_memory_sync = 0
     core.adapters = {}
     core._brain_provider = provider

@@ -215,4 +215,4 @@ class TestGuiManagerCaptureDir:
         )
         # read_image should be able to access temp dir files
         assert registry.has_tool("read_image")
-        # gui_task is registered after queue creation in app.py, not via setup_tools
+        # gui_task is registered after queue creation in build_agent, not via setup_tools

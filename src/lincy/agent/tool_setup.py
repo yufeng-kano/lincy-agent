@@ -15,7 +15,7 @@ from dotenv import dotenv_values
 if TYPE_CHECKING:
     from .contact_map import ContactMap
 
-from ..cli.claude_code_stream_json import (
+from ..ui.claude_code_stream_json import (
     extract_text_from_claude_code_stream_json_lines,
 )
 from ..core.schema import AgentConfig, ToolsConfig

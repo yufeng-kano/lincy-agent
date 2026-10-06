@@ -488,8 +488,8 @@ class ContextConfig(StrictConfigModel):
     common_ground: CommonGroundConfig = Field(default_factory=CommonGroundConfig)
 
 
-class TuiConfig(StrictConfigModel):
-    """CLI/TUI display settings."""
+class UiConfig(StrictConfigModel):
+    """Console UI event display settings."""
 
     debug: bool = False
     show_tool_use: bool = False
@@ -601,26 +601,11 @@ class DiscordChannelConfig(StrictConfigModel):
         return self
 
 
-class WebChannelConfig(StrictConfigModel):
-    """Local Web Chat adapter settings."""
-
-    enabled: bool = False
-    history_limit: int = Field(default=200, ge=1, le=1000)
-
-
 class ChannelsConfig(StrictConfigModel):
     """Channel adapter configuration."""
 
     gmail: GmailChannelConfig = Field(default_factory=GmailChannelConfig)
     discord: DiscordChannelConfig = Field(default_factory=DiscordChannelConfig)
-    web: WebChannelConfig = Field(default_factory=WebChannelConfig)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_removed_channels(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.pop("line_crack", None)
-        return data
 
 
 _QUIET_WINDOW_RE = re.compile(r"^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$")
@@ -712,12 +697,11 @@ class HeartbeatConfig(StrictConfigModel):
         return [_parse_quiet_window(s) for s in self.quiet_hours]
 
 
-class ControlConfig(StrictConfigModel):
-    """Control API server configuration for external process management."""
+class ServerConfig(StrictConfigModel):
+    """HTTP server hosting the control API and the web dashboard."""
 
-    enabled: bool = False
     host: str = "127.0.0.1"
-    port: int = Field(default=9001, ge=1, le=65535)
+    port: int = Field(default=9002, ge=1, le=65535)
 
 
 class AppSectionConfig(StrictConfigModel):
@@ -730,7 +714,7 @@ class AppSectionConfig(StrictConfigModel):
     turn_failure_requeue_delay_seconds: int = Field(default=60, ge=0)
     requeue_non_retryable_turn_failures: bool = False
     openrouter_site_name: str | None = None
-    control: ControlConfig = Field(default_factory=ControlConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
 
     @field_validator("timezone")
     @classmethod
@@ -742,7 +726,7 @@ class AppConfig(StrictConfigModel):
     """Application configuration."""
 
     app: AppSectionConfig = Field(default_factory=AppSectionConfig)
-    tui: TuiConfig = Field(default_factory=TuiConfig)
+    ui: UiConfig = Field(default_factory=UiConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)

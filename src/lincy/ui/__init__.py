@@ -1,7 +1,5 @@
-"""Textual TUI foundation for chat-cli (Phase 0/1 scaffolding)."""
+"""Typed UI events and sinks: the agent's output port for the web dashboard."""
 
-from .app import ChatTextualApp
-from .controller import TextualController, TurnCancelController
 from .events import (
     AssistantTextEvent,
     CtxStatusEvent,
@@ -19,26 +17,23 @@ from .events import (
     UiEvent,
     WarningEvent,
 )
-from .sink import QueueUiSink, UiSink
+from .sink import FanoutUiSink, UiSink
 
 __all__ = [
     "AssistantTextEvent",
-    "ChatTextualApp",
     "CtxStatusEvent",
     "DebugEvent",
     "ErrorEvent",
+    "FanoutUiSink",
     "InboundMessageEvent",
     "InterruptStateEvent",
     "OutboundMessageEvent",
     "ProcessingFinishedEvent",
     "ProcessingStartedEvent",
-    "QueueUiSink",
     "ResumeHistoryEvent",
-    "TextualController",
     "ToolCallEvent",
     "ToolResultEvent",
     "ToolStreamEvent",
-    "TurnCancelController",
     "UiEvent",
     "UiSink",
     "WarningEvent",

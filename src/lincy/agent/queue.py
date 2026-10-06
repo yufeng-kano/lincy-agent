@@ -4,7 +4,8 @@ Storage layout:
     {queue_dir}/pending/   - messages waiting to be processed (one JSON file each)
     {queue_dir}/active/    - message currently being processed (moved from pending/)
 
-On startup, any files left in active/ are moved back to pending/ (crash recovery).
+``recover()`` (called once at agent start) moves files left in active/ back to
+pending/ and loads pending/ into memory (crash recovery).
 Processed messages are deleted (ack).
 
 Time-locked messages (not_before) sit in pending/ on disk but are held in a
@@ -23,17 +24,43 @@ from pathlib import Path
 from typing import Any
 
 from .schema import (
+    ClearSentinel,
+    CompactSentinel,
     InboundMessage,
     MaintenanceSentinel,
     NewSessionSentinel,
     ReloadSentinel,
     ReloadSystemPromptSentinel,
+    RestartSentinel,
     ShutdownSentinel,
 )
 
 logger = logging.getLogger(__name__)
 
 _PROMOTION_CHECK_INTERVAL = 60  # seconds
+
+QueueItem = (
+    InboundMessage
+    | ShutdownSentinel
+    | MaintenanceSentinel
+    | NewSessionSentinel
+    | ReloadSentinel
+    | ReloadSystemPromptSentinel
+    | CompactSentinel
+    | ClearSentinel
+    | RestartSentinel
+)
+
+# Control sentinels handled at user-input priority: finish current work, then act promptly.
+_PROMPT_SENTINELS = (
+    NewSessionSentinel,
+    ReloadSentinel,
+    ReloadSystemPromptSentinel,
+    CompactSentinel,
+    ClearSentinel,
+)
+# Lowest priority: only popped when no ready inbound remains, i.e. the agent is idle.
+_IDLE_SENTINELS = (MaintenanceSentinel, RestartSentinel)
 
 
 def _serialize(msg: InboundMessage) -> dict[str, Any]:
@@ -101,12 +128,7 @@ class PersistentPriorityQueue:
         self._pending_dir.mkdir(parents=True, exist_ok=True)
         self._active_dir.mkdir(parents=True, exist_ok=True)
         self._mem: queue.PriorityQueue[
-            tuple[
-                int,
-                int,
-                InboundMessage | ShutdownSentinel | MaintenanceSentinel | NewSessionSentinel | ReloadSentinel | ReloadSystemPromptSentinel,
-                Path | None,
-            ]
+            tuple[int, int, QueueItem, Path | None]
         ] = queue.PriorityQueue()
         self._seq: int = 0
         self._lock = threading.Lock()
@@ -118,14 +140,19 @@ class PersistentPriorityQueue:
         # Track recurring system messages (heartbeats) in the ready queue
         # so maintenance can ignore them when deciding whether to run.
         self._recurring_ready: int = 0
-        self._recover(discard_channels or set())
+        self._discard_channels = discard_channels or set()
 
     # ------------------------------------------------------------------
     # Startup recovery
     # ------------------------------------------------------------------
 
-    def _recover(self, discard_channels: set[str]) -> None:
-        """Move active -> pending, then load all pending into memory queue."""
+    def recover(self) -> None:
+        """Move active -> pending, then load all pending into memory queue.
+
+        Call once at agent start, before the loop runs; construction stays
+        side-effect free on queue contents so a build can be discarded.
+        """
+        discard_channels = self._discard_channels
         recovered = 0
         for f in sorted(self._active_dir.iterdir()):
             if f.suffix != ".json":
@@ -173,14 +200,10 @@ class PersistentPriorityQueue:
     # Public API
     # ------------------------------------------------------------------
 
-    def put(
-        self,
-        msg: InboundMessage | ShutdownSentinel | MaintenanceSentinel | NewSessionSentinel | ReloadSentinel | ReloadSystemPromptSentinel,
-    ) -> None:
+    def put(self, msg: QueueItem) -> None:
         """Enqueue a message.
 
-        ``InboundMessage`` is persisted to disk.
-        ``ShutdownSentinel`` / ``MaintenanceSentinel`` / reload sentinels are transient.
+        ``InboundMessage`` is persisted to disk. Control sentinels are transient.
         Time-locked messages (``not_before`` in the future) go to the delayed pool.
         """
         with self._lock:
@@ -189,20 +212,10 @@ class PersistentPriorityQueue:
                 # Priority -1 so shutdown is processed before any real message
                 self._mem.put((-1, self._seq, msg, None))
                 return
-            if isinstance(msg, MaintenanceSentinel):
-                # Lowest priority so real messages are always processed first
+            if isinstance(msg, _IDLE_SENTINELS):
                 self._mem.put((999, self._seq, msg, None))
                 return
-            if isinstance(msg, NewSessionSentinel):
-                # Same priority as direct user input: finish current work, then rotate promptly.
-                self._mem.put((0, self._seq, msg, None))
-                return
-            if isinstance(msg, ReloadSentinel):
-                # Same priority as direct user input: finish current work, then reload promptly.
-                self._mem.put((0, self._seq, msg, None))
-                return
-            if isinstance(msg, ReloadSystemPromptSentinel):
-                # Same priority as direct user input: finish current work, then reload promptly.
+            if isinstance(msg, _PROMPT_SENTINELS):
                 self._mem.put((0, self._seq, msg, None))
                 return
             filename = f"{msg.priority:04d}_{self._seq:08d}.json"
@@ -217,12 +230,7 @@ class PersistentPriorityQueue:
             if msg.metadata.get("recurring"):
                 self._recurring_ready += 1
 
-    def get(
-        self,
-    ) -> tuple[
-        InboundMessage | ShutdownSentinel | MaintenanceSentinel | NewSessionSentinel | ReloadSentinel | ReloadSystemPromptSentinel,
-        Path | None,
-    ]:
+    def get(self) -> tuple[QueueItem, Path | None]:
         """Block until a message is available.
 
         Returns ``(message, receipt)``.  Pass *receipt* to ``ack()`` after

@@ -1,7 +1,7 @@
 import json
 
 from ..llm.schema import ToolCall
-from ..tui.formatting import indent_lines
+from .formatting import indent_lines
 
 
 def _pretty_json(value: object) -> str:

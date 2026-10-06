@@ -10,7 +10,7 @@ from lincy.tools.builtin.shell import (
     create_execute_shell,
     is_claude_code_stream_json_command,
 )
-from lincy.cli.claude_code_stream_json import (
+from lincy.ui.claude_code_stream_json import (
     parse_claude_code_stream_json_line,
     extract_text_from_claude_code_stream_json_lines,
 )

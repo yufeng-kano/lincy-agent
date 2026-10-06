@@ -1,5 +1,6 @@
 """Tests for AgentCore queue-based methods."""
 
+import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -178,6 +179,7 @@ class TestRun:
         core._queue = q
         core.adapters = {}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 
@@ -195,6 +197,7 @@ class TestRun:
         core._queue = q
         core.adapters = {}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 
@@ -213,6 +216,7 @@ class TestRun:
         core._queue = q
         core.adapters = {}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 
@@ -239,6 +243,7 @@ class TestRun:
         core._queue = q
         core.adapters = {}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 
@@ -262,6 +267,7 @@ class TestRun:
         core._queue = q
         core.adapters = {}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 
@@ -287,6 +293,7 @@ class TestRun:
         core._queue = q
         core.adapters = {}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 
@@ -315,6 +322,7 @@ class TestRun:
         core._queue = q
         core.adapters = {"cli": adapter}
         core._maintenance_scheduler = None
+        core._busy = threading.Event()
         core.config = None
         core.graceful_exit = MagicMock()
 

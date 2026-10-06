@@ -1,4 +1,4 @@
-"""Tests for _patch_interrupted_tool_calls in CLI app."""
+"""Tests for _patch_interrupted_tool_calls."""
 
 from lincy.agent.core import _patch_interrupted_tool_calls
 from lincy.context import Conversation

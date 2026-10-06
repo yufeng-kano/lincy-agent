@@ -7,14 +7,13 @@ app:
   turn_failure_requeue_delay_seconds: 5
   requeue_non_retryable_turn_failures: true # also replay request-format/provider-api/context-length failures instead of acking them away
   openrouter_site_name: "Lincy"
-  # Control API (for supervisor integration)
-  control:
-    enabled: true
+  # Single HTTP server: control API (/api/agent/*) and web dashboard
+  server:
     host: "127.0.0.1"
-    port: 9001
+    port: 9002
 
-# CLI/TUI display settings
-tui:
+# Console UI event display settings (debug events, tool use, resume replay)
+ui:
   debug: true
   show_tool_use: true
   replay_turns: null # resume 時顯示最近 N 輪，null = 全部
@@ -77,9 +76,6 @@ features:
 
 # Channel adapters
 channels:
-  web:
-    enabled: true
-    history_limit: 200
   gmail:
     enabled: true
     poll_interval: 5 # seconds between inbox polls

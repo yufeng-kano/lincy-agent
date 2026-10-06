@@ -16,7 +16,7 @@ from ..llm.schema import ToolDefinition, ToolParameter
 
 logger = logging.getLogger(__name__)
 
-# Suppress jieba startup info logs (prefix dict/cache messages) in CLI/TUI output.
+# Suppress jieba startup info logs (prefix dict/cache messages) in console output.
 jieba.setLogLevel(logging.WARNING)
 
 # Date normalization: "2月22日" -> "02-22", "2026年2月22日" -> "2026-02-22"

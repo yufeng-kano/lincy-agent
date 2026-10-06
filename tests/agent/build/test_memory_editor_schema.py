@@ -1,4 +1,4 @@
-from lincy.cli import app as app_module
+from lincy.agent import build as build_module
 from lincy.core.schema import AgentConfig, DeepSeekConfig, OllamaNativeConfig
 
 
@@ -18,4 +18,4 @@ def test_agent_supports_response_schema_requires_all_fallback_candidates():
         ],
     )
 
-    assert app_module._agent_supports_response_schema(agent_config) is False
+    assert build_module._agent_supports_response_schema(agent_config) is False

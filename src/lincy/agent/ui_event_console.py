@@ -10,8 +10,8 @@ from datetime import datetime
 from ..timezone_utils import now as tz_now
 from typing import Iterator, Protocol
 
-from ..cli.claude_code_stream_json import parse_claude_code_stream_json_line
-from ..cli.formatter import (
+from ..ui.claude_code_stream_json import parse_claude_code_stream_json_line
+from ..ui.formatter import (
     format_gui_tool_call,
     format_gui_tool_result,
     format_tool_call,
@@ -21,7 +21,7 @@ from ..context.conversation import split_turns
 from ..llm.content import content_to_text
 from ..llm.schema import ContentPart, ToolCall
 from ..session.schema import SessionEntry
-from ..tui.events import (
+from ..ui.events import (
     AssistantTextEvent,
     DebugEvent,
     ErrorEvent,
@@ -35,7 +35,7 @@ from ..tui.events import (
     ToolStreamEvent,
     WarningEvent,
 )
-from ..tui.sink import UiSink
+from ..ui.sink import UiSink
 
 
 class AgentUiPort(Protocol):
@@ -305,9 +305,6 @@ class UiEventConsole:
         if not self.debug:
             return
         self._ui.emit(DebugEvent(label=label, message=content))
-
-    def print_welcome(self) -> None:
-        self._ui.emit(ResumeHistoryEvent(summary="Chat started. Type /help for commands."))
 
     def print_goodbye(self) -> None:
         self._ui.emit(ResumeHistoryEvent(summary="Bye!"))

@@ -1,4 +1,4 @@
-"""Typed UI events for the Textual chat CLI pipeline."""
+"""Typed UI events emitted by the agent runtime."""
 
 from __future__ import annotations
 

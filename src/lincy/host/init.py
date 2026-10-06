@@ -20,7 +20,7 @@ from ..tools import (
     create_edit_file,
     create_execute_shell,
 )
-from ..tui.events import (
+from ..ui.events import (
     AssistantTextEvent,
     ErrorEvent,
     ResumeHistoryEvent,
@@ -33,7 +33,7 @@ from ..workspace import WorkspaceManager, WorkspaceInitializer
 
 
 class _RichUiSink:
-    """Minimal Rich renderer for the non-Textual initialization flow."""
+    """Minimal Rich renderer for the interactive initialization flow."""
 
     def __init__(self, console: Console) -> None:
         self._console = console
