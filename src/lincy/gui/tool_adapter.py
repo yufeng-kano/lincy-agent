@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..llm.schema import ContentPart, ToolDefinition, ToolParameter
-from .manager import GUIManager
+from .manager import GUIManager, GUITaskResult
 
 if TYPE_CHECKING:
     from .worker import GUIWorker
@@ -48,40 +48,54 @@ def _resolve_app_prompt(
 GUI_TASK_DEFINITION = ToolDefinition(
     name="gui_task",
     description=(
-        "Delegate a GUI task to an autonomous desktop agent. "
-        "The intent is a self-contained prompt for a subagent - "
-        "it must be understandable WITHOUT any conversation context. "
-        "Write the intent as a GOAL, not step-by-step instructions. "
-        "The GUI agent decides HOW to achieve the goal.\n"
+        "Delegate a desktop GUI task to an autonomous GUI agent that works "
+        "like a person at the keyboard. It can only look (accessibility "
+        "tree + screenshot) and use the real mouse and keyboard. It has no "
+        "shell, cannot save or read files on its own, cannot paste file "
+        "paths, and cannot see your files or this conversation. Do the "
+        "preparation (put files on the Desktop, compute the values, open "
+        "the page) and the verification afterwards yourself.\n"
         "\n"
-        "Intent guidelines:\n"
-        "- State the goal and success criteria clearly.\n"
-        "- Include the URL when you know it. Otherwise describe the "
-        "destination and give search keywords.\n"
-        "- Do NOT include conversation context, nicknames, or "
-        "references that only make sense in this chat.\n"
-        "- For search tasks, provide alternative names/keywords "
-        "the agent can try if the primary name is not found.\n"
-        "- Include constraints (save path, app preference) as bullet points.\n"
+        "The intent must be self-contained and use exactly these five "
+        "fields, without operating steps (the GUI agent decides how):\n"
+        "Goal: what to achieve.\n"
+        "Success criteria: what the screen shows when it is done.\n"
+        "Values to enter: every value, one per line, exactly as typed.\n"
+        "Already prepared: where files are, which app/page is already open.\n"
+        "Forbidden: actions it must not take (e.g. do not submit, do not "
+        "delete).\n"
         "\n"
-        "Good: 'Download a photo of the singer Kano from her "
-        "Twitter/X page https://x.com/kano_hanano (if it does not load, "
-        "search: Kano, kano_hanano, Kano singer). Save to ~/Pictures/kano.jpg.'\n"
-        "Bad: 'Save a cute photo of her for honey from that account we "
-        "talked about.'"
+        "Results start with [GUI SUCCESS], [GUI FAILED], [GUI BLOCKED] or "
+        "[GUI PAUSED]. BLOCKED means it needs different instructions; "
+        "PAUSED means this call's step budget ran out or it was stopped "
+        "for repeating itself. Both can continue the same session with "
+        "session_id and a new instruction."
     ),
     parameters={
         "intent": ToolParameter(
             type="string",
             description=(
-                "Self-contained goal description for the GUI subagent. "
-                "Must be understandable without conversation context. "
-                "Describe WHAT to achieve, not HOW to operate."
+                "Self-contained task in the five-field template (Goal, "
+                "Success criteria, Values to enter, Already prepared, "
+                "Forbidden). Describe WHAT to achieve, not HOW to operate."
+            ),
+        ),
+        "app": ToolParameter(
+            type="string",
+            description=(
+                "Optional app to bring to the front and maximize before the "
+                "agent starts: English app name or bundle id "
+                "(e.g. 'Google Chrome', 'com.apple.TextEdit')."
             ),
         ),
         "session_id": ToolParameter(
             type="string",
-            description="Optional session ID to resume a previous GUI task.",
+            description=(
+                "Optional session ID from a previous [GUI BLOCKED] or "
+                "[GUI PAUSED] result. The agent resumes with that session's "
+                "report and last screen state; the intent is the new "
+                "instruction."
+            ),
         ),
         "app_prompt": ToolParameter(
             type="string",
@@ -98,26 +112,21 @@ GUI_TASK_DEFINITION = ToolDefinition(
 )
 
 
-def format_gui_result(result: Any) -> str:
-    """Format a GUITaskResult into a human-readable status string."""
-    if result.needs_input:
-        status = "BLOCKED"
-    elif result.success:
-        status = "SUCCESS"
-    else:
-        status = "FAILED"
+def format_gui_result(result: GUITaskResult) -> str:
+    """Format a GUITaskResult into the text the calling agent reads."""
     parts = [
-        f"[GUI {status}] (steps: {result.steps_used}, "
+        f"[GUI {result.status.upper()}] (steps: {result.steps_used}, "
         f"time: {result.elapsed_sec:.1f}s, session: {result.session_id})",
+        result.summary,
     ]
-    parts.append(result.summary)
     if result.screenshot_path:
         parts.append(f"\nScreenshot: {result.screenshot_path}")
     if result.report:
         parts.append(f"\nReport:\n{result.report}")
-    if result.needs_input:
+    if result.status in ("blocked", "paused"):
         parts.append(
-            "\nYou may issue a new gui_task with adjusted instructions to retry."
+            f"\nCall gui_task again with session_id={result.session_id} "
+            "and a new instruction to continue."
         )
     return "\n".join(parts)
 
@@ -135,12 +144,13 @@ def create_gui_task(
     ``[GUI BUSY]`` result instead of blocking indefinitely.
     """
 
-    def _run_sync(
-        intent: str,
-        session_id: str | None,
-        app_prompt: str | None,
+    def gui_task(
+        intent: str = "", session_id: str = "", app: str = "",
+        app_prompt: str = "", **kwargs: Any,
     ) -> str:
-        app_prompt_text = _resolve_app_prompt(app_prompt, agent_os_dir)
+        if not intent:
+            return "Error: intent is required."
+        app_prompt_text = _resolve_app_prompt(app_prompt or None, agent_os_dir)
         if gui_lock is not None and not gui_lock.acquire(timeout=lock_wait_seconds):
             return (
                 f"[GUI BUSY] Another GUI task is still running after "
@@ -148,7 +158,9 @@ def create_gui_task(
             )
         try:
             result = manager.execute_task(
-                intent, session_id=session_id,
+                intent,
+                session_id=session_id or None,
+                app=app or None,
                 app_prompt_text=app_prompt_text,
             )
         except Exception as e:
@@ -158,14 +170,6 @@ def create_gui_task(
             if gui_lock is not None:
                 gui_lock.release()
         return format_gui_result(result)
-
-    def gui_task(
-        intent: str = "", session_id: str = "",
-        app_prompt: str = "", **kwargs: Any,
-    ) -> str:
-        if not intent:
-            return "Error: intent is required."
-        return _run_sync(intent, session_id or None, app_prompt or None)
 
     return gui_task
 
@@ -204,7 +208,7 @@ def create_screenshot(
     """Create screenshot tool that returns multimodal content."""
 
     def screenshot(region: list[int] | None = None, **kwargs: Any) -> list[ContentPart]:
-        from .actions import take_screenshot
+        from .capture import take_screenshot
 
         rgn: tuple[int, int, int, int] | None = None
         if region and len(region) == 4:

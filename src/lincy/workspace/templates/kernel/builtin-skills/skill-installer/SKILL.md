@@ -66,6 +66,6 @@ npx skills remove <skill-name> -g -y
 
 ## 主動建議
 
-當 heartbeat 回顧中發現重複的手動操作模式，且生態系有對應 skill，可以主動建議 owner 安裝。瀏覽器與桌面 GUI 操作不在此列：那由 worker 的 `gui_task` 處理，不要建議安裝瀏覽器自動化 skill（agent-browser 已停用）。
+當 heartbeat 回顧中發現重複的手動操作模式，且生態系有對應 skill，可以主動建議 owner 安裝。瀏覽器與桌面 GUI 操作不在此列：worker 被擋時會升級到 `gui_task`，由 GUI 子代理以真實滑鼠鍵盤操作桌面，不要建議安裝瀏覽器自動化 skill（agent-browser 已停用）。
 
 建議即可，不要自行安裝。

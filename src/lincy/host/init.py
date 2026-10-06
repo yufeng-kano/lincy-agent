@@ -1,10 +1,19 @@
 """Workspace initialization command."""
 
+import os
+import sys
+
 from rich.console import Console
 
 from ..agent.ui_event_console import UiEventConsole
 from ..context import ContextBuilder, Conversation
 from ..core import load_config
+from ..gui.permissions import (
+    accessibility_granted,
+    keyboard_navigation_enabled,
+    screen_recording_granted,
+    secure_input_enabled,
+)
 from ..llm import create_agent_client
 from ..llm.session import llm_session
 from ..llm.schema import Message
@@ -193,18 +202,65 @@ def init_command() -> None:
                 initializer.upgrade_kernel()
                 console.print("[green]Kernel upgraded successfully[/green]")
 
+        _print_gui_permissions(console, config)
         if "init" in config.agents and _confirm(console, "Re-run persona setup?"):
             _run_init_agent(config, manager)
         return
 
     initializer.create_structure()
     console.print("[green]Workspace created successfully[/green]\n")
+    _print_gui_permissions(console, config)
 
     if "init" in config.agents:
         _run_init_agent(config, manager)
     else:
         console.print("[yellow]agents.init not configured, skipping persona setup.[/yellow]")
         console.print("[dim]Add agents.init to config to enable guided persona setup.[/dim]")
+
+
+def _print_gui_permissions(console: Console, config) -> None:
+    """GUI permission status and what to grant; validate is the real check.
+
+    No system prompt is triggered here: TCC attributes a request to the
+    responsible process, which is Terminal when init runs from a shell, so
+    prompting would grant Terminal instead of the service's Python.
+    """
+    gui_manager = config.agents.get("gui_manager")
+    if gui_manager is None or not gui_manager.enabled:
+        return
+    executable = os.path.realpath(sys.executable)
+    console.print("\n[bold]GUI permissions[/bold]")
+    for name, granted, pane in (
+        ("Accessibility", accessibility_granted(), "Accessibility"),
+        ("Screen Recording", screen_recording_granted(), "Screen & System Audio Recording"),
+    ):
+        if granted:
+            console.print(f"  [green]granted[/green]  {name}")
+        else:
+            console.print(
+                f"  [red]missing[/red]  {name} "
+                f"(System Settings > Privacy & Security > {pane})"
+            )
+    console.print(
+        f"  The launchd service needs both granted to {executable}: add it "
+        "with the + button in each pane."
+    )
+    if not keyboard_navigation_enabled():
+        console.print(
+            "  [yellow]hint[/yellow]     Keyboard navigation is off; Tab only moves "
+            "between text fields. Turn on System Settings > Keyboard > "
+            "Keyboard navigation."
+        )
+    if secure_input_enabled():
+        console.print(
+            "  [yellow]hint[/yellow]     Secure input is on (a password field or app "
+            "holds it); close it before running GUI tasks."
+        )
+    console.print(
+        "[dim]  TCC checks the responsible process: run from Terminal, this "
+        "reports Terminal's permissions. The launchd service is checked "
+        "again at startup (validate), which is authoritative.[/dim]\n"
+    )
 
 
 def _confirm(console: Console, message: str) -> bool:

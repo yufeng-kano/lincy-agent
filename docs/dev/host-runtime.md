@@ -145,32 +145,32 @@ check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不
 
 ### validate
 
-輸入：argv。輸出：`ValidatedEnv`（config、agent_os_dir、user_id、display_name、timezone、ax_binary、session 選擇）。
+輸入：argv。輸出：`ValidatedEnv`（config、agent_os_dir、user_id、display_name、timezone、session 選擇）。
 
 1. `load_config()`：agent.yaml + agent.override.yaml 合併、pydantic 嚴格驗證。`load_config` 的 `SystemExit`（它用來回報部分設定錯誤）、pydantic `ValidationError`、`yaml.YAMLError`、`FileNotFoundError` 一律轉成 `ConfigInvalid`。
 2. `configure_runtime_timezone(config.app.timezone)`。
 3. 解析使用者：`CHAT_AGENT_USER`（`.env` 優先，其次環境變數）。缺 → `ConfigInvalid`。
 4. workspace 已初始化，否則 `WorkspaceNotReady`（訊息帶 `Run: uv run lincy init`），exit 1。
-5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這是 validate 裡唯一會寫入 workspace 的步驟，理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。
+5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這與 GUI 權限檢查寫入的 `state/gui_permissions.json` 是 validate 裡僅有的兩個 workspace 寫入，理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。
 6. `rebuild_personal_skills_index()`。
 7. 使用者 selector 解析（失敗 → `WorkspaceNotReady`），並確保使用者 memory 檔存在（`ensure_user_memory_file`）。
 8. 環境檢查（`host/check.py`），失敗 → `EnvironmentCheckFailed`：
    - `git`、`uv`、`bun`、`node` 在補齊後的 PATH 上找得到（`check.py` 的 `REQUIRED_BINARIES`）。node 是 `vue-tsc` 的 shebang 需要；launchd 的 PATH 是空的，少了它 `lincy upgrade` 會在 bun build 失敗後 rollback。
    - `app.server` port 沒被佔用（`lincy check` 跳過）。
    - `src/web_ui/dist/index.html` 存在，否則印 `cd src/web_ui && bun run build` 後 exit 1。
-   - `agents.gui_manager.enabled` 時 `ensure_binary()`，沒 cache 就 build（這是 cache 建置，允許）。
+   - `agents.gui_manager.enabled` 時 `check_gui_permissions(state_dir)`（`gui/permissions.py`）：檢查輔助使用、螢幕錄製權限。回傳的問題清單非空 → `EnvironmentCheckFailed`，訊息就是清單本身。這是硬性早停：沒權限的 GUI agent 會全盲，寧可不啟動；launchd 下失敗訊息會進 `logs/lincy.log`。全部通過時把解析後的 Python binary（`os.path.realpath(sys.executable)`）記到 `state/gui_permissions.json`，之後路徑變了（venv 重建、升級 Python）且缺權限時，訊息會提示要重新授權。TCC 以負責程序計：從 Terminal 跑 `lincy check` 看到的是 Terminal 的權限，正式以 launchd 服務為準。是否阻擋以 `check_gui_permissions` 回傳的清單為準；依規格，鍵盤導覽與 Secure Input 只在 `lincy init` 提示。權限通過後再檢查 `gui_manager.desktop.default_input_source` 是已啟用的輸入法，否則同樣 `EnvironmentCheckFailed`。
 9. session 選擇：`--new` → `None`；`--resume ID` → 該 id；預設 → `session_mgr.list_recent(user_id, limit=1)`，沒有就等同 `--new`。只讀。`--resume` 的 id 是否存在不在這裡檢查，由 build 的 `session_mgr.load()` 判定。
 
 ### build
 
-輸入：`BuildInputs`（`config`、`agent_os_dir`、`user_id`、`display_name`、`resume_id`、`ax_binary`、`upgrade_message`，由 host 從 `ValidatedEnv` 組出）。輸出：`BuiltAgent`。
+輸入：`BuildInputs`（`config`、`agent_os_dir`、`user_id`、`display_name`、`resume_id`、`upgrade_message`，由 host 從 `ValidatedEnv` 組出）。輸出：`BuiltAgent`。
 
 `build_agent(inputs)` 是原 `cli/app.py` `main()` 的組裝邏輯，純粹建物件。操作者可修正的問題 raise `BuildError`（`agent/build.py`），由 host 翻成 exit 1：
 
 - `--resume ID` 找不到 → `BuildError("Session not found: ...")`
 - brain / memory_editor / worker prompt 缺檔、`agents.memory_editor` 缺或未啟用
 
-`agents.gui_manager.enabled` 但 `ax_binary` 是 `None`（validate 沒拿到 AX binary）不是 build 錯誤：GUI 工具不註冊，log 一行 error，其餘照常組裝。
+`agents.gui_manager.enabled` 時 build 直接組 `DesktopBackend` 與 `GUIManager`，不需要 validate 傳入任何外部 binary；GUI 權限已在 validate 確認，缺權限根本走不到 build。
 
 下表是原本混在組裝裡的副作用，以及它們的新歸宿：
 
@@ -184,7 +184,6 @@ check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不
 | `UiEventStore.rotate_on_start()` | `BuiltAgent.start()` |
 | `console.print_resume_history()` | `BuiltAgent.start()` |
 | `initializer.upgrade_kernel()`、`rebuild_personal_skills_index()` | validate |
-| `ensure_binary()` | validate，結果以 `ax_binary` 傳入 build |
 
 build 期間可以讀檔（session 內容、memory、boot files、prompt 模板）。`session_mgr.load(resume_id)` 在 build 做（見下方邊界）；dangling tool call 修補的寫回在 start。
 
@@ -408,7 +407,7 @@ ProcessType           Interactive
 ```
 
 - `<repo>` 用 `Path(__file__)` 推出的絕對路徑。
-- 一定是 LaunchAgent（gui domain），GUI computer use 的 AX 權限需要使用者 session。
+- 一定是 LaunchAgent（gui domain），GUI computer use 的 AX 權限需要使用者 session。輔助使用與螢幕錄製權限要授給 `ProgramArguments` 裡的 Python 執行檔，部署細節（路徑紀錄、螢幕保持解鎖與喚醒）見 [gui-computer-use.md](gui-computer-use.md)「權限與部署」。
 - `SuccessfulExit=false`：`lincy stop` exit 0 不會被拉起來；crash（非零）會，間隔 10 秒。
 - execv 不換 PID，launchd 不會察覺升級重啟。
 - install 之後執行 `launchctl bootstrap gui/<uid> <plist>`；uninstall 執行 `launchctl bootout gui/<uid>/com.lincy.agent` 再刪檔。
@@ -437,7 +436,7 @@ ProcessType           Interactive
 - `host/errors.py` 定義 `HostError(Exception)`（`status_code = 500`）與子類別：
   - `ConfigInvalid`：設定檔錯誤（`load_config` 的各種失敗）、缺 `CHAT_AGENT_USER`。
   - `WorkspaceNotReady`：workspace 未初始化、使用者 selector 解析失敗。
-  - `EnvironmentCheckFailed`：port 被佔用、`web_ui/dist` 沒 build、AX binary 拿不到。
+  - `EnvironmentCheckFailed`：必要執行檔不在 PATH、port 被佔用、`web_ui/dist` 沒 build、GUI 權限不足（`gui_manager.enabled` 時）。
   - `BuildFailed`：包住 `agent/build.py` 的 `BuildError`。
   - `UpgradeInProgress`：`status_code = 409`。
 - `stages` 與 CLI client 指令的失敗都 raise 這些，`cli.main()` 只在最外層接一次、印 `Error: ...`、exit 1；經 HTTP 時由 `install_error_handlers` 依 `status_code` 回應。
@@ -463,7 +462,7 @@ ProcessType           Interactive
 - 刪除 `docs/dev/cli-ui/`。
 - `docs/dev/web-dashboard.md`：架構圖改成單一程序、刪除 Supervisor 整合章節、API 表依本文件更新、`chat_web_api` / `chat_web_ui` 路徑改名、`cli/app.py` 的組裝描述改指 `agent/build.py`。
 - `docs/dev/local-config-override.md`：`chat_supervisor check` 與 `enabled: auto` 段落刪除，改寫為 `lincy check`。
-- `docs/dev/gui-computer-use.md`：`ax-server-build` oneshot 改為 validate 階段的 `ensure_binary()`。
+- `docs/dev/gui-computer-use.md`：`ax-server-build` oneshot 改為 validate 階段建置。（2026-10 改為原生 GUI 後端後已不需建置，validate 改做 GUI 權限檢查，見上方 validate 節。）
 - `docs/dev/gmail-oauth-setup.md`：`uv run chat-cli --user` 改為 `.env` 設 `CHAT_AGENT_USER` 後 `uv run lincy start`。
 - `docs/dev/task/supervisor.md`：狀態改為「已被 host-runtime 取代」，移到 `task/archive/`。
 - `README.md`：Quick Start 改為 `uv sync` → `cp .env.example .env` → `uv run lincy init` → `cd src/web_ui && bun install && bun run build`（新 clone 沒有 `node_modules`）→ `uv run lincy start` 或 `uv run lincy service install`，並列出 `status` / `stop` / `upgrade` / `check`。刪除 tmux / TUI resize 疑難排解整段。Configuration 段刪 supervisor。

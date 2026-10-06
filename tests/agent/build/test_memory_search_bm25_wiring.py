@@ -84,7 +84,6 @@ def test_build_wires_bm25_memory_search(monkeypatch, tmp_path: Path):
         user_id="yufeng",
         display_name="Yufeng",
         resume_id=None,
-        ax_binary=None,
         upgrade_message="",
     )
     with pytest.raises(RuntimeError, match="stop after bm25 setup"):

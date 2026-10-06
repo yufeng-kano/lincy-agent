@@ -1,4 +1,4 @@
-"""Environment checks: port probe, web UI dist, PATH enrichment."""
+"""Environment checks: port probe, web UI dist, PATH enrichment, GUI permissions."""
 
 import socket
 from types import SimpleNamespace
@@ -44,29 +44,46 @@ def test_port_probe(listening_port):
 
 def test_occupied_port_fails_only_when_probing(listening_port, built_repo):
     with pytest.raises(EnvironmentCheckFailed, match="already in use"):
-        check_environment(_config(listening_port), built_repo, probe_port=True)
-    assert check_environment(_config(listening_port), built_repo, probe_port=False) is None
+        check_environment(_config(listening_port), built_repo, built_repo, probe_port=True)
+    assert check_environment(_config(listening_port), built_repo, built_repo, probe_port=False) is None
 
 
 def test_missing_dist(tmp_path):
     with pytest.raises(EnvironmentCheckFailed) as exc:
-        check_environment(_config(1), tmp_path, probe_port=False)
+        check_environment(_config(1), tmp_path, tmp_path, probe_port=False)
     assert str(exc.value) == "Web UI is not built. Run: cd src/web_ui && bun run build"
 
 
-def test_gui_enabled_returns_binary(built_repo, monkeypatch):
-    gm = SimpleNamespace(enabled=True, ax=SimpleNamespace(binary_path=None, repo=None, commit=None))
+def test_gui_permissions_checked_only_when_gui_enabled(built_repo, monkeypatch):
+    seen = []
+
+    def fake_check(state_dir):
+        seen.append(state_dir)
+        return []
+
+    monkeypatch.setattr(check, "check_gui_permissions", fake_check)
+    monkeypatch.setattr(check, "list_input_sources", lambda: ["com.apple.keylayout.ABC"])
     config = _config(1)
-    config.agents = {"gui_manager": gm}
-    monkeypatch.setattr(check, "ensure_binary", lambda **kwargs: "/bin/ax")
-    assert check_environment(config, built_repo, probe_port=False) == "/bin/ax"
+    config.agents = {"gui_manager": SimpleNamespace(enabled=False)}
+    check_environment(config, built_repo, built_repo / "ws", probe_port=False)
+    assert seen == []
 
-    def failing(**kwargs):
-        raise check.AXRuntimeError("swift toolchain not found")
+    config.agents = {"gui_manager": _gui_config("com.apple.keylayout.ABC")}
+    assert check_environment(config, built_repo, built_repo / "ws", probe_port=False) is None
+    assert seen == [built_repo / "ws" / "state"]
 
-    monkeypatch.setattr(check, "ensure_binary", failing)
-    with pytest.raises(EnvironmentCheckFailed, match="swift toolchain not found"):
-        check_environment(config, built_repo, probe_port=False)
+
+def test_missing_gui_permissions_stop_startup(built_repo, monkeypatch):
+    problems = [
+        "Accessibility is not granted (Terminal caveat ...)",
+        "Screen Recording is not granted (Terminal caveat ...)",
+    ]
+    monkeypatch.setattr(check, "check_gui_permissions", lambda state_dir: problems)
+    config = _config(1)
+    config.agents = {"gui_manager": SimpleNamespace(enabled=True)}
+    with pytest.raises(EnvironmentCheckFailed) as exc:
+        check_environment(config, built_repo, built_repo, probe_port=False)
+    assert str(exc.value) == "\n".join(problems)
 
 
 def test_enriched_path_prepends_missing_dirs(monkeypatch):
@@ -83,9 +100,27 @@ def test_missing_binary_fails_before_dist_check(tmp_path, monkeypatch):
         check.shutil, "which", lambda name, path=None: None if name == "node" else f"/bin/{name}"
     )
     with pytest.raises(EnvironmentCheckFailed, match="Required binaries not found on PATH: node"):
-        check_environment(_config(1), tmp_path, probe_port=False)
+        check_environment(_config(1), tmp_path, tmp_path, probe_port=False)
 
 
 def test_all_binaries_present_passes(built_repo, monkeypatch):
     monkeypatch.setattr(check.shutil, "which", lambda name, path=None: f"/bin/{name}")
-    assert check_environment(_config(1), built_repo, probe_port=False) is None
+    assert check_environment(_config(1), built_repo, built_repo, probe_port=False) is None
+
+
+def _gui_config(default_source: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        enabled=True, desktop=SimpleNamespace(default_input_source=default_source),
+    )
+
+
+def test_unknown_default_input_source_stops_startup(built_repo, monkeypatch):
+    monkeypatch.setattr(check, "check_gui_permissions", lambda state_dir: [])
+    monkeypatch.setattr(
+        check, "list_input_sources",
+        lambda: ["com.apple.keylayout.US", "com.apple.inputmethod.TCIM.Zhuyin"],
+    )
+    config = _config(1)
+    config.agents = {"gui_manager": _gui_config("com.apple.keylayout.ABC")}
+    with pytest.raises(EnvironmentCheckFailed, match="com.apple.keylayout.US"):
+        check_environment(config, built_repo, built_repo / "ws", probe_port=False)

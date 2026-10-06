@@ -192,8 +192,6 @@ class UiEventConsole:
         max_steps: int,
         elapsed_sec: float = 0.0,
         total_elapsed_sec: float = 0.0,
-        *,
-        worker_timing: dict[str, float] | None = None,
     ) -> None:
         if not self.show_tool_use:
             return
@@ -203,11 +201,6 @@ class UiEventConsole:
             timing += f" {elapsed_sec:.1f}s"
         if total_elapsed_sec > 0:
             timing += f" total={total_elapsed_sec:.1f}s"
-        if worker_timing:
-            timing += (
-                f" ss={worker_timing.get('screenshot', 0.0):.1f}s"
-                f" inf={worker_timing.get('inference', 0.0):.1f}s"
-            )
         self._ui.emit(
             ToolCallEvent(
                 name="gui_task",

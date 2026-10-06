@@ -29,7 +29,9 @@ _TURN_LIMIT_TOOL_RESULT = "Not executed: worker turn limit reached."
 _FORCED_REPORT_PROMPT = (
     "Turn limit reached. Do not call tools. Report now: what was done, "
     "exact values produced or submitted, what remains incomplete and why, "
-    "and the paths of any files or logs you left behind."
+    "and the paths of any files or logs you left behind. "
+    "If a gui_task session is unfinished (BLOCKED or PAUSED), include its "
+    "session_id and status so the task can be resumed."
 )
 
 

@@ -23,7 +23,7 @@ from ..brain_prompt_policy import BrainPromptPolicy
 from ..context import ContextBuilder, Conversation
 from ..context.cache_breakpoints import build_cache_control, resolve_breakpoint_cache_ttl
 from ..core.schema import AppConfig, OpenAIConfig
-from ..gui import GUIManager, GUISessionStore, GUIWorker
+from ..gui import DesktopBackend, GUIManager, GUISessionStore, GUIWorker
 from ..llm import create_agent_client
 from ..memory import BM25MemorySearch, MemoryEditor, MemoryEditPlanner, SessionCommitLog
 from ..memory.backup import MemoryBackupManager
@@ -75,7 +75,6 @@ class BuildInputs:
     user_id: str
     display_name: str
     resume_id: str | None
-    ax_binary: str | None
     upgrade_message: str
 
 
@@ -576,45 +575,34 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
     gui_worker_instance: GUIWorker | None = None
     if "gui_manager" in config.agents and config.agents["gui_manager"].enabled:
         gm_config = config.agents["gui_manager"]
-        gm_client = _build_subagent_client("gui_manager", gm_config)
-        from ..gui.mcp_client import MCPStdioClient
-
+        gm_client = _build_subagent_client(
+            "gui_manager", gm_config, session_debug_label="gui_manager",
+        )
         gm_prompt = _load_agent_prompt("gui_manager") or ""
-        ax_binary = inputs.ax_binary
-        if gm_prompt and ax_binary is None:
-            logger.error("GUI disabled, AX backend unavailable")
-        if gm_prompt and ax_binary is not None:
-            gui_session_store = GUISessionStore(agent_os_dir / "session" / "gui")
-
-            def _gui_step_callback(
-                tool_call, result, step, max_steps,
-                elapsed_sec, total_elapsed_sec, worker_timing,
-            ):
-                console.print_gui_step(
-                    tool_call, result, step, max_steps,
-                    elapsed_sec, total_elapsed_sec,
-                    worker_timing=worker_timing,
-                )
-
-            ax_timeout = gm_config.ax.tool_timeout
+        if gm_prompt:
+            desktop = gm_config.desktop
             gui_manager_instance = GUIManager(
                 gm_client,
-                mcp_factory=lambda: MCPStdioClient(
-                    [ax_binary, "mcp"], timeout=ax_timeout,
+                DesktopBackend(
+                    screenshot_max_width=gm_config.screenshot_max_width,
+                    screenshot_quality=gm_config.screenshot_quality,
+                    max_tree_nodes=desktop.max_tree_nodes,
+                    text_limit=desktop.text_limit,
+                    set_marks=desktop.set_marks,
+                    default_input_source=desktop.default_input_source,
+                    settle_seconds=desktop.settle_seconds,
                 ),
-                system_prompt=gm_prompt,
+                gm_prompt,
+                session_store=GUISessionStore(agent_os_dir / "session" / "gui"),
                 max_steps=gm_config.max_steps,
-                session_store=gui_session_store,
-                on_step=_gui_step_callback,
+                on_step=console.print_gui_step,
                 is_cancel_requested=cancel_controller.is_requested,
                 allow_wait_tool=gm_config.allow_wait_tool,
                 step_delay_min=gm_config.step_delay_min,
                 step_delay_max=gm_config.step_delay_max,
-                keep_full_states=gm_config.ax.keep_full_states,
-                stale_text_max_chars=gm_config.ax.stale_text_max_chars,
-                max_tree_nodes=gm_config.ax.max_tree_nodes,
-                max_tree_depth=gm_config.ax.max_tree_depth,
-                tool_timeout=gm_config.ax.tool_timeout,
+                keep_full_states=desktop.keep_full_states,
+                stale_text_max_chars=desktop.stale_text_max_chars,
+                repeat_limit=desktop.repeat_limit,
                 cache_control=build_cache_control(
                     resolve_breakpoint_cache_ttl(
                         provider=getattr(gm_config.llm, "provider", ""),
@@ -725,7 +713,6 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         use_own_vision_ability=use_own_vision,
         own_vision_active=own_vision_active,
         vision_agent=vision_agent_instance,
-        gui_manager=gui_manager_instance,
         gui_worker=gui_worker_instance,
         gui_lock=gui_lock,
         screenshot_max_width=ss_max_width,

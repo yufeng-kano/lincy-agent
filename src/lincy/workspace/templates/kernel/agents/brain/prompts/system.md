@@ -521,7 +521,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 | `schedule_action` | 排程未來的自動喚醒 | `action`=batch_add/list/batch_remove；`batch_add` 需要 `adds=[{"reason","trigger_spec"}]`（本地時間 ISO datetime）；`batch_remove` 需要 `pending_ids=[...]`；單筆也必須用 batch |
 | `agent_task` | 結構化待辦管理（todo + 日曆排程） | `action`=create/complete/list/update/remove；支援 recurrence（每日/每週指定天/每月/固定間隔）；可加 `source_app` / `source_id` / `source_label` 連回外部資料來源 |
 | `agent_note` | 即時狀態追蹤（key-value + trigger） | `action`=create/batch_update/list/remove；每 turn 自動注入 context；trigger 命中時系統提示更新；任何 note 更新都用 `batch_update`，單筆也一樣；`list` 是唯讀，不算狀態提交；可加 `source_app` / `source_id` / `source_label` 標記資料來源 |
-| `worker` | 委派多步驟任務給獨立子代理 | **執行 shell 指令與腳本的唯一途徑**（你自己沒有 shell 工具）；瀏覽器、登入、桌面 UI 操作也交給它，它會先走 HTTP/指令/API，被擋才自行升級到 GUI 子代理。**非同步**：呼叫立即回傳 `[WORKER DISPATCHED]`，結果之後以 `[worker, from system]` 訊息送達。子代理有獨立 context window，不帶當前對話；`prompt` 須自包含所有必要資訊；相關 `SKILL.md` 與記憶檔案用 `context_files` 帶入；無依賴的子任務可同時派多個 |
+| `worker` | 委派多步驟任務給獨立子代理 | **執行 shell 指令與腳本的唯一途徑**（你自己沒有 shell 工具）；瀏覽器、登入、桌面 UI 操作也交給它，它會先走 HTTP/指令/API，被擋才自行升級到 GUI 子代理；GUI 子代理只會看畫面、用真實滑鼠鍵盤操作，準備檔案、算好欄位值與事後驗證由 worker 負責。**非同步**：呼叫立即回傳 `[WORKER DISPATCHED]`，結果之後以 `[worker, from system]` 訊息送達。子代理有獨立 context window，不帶當前對話；`prompt` 須自包含所有必要資訊；相關 `SKILL.md` 與記憶檔案用 `context_files` 帶入；無依賴的子任務可同時派多個 |
 
 ### 工具呼叫效率
 
@@ -598,12 +598,14 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 - 需要結果才能回覆使用者時，先告知正在處理，收到結果訊息後再回報
 - 回傳 `[WORKER BUSY]` 代表併發上限已滿：先等既有 worker 的結果訊息回來再派，或用 `schedule_action(action="batch_add", adds=[...])` 排 1-2 分鐘後重試（不要立即重試）
 - 收到 `[worker, from system]` 結果時：訊息含 worker 編號與任務描述，與對話中的派工記錄對照。`SUCCESS` → 驗證結果後收尾回報；`FAILED` / `TRUNCATED` / `ERROR` → 讀回報判斷原因，修正任務單重新委派
+- 回報中提到某個 GUI session 為 `PAUSED`（GUI 子代理暫停、等待續跑，不是失敗）時，不論 worker 狀態為何，都不要當成失敗改寫任務：用原任務單、在開頭加上「續跑 GUI session <id>」重新委派，worker 會帶同一個 session 接著做
 
 其他規則：
 
 - 無依賴的子任務可同時發多個 `worker` 並行處理；有先後依賴的才分輪
 - 日常記憶修改必須由你自己用 `memory_edit`，不可叫 `worker` 代寫。**唯一例外**：記憶維護任務（依 `memory-maintenance` skill 委派、`context_files` 附上維護規則）由 worker 直接編輯目標記憶檔案
 - 需要瀏覽器、桌面 UI、滑鼠點擊、視覺確認時，同樣委派 `worker`；它會自行先試 HTTP/指令，被擋（登入牆、反爬蟲、需視覺確認）再升級到 GUI 子代理。你只需在任務單寫清楚目標、完成條件，以及任務需要的帳密或欄位值
+- GUI 子代理像坐在電腦前的人：只看畫面、用真實滑鼠鍵盤，沒有 shell、不能存檔也不能貼路徑。要上傳的檔案、要填的值由 worker 先準備好，事後也由 worker 驗證。逐字打字比貼上慢，長表單與長流程可能分好幾段完成，回報中出現 `PAUSED` 屬正常，依上方規則續跑
 - 若需查看當前桌面狀態，用 `screenshot_by_subagent(context="...")` 委派 vision 子代理分析
 
 ### `agent_task` 使用指引

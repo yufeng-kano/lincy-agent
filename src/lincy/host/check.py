@@ -8,7 +8,8 @@ import socket
 from pathlib import Path
 
 from ..core.schema import AppConfig
-from ..gui.ax_runtime import AXRuntimeError, ensure_binary, resolve_build_params
+from ..gui.input_source import list_input_sources
+from ..gui.permissions import check_gui_permissions
 from .errors import EnvironmentCheckFailed
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -22,7 +23,7 @@ REQUIRED_BINARIES = ("git", "uv", "bun", "node")
 def enriched_path() -> str:
     """Return PATH with common tool directories prepended.
 
-    launchd starts processes with a minimal PATH, so uv/bun/swift would
+    launchd starts processes with a minimal PATH, so uv/bun/node would
     otherwise be missing for the service and for upgrade subprocesses.
     """
     home = Path.home()
@@ -57,8 +58,10 @@ def port_is_available(host: str, port: int) -> bool:
     return True
 
 
-def check_environment(config: AppConfig, repo_root: Path, *, probe_port: bool) -> str | None:
-    """Fail fast on environment problems; return the AX binary path when GUI is enabled.
+def check_environment(
+    config: AppConfig, repo_root: Path, agent_os_dir: Path, *, probe_port: bool,
+) -> None:
+    """Fail fast on environment problems.
 
     ``probe_port`` is off for ``lincy check``: upgrade runs it as a gate while
     the live server still holds the port.
@@ -80,10 +83,19 @@ def check_environment(config: AppConfig, repo_root: Path, *, probe_port: bool) -
     if not (repo_root / "src" / "web_ui" / "dist" / "index.html").is_file():
         raise EnvironmentCheckFailed("Web UI is not built. Run: cd src/web_ui && bun run build")
 
-    params = resolve_build_params(config)
-    if params is None:
-        return None
-    try:
-        return ensure_binary(**params)
-    except AXRuntimeError as e:
-        raise EnvironmentCheckFailed(f"GUI backend unavailable: {e}") from e
+    # A GUI agent without Accessibility / Screen Recording is blind, so a
+    # missing permission stops startup instead of degrading at task time.
+    gui_manager = config.agents.get("gui_manager")
+    if gui_manager is not None and gui_manager.enabled:
+        problems = check_gui_permissions(agent_os_dir / "state")
+        if problems:
+            raise EnvironmentCheckFailed("\n".join(problems))
+        # Every GUI task starts by selecting this source; an unknown id would
+        # fail each task at runtime instead of here.
+        default_source = gui_manager.desktop.default_input_source
+        available = list_input_sources()
+        if default_source not in available:
+            raise EnvironmentCheckFailed(
+                f"gui_manager.desktop.default_input_source {default_source!r} is not "
+                f"an enabled input source; available: {', '.join(available)}"
+            )

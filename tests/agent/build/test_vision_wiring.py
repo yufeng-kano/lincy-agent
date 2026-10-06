@@ -1,12 +1,10 @@
 """Tests for vision tool wiring in setup_tools."""
 
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock
 
 from lincy.agent.tool_setup import setup_tools
 from lincy.core.schema import ToolsConfig
-from lincy.gui.manager import GUIManager
 from lincy.gui.worker import GUIWorker
 from lincy.llm.schema import ToolCall
 from lincy.tools.builtin.vision import VisionAgent
@@ -197,22 +195,3 @@ class TestScreenshotToolWiring:
         )
         assert registry.has_tool("screenshot")
         assert not registry.has_tool("screenshot_by_subagent")
-
-
-class TestGuiManagerCaptureDir:
-    def _base_config(self) -> ToolsConfig:
-        return ToolsConfig(allowed_paths=[])
-
-    def test_capture_dir_added_to_allowed_paths(self, tmp_path: Path):
-        """When gui_manager is provided, its capture_dir is in allowed_paths."""
-        mock_manager = MagicMock(spec=GUIManager)
-        type(mock_manager).capture_dir = PropertyMock(return_value=tempfile.gettempdir())
-
-        registry, _, _ = setup_tools(
-            self._base_config(), tmp_path,
-            brain_has_vision=True,
-            gui_manager=mock_manager,
-        )
-        # read_image should be able to access temp dir files
-        assert registry.has_tool("read_image")
-        # gui_task is registered after queue creation in build_agent, not via setup_tools

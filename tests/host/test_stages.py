@@ -114,7 +114,7 @@ def test_build_error_is_build_failed(env, monkeypatch):
 def test_check_skips_port_probe_and_session(env, monkeypatch, capsys):
     seen = {}
 
-    def fake_check(config, repo_root, *, probe_port):
+    def fake_check(config, repo_root, agent_os_dir, *, probe_port):
         seen["probe_port"] = probe_port
 
     def fake_build(inputs):

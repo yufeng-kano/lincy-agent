@@ -12,7 +12,6 @@ dependencies = [
     "pydantic>=2.0",
     "rich>=13.0",
     "Pillow>=10.0",
-    "pyautogui>=0.9.54",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "jieba>=0.42",
@@ -21,6 +20,9 @@ dependencies = [
     "markdownify>=1.2.2",
     "cachetools>=7.0.5",
     "pymupdf>=1.27.2.2",
+    "pyobjc-framework-applicationservices>=12.2.2",
+    "pyobjc-framework-quartz>=12.2.2",
+    "pyobjc-framework-cocoa>=12.2.2",
 ]
 
 [project.scripts]

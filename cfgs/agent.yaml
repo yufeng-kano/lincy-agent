@@ -336,20 +336,22 @@ agents:
     llm_request_timeout: 600
     llm_transient_retries: 20
     warn_on_failure: true
-    max_steps: 50 # GUI agentic loop 最大步數
+    max_steps: 50 # 每次 gui_task 呼叫的步數上限，用完回 [GUI PAUSED]（可帶 session_id 續跑）
     allow_wait_tool: false # false = disable wait tool
     step_delay_min: 0.1 # min forced delay (sec) after each tool step
     step_delay_max: 0.3 # max forced delay (sec); random in [min, max]
     lock_wait_seconds: 300 # gui_task 等待另一個 GUI 任務釋放鎖的上限（秒），逾時回 [GUI BUSY]
-    screenshot_max_width: 1000 # 截圖最大寬度（等比縮放；供 brain screenshot 工具與 gui_worker 用）
+    screenshot_max_width: 1000 # 截圖最大寬度（等比縮放；供桌面後端、brain screenshot 工具與 gui_worker 用）
     screenshot_quality: 70 # JPEG 壓縮品質（1-100）
-    ax: # AX-first 後端（OpenComputerUse MCP server）
-      # repo/commit/binary_path 不設定時使用 gui/ax_runtime.py 內的 pin 值
+    desktop: # 原生桌面後端（AX tree + 截圖 + 真實鍵鼠輸入）
       keep_full_states: 2 # loop 內保留完整 tree+截圖 的最近步數，其餘折疊
       stale_text_max_chars: 2000 # 折疊後每份舊狀態保留的文字上限（去圖、截文）
-      max_tree_nodes: null # 單次 get_app_state 的 tree 節點上限（null = server 預設）
-      max_tree_depth: null # tree 深度上限（null = server 預設）
-      tool_timeout: 90 # 單一 MCP 工具呼叫逾時（秒）
+      max_tree_nodes: 800 # 單份狀態的 AX 節點上限，超過標示 truncated
+      text_limit: 200 # 每個元素 label/value 的字元上限
+      set_marks: false # true = 把元素 index 畫在截圖上（Set-of-Marks）
+      default_input_source: com.apple.keylayout.ABC # 任務開始切換的輸入法
+      settle_seconds: 0.4 # 每個動作後等待畫面穩定再取狀態（秒）
+      repeat_limit: 3 # 連續相同動作且狀態不變達此次數即停止，回 [GUI PAUSED]
     cache:
       enabled: true
       ttl: "1h"

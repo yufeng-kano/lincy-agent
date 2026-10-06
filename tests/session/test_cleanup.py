@@ -44,12 +44,18 @@ class TestCleanupSessions:
         old_id = _make_session_id(45)
         new_id = _make_session_id(2)
         (gui_dir / f"{old_id}.json").write_text("{}")
+        (gui_dir / f"{old_id}.steps.jsonl").write_text("")
+        (gui_dir / f"{old_id}.jpg").write_bytes(b"")
         (gui_dir / f"{new_id}.json").write_text("{}")
+        (gui_dir / f"{new_id}.steps.jsonl").write_text("")
 
         deleted = cleanup_sessions(base, retention_days=30)
-        assert deleted == 1
+        assert deleted == 3
         assert not (gui_dir / f"{old_id}.json").exists()
+        assert not (gui_dir / f"{old_id}.steps.jsonl").exists()
+        assert not (gui_dir / f"{old_id}.jpg").exists()
         assert (gui_dir / f"{new_id}.json").exists()
+        assert (gui_dir / f"{new_id}.steps.jsonl").exists()
 
     def test_mixed_brain_and_gui(self, tmp_path: Path):
         base = tmp_path / "session"

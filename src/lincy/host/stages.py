@@ -31,7 +31,6 @@ class ValidatedEnv:
     user_id: str
     display_name: str
     timezone: str
-    ax_binary: str | None
     resume_id: str | None
     upgrade_message: str
 
@@ -79,7 +78,7 @@ def validate(*, new_session: bool, resume_id: str | None, probe_port: bool = Tru
         raise WorkspaceNotReady(str(e)) from e
     ensure_user_memory_file(workspace.memory_dir, user_id, display_name)
 
-    ax_binary = check_environment(config, REPO_ROOT, probe_port=probe_port)
+    check_environment(config, REPO_ROOT, agent_os_dir, probe_port=probe_port)
 
     if new_session:
         session_choice = None
@@ -97,7 +96,6 @@ def validate(*, new_session: bool, resume_id: str | None, probe_port: bool = Tru
         user_id=user_id,
         display_name=display_name,
         timezone=config.app.timezone,
-        ax_binary=ax_binary,
         resume_id=session_choice,
         upgrade_message=upgrade_message,
     )
@@ -112,7 +110,6 @@ def build(env: ValidatedEnv) -> BuiltAgent:
                 user_id=env.user_id,
                 display_name=env.display_name,
                 resume_id=env.resume_id,
-                ax_binary=env.ax_binary,
                 upgrade_message=env.upgrade_message,
             )
         )

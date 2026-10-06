@@ -26,13 +26,15 @@ class FakeManager:
         self.last_intent: str | None = None
         self.last_session_id: str | None = None
         self.last_app_prompt_text: str | None = None
+        self.last_app: str | None = None
 
     def execute_task(
         self, intent: str, session_id: str | None = None,
-        app_prompt_text: str | None = None,
+        app: str | None = None, app_prompt_text: str | None = None,
     ) -> GUITaskResult:
         self.last_intent = intent
         self.last_session_id = session_id
+        self.last_app = app
         self.last_app_prompt_text = app_prompt_text
         return self._result
 
@@ -42,7 +44,7 @@ class FakeErrorManager:
 
     def execute_task(
         self, intent: str, session_id: str | None = None,
-        app_prompt_text: str | None = None,
+        app: str | None = None, app_prompt_text: str | None = None,
     ) -> GUITaskResult:
         raise RuntimeError("LLM unavailable")
 
@@ -52,14 +54,23 @@ class TestGuiTaskDefinition:
         assert GUI_TASK_DEFINITION.name == "gui_task"
         assert "intent" in GUI_TASK_DEFINITION.parameters
         assert "session_id" in GUI_TASK_DEFINITION.parameters
+        assert "app" in GUI_TASK_DEFINITION.parameters
         assert "app_prompt" in GUI_TASK_DEFINITION.parameters
         assert GUI_TASK_DEFINITION.required == ["intent"]
+
+    def test_description_states_capability_envelope_and_template(self):
+        text = GUI_TASK_DEFINITION.description
+        assert "no shell" in text
+        assert "cannot paste file paths" in text
+        for field in ("Goal:", "Success criteria:", "Values to enter:", "Already prepared:", "Forbidden:"):
+            assert field in text
+        assert "[GUI PAUSED]" in text
 
 
 class TestCreateGuiTask:
     def test_success_result(self):
-        result = GUITaskResult(
-            success=True, summary="Opened Finder.", steps_used=3, session_id="20260215_120000_abc123",
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="success", summary="Opened Finder.", steps_used=3, session_id="20260215_120000_abc123",
         )
         manager = FakeManager(result)
         fn = create_gui_task(manager)
@@ -71,7 +82,7 @@ class TestCreateGuiTask:
         assert manager.last_intent == "Open Finder"
 
     def test_failure_result(self):
-        result = GUITaskResult(success=False, summary="App not found.", steps_used=5, session_id="s1")
+        result = GUITaskResult(elapsed_sec=0.0, status="failed", summary="App not found.", steps_used=5, session_id="s1")
         manager = FakeManager(result)
         fn = create_gui_task(manager)
         output = fn(intent="Open nonexistent app")
@@ -79,7 +90,7 @@ class TestCreateGuiTask:
         assert "App not found" in output
 
     def test_empty_intent_error(self):
-        result = GUITaskResult(success=True, summary="ok", steps_used=0)
+        result = GUITaskResult(status="success", summary="ok", steps_used=0, session_id="s0", elapsed_sec=0)
         manager = FakeManager(result)
         fn = create_gui_task(manager)
         output = fn(intent="")
@@ -93,8 +104,8 @@ class TestCreateGuiTask:
         assert "LLM unavailable" in output
 
     def test_report_included_in_output(self):
-        result = GUITaskResult(
-            success=True, summary="Done.", report="Found 3 items.", steps_used=2, session_id="s2",
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="success", summary="Done.", report="Found 3 items.", steps_used=2, session_id="s2",
         )
         manager = FakeManager(result)
         fn = create_gui_task(manager)
@@ -103,15 +114,15 @@ class TestCreateGuiTask:
         assert "Found 3 items." in output
 
     def test_no_report_no_report_section(self):
-        result = GUITaskResult(success=True, summary="Done.", steps_used=1, session_id="s3")
+        result = GUITaskResult(elapsed_sec=0.0, status="success", summary="Done.", steps_used=1, session_id="s3")
         manager = FakeManager(result)
         fn = create_gui_task(manager)
         output = fn(intent="Do task")
         assert "Report:" not in output
 
     def test_screenshot_path_included_in_output(self):
-        result = GUITaskResult(
-            success=True, summary="Done.", steps_used=2, session_id="s6",
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="success", summary="Done.", steps_used=2, session_id="s6",
             screenshot_path="/tmp/capture.png",
         )
         manager = FakeManager(result)
@@ -120,21 +131,21 @@ class TestCreateGuiTask:
         assert "Screenshot: /tmp/capture.png" in output
 
     def test_no_screenshot_path_no_screenshot_section(self):
-        result = GUITaskResult(success=True, summary="Done.", steps_used=1, session_id="s7")
+        result = GUITaskResult(elapsed_sec=0.0, status="success", summary="Done.", steps_used=1, session_id="s7")
         manager = FakeManager(result)
         fn = create_gui_task(manager)
         output = fn(intent="Do task")
         assert "Screenshot:" not in output
 
     def test_session_id_passed_to_manager(self):
-        result = GUITaskResult(success=True, summary="Done.", steps_used=0, session_id="s4")
+        result = GUITaskResult(elapsed_sec=0.0, status="success", summary="Done.", steps_used=0, session_id="s4")
         manager = FakeManager(result)
         fn = create_gui_task(manager)
         fn(intent="Resume task", session_id="existing_session")
         assert manager.last_session_id == "existing_session"
 
     def test_empty_session_id_passed_as_none(self):
-        result = GUITaskResult(success=True, summary="Done.", steps_used=0, session_id="s5")
+        result = GUITaskResult(elapsed_sec=0.0, status="success", summary="Done.", steps_used=0, session_id="s5")
         manager = FakeManager(result)
         fn = create_gui_task(manager)
         fn(intent="New task", session_id="")
@@ -147,7 +158,7 @@ class TestScreenshotTool:
         assert "region" in SCREENSHOT_DEFINITION.parameters
         assert SCREENSHOT_DEFINITION.required == []
 
-    @patch("lincy.gui.actions.take_screenshot")
+    @patch("lincy.gui.capture.take_screenshot")
     def test_screenshot_returns_multimodal(self, mock_take):
         fake_ss = ContentPart(
             type="image", media_type="image/jpeg", data="base64data",
@@ -165,7 +176,7 @@ class TestScreenshotTool:
         assert result[1].text == "Screenshot taken."
         mock_take.assert_called_once_with(max_width=800, quality=90, region=None)
 
-    @patch("lincy.gui.actions.take_screenshot")
+    @patch("lincy.gui.capture.take_screenshot")
     def test_screenshot_with_region(self, mock_take):
         fake_ss = ContentPart(
             type="image", media_type="image/jpeg", data="cropped",
@@ -180,7 +191,7 @@ class TestScreenshotTool:
             max_width=800, quality=90, region=(100, 200, 300, 400),
         )
 
-    @patch("lincy.gui.actions.take_screenshot")
+    @patch("lincy.gui.capture.take_screenshot")
     def test_screenshot_ignores_invalid_region(self, mock_take):
         fake_ss = ContentPart(type="image", media_type="image/jpeg", data="full")
         mock_take.return_value = fake_ss
@@ -190,7 +201,7 @@ class TestScreenshotTool:
 
         mock_take.assert_called_once_with(max_width=800, quality=90, region=None)
 
-    @patch("lincy.gui.actions.take_screenshot")
+    @patch("lincy.gui.capture.take_screenshot")
     def test_screenshot_error_propagates(self, mock_take):
         mock_take.side_effect = RuntimeError("No display")
         fn = create_screenshot()
@@ -244,8 +255,8 @@ class TestAppPromptPassthrough:
         prompt_file = agent_dir / "guide.md"
         prompt_file.write_text("Use LINE tabs.")
 
-        result = GUITaskResult(
-            success=True, summary="Done.", steps_used=1, session_id="s1",
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="success", summary="Done.", steps_used=1, session_id="s1",
         )
         manager = FakeManager(result)
         fn = create_gui_task(manager, agent_os_dir=agent_dir)
@@ -256,8 +267,8 @@ class TestAppPromptPassthrough:
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
 
-        result = GUITaskResult(
-            success=True, summary="Done.", steps_used=1, session_id="s1",
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="success", summary="Done.", steps_used=1, session_id="s1",
         )
         manager = FakeManager(result)
         fn = create_gui_task(manager, agent_os_dir=agent_dir)
@@ -265,8 +276,8 @@ class TestAppPromptPassthrough:
         assert manager.last_app_prompt_text is None
 
     def test_app_prompt_empty_passes_none(self):
-        result = GUITaskResult(
-            success=True, summary="Done.", steps_used=1, session_id="s1",
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="success", summary="Done.", steps_used=1, session_id="s1",
         )
         manager = FakeManager(result)
         fn = create_gui_task(manager)
@@ -330,7 +341,7 @@ class TestCreateScreenshotBySubagent:
 class TestFormatGuiResult:
     def test_success(self):
         result = GUITaskResult(
-            success=True, summary="Done.", steps_used=3,
+            status="success", summary="Done.", steps_used=3,
             session_id="s1", elapsed_sec=2.5,
         )
         output = format_gui_result(result)
@@ -341,18 +352,51 @@ class TestFormatGuiResult:
         assert "Done." in output
 
     def test_failed(self):
-        result = GUITaskResult(
-            success=False, summary="Not found.", steps_used=5,
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="failed", summary="Not found.", steps_used=5,
             session_id="s2",
         )
         output = format_gui_result(result)
         assert "[GUI FAILED]" in output
 
     def test_blocked(self):
-        result = GUITaskResult(
-            success=False, summary="Login needed.", steps_used=2,
-            session_id="s3", needs_input=True,
+        result = GUITaskResult(elapsed_sec=0.0, 
+            status="blocked", summary="Login needed.", steps_used=2,
+            session_id="s3",
         )
         output = format_gui_result(result)
         assert "[GUI BLOCKED]" in output
-        assert "adjusted instructions" in output
+        assert output.endswith(
+            "Call gui_task again with session_id=s3 and a new instruction to continue."
+        )
+
+    def test_paused_has_resume_hint(self):
+        result = GUITaskResult(
+            status="paused", summary="Step budget used up.", report="Field 3 left.",
+            steps_used=50, session_id="s4", elapsed_sec=1.0,
+            screenshot_path="/ws/session/gui/s4.jpg",
+        )
+        output = format_gui_result(result)
+        assert output.startswith("[GUI PAUSED] (steps: 50, time: 1.0s, session: s4)")
+        assert "Screenshot: /ws/session/gui/s4.jpg" in output
+        assert "Report:\nField 3 left." in output
+        assert output.endswith(
+            "Call gui_task again with session_id=s4 and a new instruction to continue."
+        )
+
+    def test_success_and_failed_have_no_resume_hint(self):
+        for status in ("success", "failed"):
+            result = GUITaskResult(
+                status=status, summary="x", steps_used=1, session_id="s5", elapsed_sec=0.0,
+            )
+            assert "Call gui_task again" not in format_gui_result(result)
+
+
+def test_app_passed_to_manager():
+    result = GUITaskResult(status="success", summary="ok", steps_used=0, session_id="s", elapsed_sec=0.0)
+    manager = FakeManager(result)
+    fn = create_gui_task(manager)
+    fn(intent="Fill form", app="Google Chrome")
+    assert manager.last_app == "Google Chrome"
+    fn(intent="Fill form", app="")
+    assert manager.last_app is None

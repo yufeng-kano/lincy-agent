@@ -45,7 +45,6 @@ def _inputs(tmp_path: Path) -> BuildInputs:
         user_id="yufeng",
         display_name="Yufeng",
         resume_id=None,
-        ax_binary=None,
         upgrade_message="",
     )
 
