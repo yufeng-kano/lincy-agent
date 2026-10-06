@@ -3,6 +3,8 @@
 import signal
 import socket
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -44,7 +46,8 @@ class FakeBuilt:
 def _runtime(reason: ExitReason, exec_calls: list):
     port = _free_port()
     env = SimpleNamespace(
-        config=SimpleNamespace(app=SimpleNamespace(server=SimpleNamespace(host="127.0.0.1", port=port)))
+        config=SimpleNamespace(app=SimpleNamespace(server=SimpleNamespace(host="127.0.0.1", port=port))),
+        agent_os_dir=Path(tempfile.mkdtemp()),
     )
     built = FakeBuilt(port, reason)
 

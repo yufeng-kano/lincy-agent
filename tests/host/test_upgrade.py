@@ -120,12 +120,32 @@ def test_check_failure_rolls_back_and_reports_stderr_tail(tmp_path):
     ]
 
 
-def test_runner_exception_ends_in_failed(tmp_path):
+def test_runner_exception_after_pull_rolls_back(tmp_path):
     runner = FakeRunner()
 
     def exploding(cmd, cwd, env):
-        if cmd[0] == "uv":
-            raise FileNotFoundError("uv")
+        if cmd[0] == "bun":
+            # subprocess raises instead of returning non-zero for a missing binary
+            raise FileNotFoundError("bun")
+        return runner(cmd, cwd, env)
+
+    manager = UpgradeManager(tmp_path, run_cmd=exploding)
+    handle = FakeHandle()
+
+    _, status = _run(manager, handle)
+
+    assert status.state == "failed"
+    assert "bun" in status.error
+    assert f"git reset --hard {FROM}" in runner.commands()
+    assert handle.restarts == 0
+
+
+def test_runner_exception_before_pull_fails_without_rollback(tmp_path):
+    runner = FakeRunner()
+
+    def exploding(cmd, cwd, env):
+        if cmd[:2] == ["git", "fetch"]:
+            raise OSError("network down")
         return runner(cmd, cwd, env)
 
     manager = UpgradeManager(tmp_path, run_cmd=exploding)
@@ -133,7 +153,8 @@ def test_runner_exception_ends_in_failed(tmp_path):
     _, status = _run(manager, FakeHandle())
 
     assert status.state == "failed"
-    assert "uv" in status.error
+    assert "network down" in status.error
+    assert not any(c.startswith("git reset") for c in runner.commands())
 
 
 def test_concurrent_start_raises_in_progress(tmp_path):

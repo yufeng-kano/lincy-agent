@@ -54,6 +54,7 @@ src/lincy/
     control_api.py          APIRouter：/api/agent/*；RuntimeInfo(started_at, git_sha)；install_error_handlers()
     errors.py               HostError 與子類別（見「錯誤處理與 logging」）
     upgrade.py              UpgradeManager：git / uv sync / bun build / check / rollback / 狀態
+    upgrade_notice.py       kernel 升級摘要在 check 與正式 start 之間的暫存檔
     service.py              launchd plist 產生、launchctl 包裝
     check.py                環境檢查：binary、PATH 補齊、port、web_ui dist、AX binary
     init.py                 `lincy init`（原 cli/init.py）
@@ -235,7 +236,7 @@ agent loop 在主執行緒而不是 daemon thread，signal 才能直接進 queue
 
 ### web
 
-掛在 server lifespan（`include_web()` 設定 `app.router.lifespan_context`）。`web_lifespan` 把初始化（載入 pricing、建 `MetricsCache` 並在 thread 內 `refresh_all()`、啟動 session / ui_events watchers）丟進背景 task 後立刻 yield，server 與 `/api/agent/health` 不必等 pricing 的網路請求。
+掛在 server lifespan（`include_web()` 設定 `app.router.lifespan_context`）。`web_lifespan` 把初始化丟進背景 task 後立刻 yield，server 與 `/api/agent/health` 不必等 pricing 的網路請求。背景 task 第一件事是啟動 ui_events watcher（agent 一 ready 就會產生事件，watcher 從檔案當下的結尾開始讀，晚啟動就會漏事件），然後才載入 pricing、建 `MetricsCache` 並在 thread 內 `refresh_all()`、啟動 session watcher。pricing 失敗只影響 monitor 那一半，Agent 頁的事件流照常。
 
 - `app.state.web_status`（health 的 `web` 欄位）：初始化完成前 `loading`，成功 `ready`；任何例外只 log 並設為 `unavailable`，不影響 agent。理由：它是觀察者，pricing 來源是外網，不該讓離線時 agent 起不來。`create_app(web=False)` 不掛 web，health 回 `disabled`（只用於測試）。
 - cache 還沒就緒（`loading` 或 `unavailable`）時，需要 `MetricsCache` 的 routes（`/api/dashboard`、`/api/sessions`、`/api/sessions/{id}`、`/api/requests`、`/api/live`）回 503 `{"detail": "dashboard data is not available"}`。`/api/context/composition` 直接讀檔，不受影響。
@@ -293,7 +294,7 @@ class AgentHandle(Protocol):
 ```
 
 - `submit()` 的 channel 規則（預設 `cli`、`system` 不可送、必須是已註冊 adapter）從 `cli/app.py` 的 closure 搬進 handle 實作。channel 比對是精確比對，不做大小寫正規化。content strip 後為空 → `InvalidRequest`。`cli` 走 `ConsoleAdapter.submit()`，其他 channel 直接 `enqueue(InboundMessage(...))`，`metadata={"source": "web_console"}`。
-- `ConsoleAdapter.submit()` 在 agent loop 啟動 adapter 之前（HTTP server 已起、`run()` 還沒跑到）raise `AgentBusy("Agent is still starting.")`；上一個 `cli` turn 還沒結束時 raise `AgentBusy("Still processing the previous turn.")`。
+- `_Handle.submit()` 在 `mark_ready()` 之前對**所有** channel raise `AgentBusy("Agent is still starting.")`。理由：HTTP server 先於 `start()` 起來，`queue.recover()` 還沒跑時 `put()` 的序號從 0 開始，會覆寫磁碟上既有的 pending 檔。`ConsoleAdapter.submit()` 自己也有同樣的檢查；上一個 `cli` turn 還沒結束時 raise `AgentBusy("Still processing the previous turn.")`。
 - `state()` 的優先序：`STOPPING` > `STARTING` > `BUSY` > `READY`。`request_shutdown()` / `request_restart()` 一呼叫就進 `STOPPING`；`mark_ready()` 之前是 `STARTING`。
 - `cancel_turn()` 只呼叫 `TurnCancelController.request()`，不丟 sentinel。
 - `token_status()` 回傳 `AgentCore.get_token_status_text()`。`CtxStatusEvent`（wire `ctx_status`）原本由 Textual 輪詢後發出，現在由 `AgentCore._finalize_turn_token_status()` 在 brain turn 的 responder 結束、token 統計定案時，經 `UiEventConsole.print_ctx_status()` 發出，`text` 同 `get_token_status_text()`。Web Agent 頁 header 的 chip 靠它更新。
@@ -376,7 +377,7 @@ pydantic 是 `extra="forbid"`，舊欄位留在 yaml 或 override 裡會在 vali
 6. `bun run build`（cwd `src/web_ui`）。
 7. `<sys.executable> -m lincy check`。步驟 5 到 7 任一 exit 非零 → rollback。
 8. rollback：狀態 `rolling_back`，`git reset --hard <from_sha>`、`uv sync`、`bun run build`，最後 `failed`，error 帶失敗步驟的 stderr 尾段（最多 2000 字元）。rollback 自己某一步失敗時，在 error 後面附加 `rollback: ...` 一行，狀態仍是 `failed`（此時磁碟可能不一致，需要人工處理）。
-9. thread 內任何未預期的例外都被接住、log，狀態設為 `failed`。不會卡在進行中的狀態，否則之後每次升級請求都會 409。
+9. pull 之前的任何例外（含 runner 本身拋出的）→ `failed`，磁碟沒動過所以不 rollback。pull 之後的任何例外一律走 rollback，不只 exit 非零：`subprocess.run` 找不到 `uv` / `bun` 時拋的是 `FileNotFoundError`，不是回傳碼。thread 最外層再接一次，狀態不會卡在進行中，否則之後每次升級請求都會 409。
 10. check 通過：`handle.request_restart()`，狀態 `restart_pending`。agent 在 idle 時 `graceful_exit()`、回傳 `RESTART`，host `execv`。新程序起來後 `health.git_sha` 是新的、`upgrade.state` 是 `idle`。
 
 步驟 4 到 7 之間，程序繼續接訊息。pull 之後若執行到還沒 import 過的模組會讀到新版程式碼，這個窗口以秒計，host 層本身不得有 lazy import。
@@ -384,6 +385,8 @@ pydantic 是 `extra="forbid"`，舊欄位留在 yaml 或 override 裡會在 vali
 為什麼 check 失敗一定要 rollback 磁碟：不 rollback 的話，磁碟是沒驗過的新版、記憶體是舊版，任何原因讓 launchd 重啟都會起到沒驗過的程式碼。
 
 kernel migration 在 check 的 validate 階段已經套用，rollback 不會還原它。舊程式碼配新 kernel 與使用者手動降版是同一種情況，接受。
+
+migration 的升級摘要（`format_startup_message()`）由 check 子程序產生，但它的 agent 隨即被丟掉，execv 後的正式 start 看到的 kernel 已是新版、`needs_upgrade()` 為 false。為了讓 heartbeat 的升級通知仍會發出，validate 會把摘要寫到 `state/pending_upgrade_notice.txt`（`host/upgrade_notice.py`），每次 validate 都從這個檔讀 `upgrade_message`，`HostRuntime.run()` 在 `built.start()` 之後刪掉它。
 
 `lincy upgrade` CLI：先 GET health 記下 `git_sha`，POST 後每秒 GET health。任何一次 poll 看到 `git_sha` 與起始值不同就算完成（execv 後的新程序，exit 0）；`upgrade.state` 是 `up_to_date` → exit 0，`failed` → 印 error、exit 1。poll 期間的連線錯誤（execv 重啟中）一律忽略、繼續等。上限 15 分鐘，逾時 exit 1。
 

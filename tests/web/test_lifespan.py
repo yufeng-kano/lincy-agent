@@ -92,7 +92,8 @@ async def test_pricing_failure_marks_unavailable_without_raising(
 
         assert app.state.web_status == "unavailable"
         assert state.cache is None
-        assert started_watchers == []
+        # The agent event stream does not depend on the metrics side.
+        assert started_watchers == ["ui_events"]
 
 
 @pytest.mark.asyncio
@@ -110,3 +111,27 @@ async def test_exit_while_loading_cancels_initialization(tmp_path, monkeypatch, 
     assert app.state.web_status == "loading"
     assert state.cache is None
     assert started_watchers == []
+
+
+@pytest.mark.asyncio
+async def test_ui_event_watcher_starts_before_pricing_finishes(
+    tmp_path, monkeypatch, started_watchers
+):
+    release = asyncio.Event()
+
+    async def blocked_fetch_pricing(_url, _cache_path, _ttl):
+        await release.wait()
+        return {}
+
+    monkeypatch.setattr(lifespan_mod, "fetch_pricing", blocked_fetch_pricing)
+    app = FastAPI()
+    state = WebState()
+
+    async with web_lifespan(app, _settings(tmp_path), state):
+        await asyncio.sleep(0.05)
+        assert app.state.web_status == "loading"
+        assert started_watchers == ["ui_events"]
+        release.set()
+        await _wait_until_settled(app)
+        assert app.state.web_status == "ready"
+        assert started_watchers == ["ui_events", "sessions"]

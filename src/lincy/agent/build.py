@@ -38,6 +38,7 @@ from .compactor_agent import CompactorAgent
 from .contact_map import ContactMap
 from .core import AgentCore
 from .handle import (
+    AgentBusy,
     AgentHandle,
     AgentState,
     ExitReason,
@@ -156,6 +157,10 @@ class _Handle:
             raise UnsupportedChannel(
                 f"unsupported channel: {channel}; choose one of: {', '.join(allowed)}"
             )
+        # The HTTP server answers before start(); a put() before queue.recover()
+        # would reuse sequence numbers and overwrite pending messages on disk.
+        if not self._ready.is_set():
+            raise AgentBusy("Agent is still starting.")
         if channel == "cli":
             self._console_adapter.submit(text)
             return

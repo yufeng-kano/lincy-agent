@@ -52,6 +52,7 @@ def test_channels_put_cli_first_and_hide_system():
 
 def test_submit_defaults_to_cli_through_console_adapter():
     handle, core, _ = _handle()
+    handle.mark_ready()
 
     handle.submit("  hello  ")
 
@@ -62,6 +63,7 @@ def test_submit_defaults_to_cli_through_console_adapter():
 
 def test_submit_cli_while_turn_in_flight_raises_busy():
     handle, core, _ = _handle()
+    handle.mark_ready()
     handle.submit("first")
 
     with pytest.raises(AgentBusy) as exc:
@@ -71,8 +73,17 @@ def test_submit_cli_while_turn_in_flight_raises_busy():
     assert core.enqueue.call_count == 1
 
 
+def test_submit_any_channel_before_ready_raises_busy():
+    handle, core, _ = _handle()
+
+    with pytest.raises(AgentBusy, match="still starting"):
+        handle.submit("ping", "discord")
+    core.enqueue.assert_not_called()
+
+
 def test_submit_other_channel_enqueues_with_web_console_source():
     handle, core, _ = _handle()
+    handle.mark_ready()
 
     handle.submit("ping", "discord")
 

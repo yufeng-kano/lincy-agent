@@ -21,6 +21,7 @@ from ..workspace.people import ensure_user_memory_file, resolve_user_selector
 from .check import REPO_ROOT, check_environment
 from .errors import BuildFailed, ConfigInvalid, WorkspaceNotReady
 from .runtime import HostRuntime
+from . import upgrade_notice
 
 
 @dataclass
@@ -62,9 +63,13 @@ def validate(*, new_session: bool, resume_id: str | None, probe_port: bool = Tru
 
     # Build may depend on prompt files a migration brings in, so it runs here.
     initializer = WorkspaceInitializer(workspace)
-    upgrade_message = ""
     if initializer.needs_upgrade():
-        upgrade_message = initializer.upgrade_kernel().format_startup_message()
+        message = initializer.upgrade_kernel().format_startup_message()
+        if message:
+            # `lincy check` (the upgrade gate) applies the migration but
+            # discards its agent; the real start must still deliver the notice.
+            upgrade_notice.stash(agent_os_dir, message)
+    upgrade_message = upgrade_notice.load(agent_os_dir)
 
     rebuild_personal_skills_index(agent_os_dir)
 

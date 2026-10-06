@@ -115,7 +115,8 @@ class UpgradeManager:
                 return
             self._set(state="pulling", to_sha=remote_sha)
             self._git("pull", "--ff-only")
-        except _StepFailed as e:
+        except Exception as e:
+            # Nothing has been pulled yet, so the disk still matches memory.
             self._set(state="failed", error=str(e))
             return
 
@@ -126,7 +127,9 @@ class UpgradeManager:
             self._step("bun run build", ["bun", "run", "build"], cwd=self._web_ui_dir)
             self._set(state="checking")
             self._step("lincy check", [sys.executable, "-m", "lincy", "check"])
-        except _StepFailed as e:
+        except Exception as e:
+            # Includes FileNotFoundError from a missing uv/bun binary: subprocess
+            # raises instead of returning non-zero, and the disk is already new.
             self._rollback(from_sha, str(e))
             return
 
@@ -141,6 +144,6 @@ class UpgradeManager:
             self._git("reset", "--hard", from_sha)
             self._step("uv sync", ["uv", "sync"])
             self._step("bun run build", ["bun", "run", "build"], cwd=self._web_ui_dir)
-        except _StepFailed as e:
+        except Exception as e:
             error = f"{error}\nrollback: {e}"
         self._set(state="failed", error=error)

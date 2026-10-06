@@ -21,6 +21,7 @@ from .check import REPO_ROOT
 from .control_api import RuntimeInfo
 from .errors import HostError
 from .upgrade import UpgradeManager
+from . import upgrade_notice
 
 if TYPE_CHECKING:
     from .stages import ValidatedEnv
@@ -84,6 +85,9 @@ class HostRuntime:
         logger.info("HTTP server listening on %s:%s", server_cfg.host, server_cfg.port)
 
         built.start()
+        # The agent that received upgrade_message is now running; the stash
+        # has served its purpose.
+        upgrade_notice.clear(env.agent_os_dir)
 
         def _on_signal(signum, _frame) -> None:
             logger.info("received %s, shutting down", signal.Signals(signum).name)

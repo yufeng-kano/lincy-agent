@@ -127,3 +127,36 @@ def test_check_skips_port_probe_and_session(env, monkeypatch, capsys):
     assert stages.run_check() == 0
     assert seen == {"probe_port": False, "resume_id": None}
     assert capsys.readouterr().out.splitlines()[-1] == "OK build"
+
+
+class _FakeInitializer:
+    """Simulates one kernel migration on the first validate, none afterwards."""
+
+    runs = 0
+
+    def __init__(self, workspace):
+        pass
+
+    def needs_upgrade(self):
+        return _FakeInitializer.runs == 0
+
+    def upgrade_kernel(self):
+        _FakeInitializer.runs += 1
+        return SimpleNamespace(format_startup_message=lambda: "[STARTUP after upgrade]\nversion: 1 -> 2")
+
+
+def test_upgrade_notice_survives_until_the_real_start(env, monkeypatch):
+    _FakeInitializer.runs = 0
+    monkeypatch.setattr(stages, "WorkspaceInitializer", _FakeInitializer)
+
+    # `lincy check` as the upgrade gate: applies the migration, discards the agent.
+    first = stages.validate(new_session=True, resume_id=None, probe_port=False)
+    assert first.upgrade_message.startswith("[STARTUP after upgrade]")
+
+    # The real start after execv: kernel already current, notice still delivered.
+    second = stages.validate(new_session=False, resume_id=None)
+    assert second.upgrade_message == first.upgrade_message
+
+    stages.upgrade_notice.clear(env.agent_os_dir)
+    third = stages.validate(new_session=False, resume_id=None)
+    assert third.upgrade_message == ""

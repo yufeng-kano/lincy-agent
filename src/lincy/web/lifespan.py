@@ -25,6 +25,12 @@ async def _initialize(
     stop: asyncio.Event,
     watchers: list[asyncio.Task],
 ) -> None:
+    # Agent UI events must stream from the first second: the agent accepts
+    # messages as soon as it is ready, and the watcher reads from the current
+    # end of file, so starting it after the pricing fetch would drop events.
+    watchers.append(
+        asyncio.create_task(watch_ui_events(settings.ui_events_path, state.ws.broadcast, stop))
+    )
     try:
         pricing = await fetch_pricing(
             settings.pricing_url,
@@ -46,9 +52,6 @@ async def _initialize(
                     soft_limit=settings.soft_limit_tokens,
                 )
             )
-        )
-        watchers.append(
-            asyncio.create_task(watch_ui_events(settings.ui_events_path, state.ws.broadcast, stop))
         )
     except Exception:
         # The dashboard is an observer; it must never take the agent down.
