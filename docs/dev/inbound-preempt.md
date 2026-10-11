@@ -12,6 +12,8 @@ brain 正在跑 tool loop 時，同一個對話又來了新訊息，系統不等
 
 正在執行中的那一個 tool call 不會被殺掉，取消的是它後面的。模型呼叫同樣等它回來。
 
+brain prompt 的「同一輪被新訊息打斷」一節告訴模型：被取消的呼叫沒有執行，先讀新訊息再決定要不要重做，不為被打斷道歉。
+
 ## 對話範圍
 
 比對鍵是 `scope.py` 算出的 `scope_id`，由 `AgentCore.enqueue` 寫進 `metadata["scope_id"]`：
