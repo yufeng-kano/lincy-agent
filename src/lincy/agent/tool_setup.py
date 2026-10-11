@@ -487,25 +487,6 @@ def setup_tools(
             UPDATE_CONTACT_MAPPING_DEFINITION,
         )
 
-    # Tools that modify external state and can be preempted when
-    # fresher inbound arrives mid-tool-loop.
-    registry.set_side_effect_tools(frozenset({
-        "send_message",
-        "memory_edit",
-        "write_file",
-        "edit_file",
-        "execute_shell",
-        "shell_task",
-        "schedule_action",
-        "update_contact_mapping",
-        "gui_task",
-        "calendar_tool",
-        "reminders_tool",
-        "notes_tool",
-        "photos_tool",
-        "mail_tool",
-    }))
-
     return registry, allowed_paths, executor
 
 

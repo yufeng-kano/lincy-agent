@@ -442,3 +442,102 @@ def test_worker_runner_skips_compression_without_summarizer():
 
     assert runner._notes_thread is None
     assert notes.compressed_with == []
+
+
+def test_worker_runner_cancel_skips_remaining_calls_and_reports():
+    from lincy.worker.control import WorkerControl
+
+    control = WorkerControl(label="worker-x", description="demo")
+    registry = _build_registry()
+    executed: list[str] = []
+    echo_definition = registry.get_definitions()[0]
+
+    def _echo_then_cancel(text):
+        executed.append(text)
+        control.cancel.set()
+        return text
+
+    registry.register("echo", _echo_then_cancel, echo_definition)
+    client = _FakeWorkerClient([
+        LLMResponse(
+            content=None,
+            tool_calls=[
+                ToolCall(id="c1", name="echo", arguments={"text": "one"}),
+                ToolCall(id="c2", name="echo", arguments={"text": "two"}),
+            ],
+            total_tokens=1,
+        ),
+        LLMResponse(content="Report: echoed one; two not run.", total_tokens=5),
+    ])
+    runner = WorkerRunner(client, registry, frozenset(), "system prompt")
+
+    result = runner.run("Echo twice", worker_label="worker-x", control=control)
+
+    assert executed == ["one"]
+    assert result.cancelled is True
+    assert result.success is False
+    assert result.truncated is False
+    assert result.text == "Report: echoed one; two not run."
+    assert "Not executed" in result.action_log
+    # Only the report call follows the cancelled round.
+    assert len(client.calls) == 2
+    tool_results = [m for m in client.calls[1] if m.role == "tool"]
+    assert [m.content for m in tool_results] == ["one", "Not executed: cancelled by the dispatcher."]
+    assert client.calls[1][-1].role == "user"
+    assert "cancelled this task" in client.calls[1][-1].content
+
+
+def test_worker_runner_cancel_between_rounds_skips_next_model_call():
+    from lincy.worker.control import WorkerControl
+
+    control = WorkerControl(label="worker-x", description="demo")
+    client = _FakeWorkerClient([
+        _echo_call("c1", "one"),
+        LLMResponse(content="Report: done one.", total_tokens=5),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+    # Flag already set when the first round's tool finishes: the tool
+    # itself ran, then the loop stops before the next model call.
+    control.cancel.set()
+
+    result = runner.run("Echo once", worker_label="worker-x", control=control)
+
+    assert result.cancelled is True
+    assert result.turns_used == 1
+    assert len(client.calls) == 2
+
+
+def test_worker_runner_folds_dispatcher_updates_before_next_model_call():
+    from lincy.worker.control import WorkerControl
+
+    control = WorkerControl(label="worker-x", description="demo")
+    control.append("Use the second folder instead.")
+    client = _FakeWorkerClient([
+        _echo_call("c1", "one"),
+        LLMResponse(content="Done with the second folder.", total_tokens=5),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo once", worker_label="worker-x", control=control)
+
+    assert result.success is True
+    assert result.cancelled is False
+    tool_result, update = client.calls[1][-2:]
+    assert tool_result.role == "tool"
+    assert update.role == "user"
+    assert update.content.startswith("[Update from dispatcher]")
+    assert "second folder" in update.content
+    assert control.drain_appends() == []
+
+
+def test_worker_runner_without_control_is_unchanged():
+    client = _FakeWorkerClient([
+        _echo_call("c1", "one"),
+        LLMResponse(content="Done.", total_tokens=5),
+    ])
+    runner = WorkerRunner(client, _build_registry(), frozenset(), "system prompt")
+
+    result = runner.run("Echo once", worker_label="worker-x")
+
+    assert result.success is True
+    assert result.cancelled is False

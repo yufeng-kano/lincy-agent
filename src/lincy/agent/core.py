@@ -549,35 +549,55 @@ class AgentCore:
     ) -> Callable[[], bool] | None:
         """Return a callback that checks whether fresher inbound is queued.
 
-        When *scope_id* is available (multi-conversation adapters like
-        Discord/LINE), scope the check to that conversation.  Otherwise
-        fall back to channel-level matching.
+        With a *scope_id* (Discord DM / channel, Gmail thread, ...) the check
+        is limited to that conversation; otherwise the whole channel counts.
+        """
+        if self._queue is None:
+            return None
+        q = self._queue
+        return lambda: q.has_ready_pending_inbound(scope_id=scope_id, channel=channel)
 
-        Also checks adapter-level debounce buffers so messages still
-        being debounced can trigger preemption immediately.
+    def _make_preempt_taker(
+        self,
+        channel: str,
+        scope_id: str | None,
+    ) -> Callable[[], bool] | None:
+        """Return a callback that folds queued inbound into the running turn.
+
+        Pulls every ready message of the same conversation out of the queue,
+        appends each as a user message and acks it, so the responder can keep
+        going in the same turn instead of waiting for the next queue cycle.
+        Returns False when nothing was queued after all.
         """
         if self._queue is None:
             return None
         q = self._queue
 
-        # Collect adapters that support buffered-inbound checks.
-        adapter = self.adapters.get(channel)
-        has_buffered = getattr(adapter, "has_buffered_inbound", None)
-
-        if scope_id is not None:
-
-            def _has_pending() -> bool:
-                if q.has_ready_pending_inbound_for_scope(scope_id):
-                    return True
-                if has_buffered is not None and has_buffered(scope_id):
-                    return True
+        def _take() -> bool:
+            taken = q.take_ready_pending_inbound(scope_id=scope_id, channel=channel)
+            if not taken:
                 return False
-        else:
+            for msg, receipt in taken:
+                self.console.print_inbound(
+                    msg.channel, msg.sender, msg.content, ts=msg.timestamp,
+                )
+                self.conversation.add(
+                    "user",
+                    self._inject_note_triggers(msg, msg.content),
+                    channel=msg.channel,
+                    sender=msg.sender,
+                    timestamp=msg.timestamp,
+                    metadata=build_turn_timing_metadata(
+                        channel=msg.channel,
+                        metadata=msg.metadata,
+                        event_timestamp=msg.timestamp,
+                        processing_started_at=tz_now(),
+                    ),
+                )
+                q.ack(receipt)
+            return True
 
-            def _has_pending() -> bool:
-                return q.has_ready_pending_inbound_for_channel(channel)
-
-        return _has_pending
+        return _take
 
     def _execute_turn_attempt(
         self,
@@ -599,6 +619,9 @@ class AgentCore:
             if self.session_mgr is not None
             else None
         ) or self._llm_session_id
+        turn_scope_id = (
+            prepared.turn_metadata.get("scope_id") if prepared.turn_metadata else None
+        )
         with llm_session("brain", session_id):
             response = _run_responder(
                 client=self.client,
@@ -620,12 +643,9 @@ class AgentCore:
                 thinking_sender=sender,
                 skill_registry=getattr(self, "skill_registry", None),
                 turn_context=self.turn_context,
-                check_preempt=self._make_preempt_checker(
-                    channel,
-                    prepared.turn_metadata.get("scope_id")
-                    if prepared.turn_metadata
-                    else None,
-                ),
+                check_preempt=self._make_preempt_checker(channel, turn_scope_id),
+                on_preempt=self._make_preempt_taker(channel, turn_scope_id),
+                max_preempts=self.config.tools.max_preempts_per_turn,
             )
 
         self._finalize_turn_token_status()

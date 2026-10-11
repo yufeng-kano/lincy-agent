@@ -17,6 +17,7 @@ from ..llm.base import LLMClient
 from ..llm.schema import Message, make_tool_result_message
 from ..session.debug_client import DebugLoggingLLMClient
 from ..tools.registry import ToolRegistry
+from .control import WorkerControl
 from .notes import WorkerNotes
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,15 @@ _ACTION_LOG_MAX_CHARS = 4000
 _ACTION_ARGS_MAX_CHARS = 200
 _ACTION_RESULT_MAX_CHARS = 300
 _TURN_LIMIT_TOOL_RESULT = "Not executed: worker turn limit reached."
+_CANCELLED_TOOL_RESULT = "Not executed: cancelled by the dispatcher."
+_CANCELLED_REPORT_PROMPT = (
+    "The dispatcher cancelled this task. Do not call tools. Report now: what "
+    "was done, exact values produced or submitted, what remains incomplete, "
+    "and the paths of any files or logs you left behind. "
+    "If a gui_task session is unfinished (BLOCKED or PAUSED), include its "
+    "session_id and status so the task can be resumed."
+)
+_DISPATCHER_UPDATE_HEADER = "[Update from dispatcher]"
 _FORCED_REPORT_PROMPT = (
     "Turn limit reached. Do not call tools. Report now: what was done, "
     "exact values produced or submitted, what remains incomplete and why, "
@@ -47,6 +57,7 @@ class WorkerResult:
     truncated: bool
     error: str | None = None
     action_log: str = ""
+    cancelled: bool = False
 
 
 def run_simple_tool_loop(
@@ -299,8 +310,13 @@ class WorkerRunner:
         max_turns_override: int | None = None,
         agent_os_dir: Path | None = None,
         worker_label: str = "worker",
+        control: WorkerControl | None = None,
     ) -> WorkerResult:
-        """Execute the worker agentic loop and return the result."""
+        """Execute the worker agentic loop and return the result.
+
+        *control* lets the brain cancel the task or append information
+        mid-run; both take effect at the next tool or model boundary.
+        """
         effective_max_turns = max_turns_override or self._max_turns
         client = self._wrap_client(worker_label)
         registry = self._build_filtered_registry()
@@ -319,7 +335,11 @@ class WorkerRunner:
         turns = 0
         tokens_used = 0
         last_text: str | None = None
+        cancelled = False
         started_ms = _now_ms()
+
+        def _is_cancelled() -> bool:
+            return control is not None and control.cancel.is_set()
 
         try:
             request_messages = advance_cache_breakpoint(
@@ -340,6 +360,15 @@ class WorkerRunner:
                 ))
 
                 for tc in response.tool_calls:
+                    # A running tool finishes; the ones after it are skipped.
+                    if _is_cancelled():
+                        cancelled = True
+                        messages.append(make_tool_result_message(
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                            content=_CANCELLED_TOOL_RESULT,
+                        ))
+                        continue
                     self._print_tool_call(worker_label, tc)
                     result = registry.execute(tc)
                     self._print_tool_result(worker_label, tc, result.content)
@@ -350,6 +379,16 @@ class WorkerRunner:
                     ))
 
                 turns += 1
+                if cancelled or _is_cancelled():
+                    cancelled = True
+                    break
+                if control is not None:
+                    updates = control.drain_appends()
+                    if updates:
+                        messages.append(Message(
+                            role="user",
+                            content="\n\n".join([_DISPATCHER_UPDATE_HEADER, *updates]),
+                        ))
                 request_messages = advance_cache_breakpoint(
                     self._compact_messages(messages, worker_label)
                 )
@@ -357,10 +396,14 @@ class WorkerRunner:
                 tokens_used += response.total_tokens or 0
 
             # Final response (no tool calls)
-            if response.content:
+            if not cancelled and response.content:
                 last_text = response.content
 
-            truncated = bool(response.tool_calls) and turns >= effective_max_turns
+            truncated = (
+                not cancelled
+                and bool(response.tool_calls)
+                and turns >= effective_max_turns
+            )
             if truncated:
                 # Without a report the brain re-dispatches from scratch, so
                 # close out the pending calls and ask for one tool-free answer.
@@ -375,7 +418,12 @@ class WorkerRunner:
                         name=tc.name,
                         content=_TURN_LIMIT_TOOL_RESULT,
                     ))
-                messages.append(Message(role="user", content=_FORCED_REPORT_PROMPT))
+            if truncated or cancelled:
+                # Cancelled runs already closed out their tool calls above.
+                messages.append(Message(
+                    role="user",
+                    content=_FORCED_REPORT_PROMPT if truncated else _CANCELLED_REPORT_PROMPT,
+                ))
                 # Anthropic rejects a history containing tool_use/tool_result
                 # blocks when the request defines no tools, so the tools stay
                 # attached; the prompt forbids calling them. A tool call that
@@ -395,14 +443,15 @@ class WorkerRunner:
                     )
 
             worker_result = WorkerResult(
-                success=not truncated,
+                success=not truncated and not cancelled,
                 text=last_text or "",
                 turns_used=turns,
                 tokens_used=tokens_used,
                 duration_ms=_now_ms() - started_ms,
                 truncated=truncated,
                 # The log only helps the brain resume unfinished work.
-                action_log=_build_action_log(messages) if truncated else "",
+                action_log=_build_action_log(messages) if truncated or cancelled else "",
+                cancelled=cancelled,
             )
 
         except Exception as exc:
@@ -416,6 +465,7 @@ class WorkerRunner:
                 truncated=False,
                 error=str(exc),
                 action_log=_build_action_log(messages),
+                cancelled=cancelled,
             )
 
         if self._notes is not None and self._notes_summarizer is not None:

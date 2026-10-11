@@ -189,6 +189,7 @@ from .m0176_split_kano_proxy_utility_profile import (
 from .m0177_worker_gui_escalation import M0177WorkerGuiEscalation
 from .m0178_worker_notes import M0178WorkerNotes
 from .m0179_native_gui_backend import M0179NativeGuiBackend
+from .m0180_worker_control_and_preempt import M0180WorkerControlAndPreempt
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -368,4 +369,5 @@ ALL_MIGRATIONS = [
     M0177WorkerGuiEscalation(),
     M0178WorkerNotes(),
     M0179NativeGuiBackend(),
+    M0180WorkerControlAndPreempt(),
 ]

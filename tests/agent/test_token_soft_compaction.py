@@ -44,6 +44,7 @@ def _make_core(tmp_path, *, provider: str, preserve_turns: int = 2, soft_limit: 
         tools=SimpleNamespace(
             max_tool_iterations=3,
             memory_edit=SimpleNamespace(turn_retry_limit=1),
+            max_preempts_per_turn=3,
             memory_sync=SimpleNamespace(every_n_turns=None, max_retries=1),
         ),
         maintenance=SimpleNamespace(archive=SimpleNamespace()),

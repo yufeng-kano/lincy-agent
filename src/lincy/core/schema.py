@@ -260,6 +260,9 @@ class ToolsConfig(StrictConfigModel):
     """Tools configuration for agent capabilities."""
 
     max_tool_iterations: int = Field(default=10, ge=1)
+    # Times per turn the tool loop may drop pending tool calls to fold a
+    # newly queued message of the same conversation into the turn.
+    max_preempts_per_turn: int = Field(default=3, ge=0)
     allowed_paths: list[str] = []
     shell: ShellConfig = Field(default_factory=ShellConfig)
     memory_edit: MemoryEditToolConfig = Field(default_factory=MemoryEditToolConfig)

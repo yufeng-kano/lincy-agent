@@ -23,7 +23,6 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, tuple[Callable[..., Any], ToolDefinition]] = {}
-        self._side_effect_tools: frozenset[str] = frozenset()
         self._concurrency_safe_tools: frozenset[str] = frozenset()
 
     def register(
@@ -58,22 +57,6 @@ class ToolRegistry:
     def has_tool(self, name: str) -> bool:
         """Check if a tool is registered."""
         return name in self._tools
-
-    def set_side_effect_tools(self, names: frozenset[str]) -> None:
-        """Declare which registered tools have side effects.
-
-        Side-effect tools (send_message, memory_edit, etc.) may be
-        preempted by the responder when fresher inbound arrives.
-        """
-        self._side_effect_tools = names
-
-    def add_side_effect_tools(self, names: frozenset[str]) -> None:
-        """Add additional side-effect tool names to the existing set."""
-        self._side_effect_tools = self._side_effect_tools | names
-
-    def is_side_effect(self, name: str) -> bool:
-        """Return True when *name* is marked as a side-effect tool."""
-        return name in self._side_effect_tools
 
     def set_concurrency_safe_tools(self, names: frozenset[str]) -> None:
         """Declare which tools can be executed concurrently in a thread pool."""

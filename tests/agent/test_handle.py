@@ -61,16 +61,14 @@ def test_submit_defaults_to_cli_through_console_adapter():
     assert msg.metadata == {}
 
 
-def test_submit_cli_while_turn_in_flight_raises_busy():
+def test_submit_cli_while_turn_in_flight_is_queued():
+    """The running turn folds a queued cli message in at its next tool boundary."""
     handle, core, _ = _handle()
     handle.mark_ready()
     handle.submit("first")
+    handle.submit("second")
 
-    with pytest.raises(AgentBusy) as exc:
-        handle.submit("second")
-
-    assert exc.value.status_code == 409
-    assert core.enqueue.call_count == 1
+    assert core.enqueue.call_count == 2
 
 
 def test_submit_any_channel_before_ready_raises_busy():

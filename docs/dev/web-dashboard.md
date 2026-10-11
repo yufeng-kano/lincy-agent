@@ -210,7 +210,8 @@ Composer（送出 channel 選擇）：
 - 左側 mono `<select>` 選送出 channel，清單來自掛載時的 `GET /api/agent/channels`（`cli` 在前，不含 `system`）；請求失敗時至少提供 `["cli"]`
 - 選擇存在 `localStorage` 的 `lincy.agent.send-channel`；缺值或不在清單內就退回 `cli`
 - Enter 送出、Shift+Enter 換行、送出中禁用；成功只清空輸入框，訊息本身要等 `inbound_message` 事件回來才出現
-- 送出走 `POST /api/agent/messages`，成功回 202 `{"status": "accepted", "channel": "..."}`；失敗（409「Still processing the previous turn.」或「Agent is still starting.」、400 channel 不合法或內容空白）顯示紅色錯誤橫幅，狀態點同時轉為 Error
+- Agent 處理中仍可送出：訊息進 queue，進行中的 turn 會在下一個 tool call 前把它併入（見 [inbound-preempt.md](inbound-preempt.md)）
+- 送出走 `POST /api/agent/messages`，成功回 202 `{"status": "accepted", "channel": "..."}`；失敗（409「Agent is still starting.」、400 channel 不合法或內容空白）顯示紅色錯誤橫幅，狀態點同時轉為 Error
 
 前端檔案：`stores/agentEvents.ts`（Pinia store：events 依 seq 排序、以 `id` 去重、上限 3000 筆，另輸出 `busy`；同檔另外輸出配對與時間軸組裝的純函式，因為 `src/lib/` 被 `.gitignore` 排除）、`stores/chat.ts`（只負責 composer：channel 清單、選定 channel、送出狀態與錯誤）、`components/agent/AgentTimeline.vue`（渲染）。
 

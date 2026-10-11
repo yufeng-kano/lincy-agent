@@ -38,24 +38,15 @@ def test_submit_enqueues_cli_message():
     assert msg.priority == 0
 
 
-def test_submit_raises_busy_while_turn_in_flight():
-    adapter, agent, _ = _adapter()
-    adapter.submit("first")
-
-    with pytest.raises(AgentBusy, match="Still processing"):
-        adapter.submit("second")
-
-    assert agent.enqueue.call_count == 1
-
-
-def test_submit_accepted_again_after_turn_complete():
+def test_submit_queues_while_turn_in_flight():
+    """A second message is queued so the running turn can fold it in."""
     adapter, agent, sink = _adapter()
     adapter.submit("first")
-
-    adapter.on_turn_complete()
     adapter.submit("second")
 
     assert agent.enqueue.call_count == 2
+
+    adapter.on_turn_complete()
     assert isinstance(sink.events[-1], ProcessingFinishedEvent)
 
 

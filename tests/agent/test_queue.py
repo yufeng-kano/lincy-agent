@@ -215,3 +215,82 @@ class TestPendingCount:
         q.put(_make_msg())
         q.get()
         assert q.pending_count() == 0
+
+
+class TestReadyInboundForConversation:
+    def _scoped(self, content, scope_id, channel="discord"):
+        return InboundMessage(
+            channel=channel,
+            content=content,
+            priority=0,
+            sender="u",
+            metadata={"scope_id": scope_id},
+        )
+
+    def test_has_ready_matches_scope_only(self, tmp_path):
+        q = PersistentPriorityQueue(tmp_path / "q")
+        q.put(self._scoped("a", "discord:dm:1"))
+
+        assert q.has_ready_pending_inbound(scope_id="discord:dm:1", channel="discord")
+        assert not q.has_ready_pending_inbound(scope_id="discord:dm:2", channel="discord")
+        assert q.has_ready_pending_inbound_for_scope("discord:dm:1")
+
+    def test_has_ready_falls_back_to_channel_without_scope(self, tmp_path):
+        q = PersistentPriorityQueue(tmp_path / "q")
+        q.put(_make_msg(channel="cli"))
+
+        assert q.has_ready_pending_inbound(scope_id=None, channel="cli")
+        assert not q.has_ready_pending_inbound(scope_id=None, channel="discord")
+
+    def test_system_messages_never_count(self, tmp_path):
+        q = PersistentPriorityQueue(tmp_path / "q")
+        q.put(InboundMessage(
+            channel="system", content="hb", priority=5, sender="system",
+            metadata={"scope_id": "discord:dm:1"},
+        ))
+
+        assert not q.has_ready_pending_inbound(scope_id="discord:dm:1", channel="discord")
+        assert not q.has_ready_pending_inbound(scope_id=None, channel="system")
+
+    def test_take_moves_matching_messages_to_active_in_order(self, tmp_path):
+        q = PersistentPriorityQueue(tmp_path / "q")
+        q.put(self._scoped("first", "discord:dm:1"))
+        q.put(self._scoped("other", "discord:dm:2"))
+        q.put(self._scoped("second", "discord:dm:1"))
+
+        taken = q.take_ready_pending_inbound(scope_id="discord:dm:1", channel="discord")
+
+        assert [m.content for m, _ in taken] == ["first", "second"]
+        for _, receipt in taken:
+            assert receipt.parent == tmp_path / "q" / "active"
+            assert receipt.exists()
+        assert q.pending_inbound_count() == 1
+        remaining, _ = q.get()
+        assert remaining.content == "other"
+
+    def test_take_returns_empty_when_nothing_matches(self, tmp_path):
+        q = PersistentPriorityQueue(tmp_path / "q")
+        q.put(self._scoped("other", "discord:dm:2"))
+
+        assert q.take_ready_pending_inbound(scope_id="discord:dm:1", channel="discord") == []
+        assert q.pending_inbound_count() == 1
+
+    def test_take_skips_delayed_messages(self, tmp_path):
+        from datetime import timedelta
+
+        q = PersistentPriorityQueue(tmp_path / "q")
+        msg = self._scoped("later", "discord:dm:1")
+        msg.not_before = datetime.now(timezone.utc) + timedelta(hours=1)
+        q.put(msg)
+
+        assert q.take_ready_pending_inbound(scope_id="discord:dm:1", channel="discord") == []
+
+    def test_taken_receipts_ack_like_get(self, tmp_path):
+        q = PersistentPriorityQueue(tmp_path / "q")
+        q.put(_make_msg(channel="cli"))
+
+        [(_, receipt)] = q.take_ready_pending_inbound(scope_id=None, channel="cli")
+        q.ack(receipt)
+
+        assert not receipt.exists()
+        assert q.pending_inbound_count() == 0

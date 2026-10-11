@@ -27,7 +27,6 @@ class TestMacOSToolWiring:
             "mail_tool",
         ):
             assert registry.has_tool(name)
-            assert registry.is_side_effect(name)
 
     def test_disabled_apple_apps_skip_registration(
         self,

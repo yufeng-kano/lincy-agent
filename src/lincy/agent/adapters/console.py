@@ -6,7 +6,6 @@ session files already reference it; renaming is a separate migration.
 
 from __future__ import annotations
 
-import threading
 from typing import TYPE_CHECKING
 
 from ..handle import AgentBusy
@@ -37,8 +36,6 @@ class ConsoleAdapter:
         self._cancel = cancel_controller
 
         self._agent: AgentCore | None = None
-        self._turn_done = threading.Event()
-        self._turn_done.set()
 
     # ------------------------------------------------------------------
     # ChannelAdapter protocol
@@ -46,7 +43,6 @@ class ConsoleAdapter:
 
     def start(self, agent: AgentCore) -> None:
         self._agent = agent
-        self._turn_done.set()
 
     def send(self, message: OutboundMessage) -> None:
         # Display is handled by UI events; the console has no delivery target.
@@ -66,23 +62,23 @@ class ConsoleAdapter:
             else:
                 self._cancel.reset()
         self._ui_sink.emit(ProcessingFinishedEvent(channel=self.channel_name, interrupted=interrupted))
-        self._turn_done.set()
 
     def stop(self) -> None:
-        self._turn_done.set()
+        pass
 
     # ------------------------------------------------------------------
     # Operator input
     # ------------------------------------------------------------------
 
     def submit(self, content: str) -> None:
-        """Enqueue one operator message; reject while a console turn is in flight."""
+        """Enqueue one operator message.
+
+        A message sent while a cli turn is running is queued; the running
+        turn's preempt check folds it in at the next tool boundary.
+        """
         # The HTTP server is up before the agent loop starts the adapters.
         if self._agent is None:
             raise AgentBusy("Agent is still starting.")
-        if not self._turn_done.is_set():
-            raise AgentBusy("Still processing the previous turn.")
-        self._turn_done.clear()
         self._agent.enqueue(
             InboundMessage(
                 channel=self.channel_name,

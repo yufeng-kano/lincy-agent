@@ -245,3 +245,91 @@ class TestSyncFallback:
         )
         output = fn(prompt="Do the thing")
         assert "worker task" in output
+
+
+class FakeControlledRunner:
+    """Runner that blocks until released and exposes the control it was given."""
+
+    def __init__(self, result: WorkerResult):
+        self._result = result
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.control = None
+
+    def run(self, prompt: str, **kwargs) -> WorkerResult:
+        self.control = kwargs.get("control")
+        self.started.set()
+        self.release.wait(timeout=5)
+        return self._result
+
+
+class TestWorkerControlTools:
+    def _dispatch(self, runner):
+        from lincy.worker.control import WorkerControlRegistry
+        from lincy.worker.tool_adapter import create_worker_control_tools
+
+        controls = WorkerControlRegistry()
+        queue = MagicMock()
+        tool = create_worker_tool(
+            runner, Path("/tmp"), WorkerCounter(), queue=queue, controls=controls,
+        )
+        cancel, append = create_worker_control_tools(controls)
+        text = tool(prompt="do it", description="demo task")
+        label = text.split("[WORKER DISPATCHED] ")[1].split(" ")[0]
+        assert runner.started.wait(timeout=2)
+        return label, cancel, append, queue
+
+    def test_cancel_sets_the_running_worker_flag(self):
+        runner = FakeControlledRunner(_ok_result(success=False, cancelled=True))
+        label, cancel, _, queue = self._dispatch(runner)
+
+        text = cancel(worker=label)
+
+        assert "[WORKER CANCEL REQUESTED]" in text
+        assert label in text
+        assert runner.control is not None and runner.control.cancel.is_set()
+        runner.release.set()
+        assert _wait_until(lambda: queue.put.called)
+        assert "[WORKER CANCELLED]" in queue.put.call_args.args[0].content
+
+    def test_append_queues_an_update_for_the_running_worker(self):
+        runner = FakeControlledRunner(_ok_result())
+        label, _, append, _ = self._dispatch(runner)
+
+        text = append(worker=label, message="use folder B")
+
+        assert "[WORKER UPDATED]" in text
+        assert runner.control.drain_appends() == ["use folder B"]
+        assert append(worker=label, message="  ") == "Error: message is required"
+        runner.release.set()
+
+    def test_unknown_or_finished_worker_is_an_error(self):
+        runner = FakeControlledRunner(_ok_result())
+        label, cancel, append, queue = self._dispatch(runner)
+
+        assert cancel(worker="worker-999").startswith("Error: no running worker")
+        runner.release.set()
+        assert _wait_until(lambda: queue.put.called)
+        assert _wait_until(lambda: cancel(worker=label).startswith("Error"))
+        assert append(worker=label, message="late").startswith("Error: no running worker")
+
+    def test_definitions(self):
+        from lincy.worker.tool_adapter import (
+            WORKER_APPEND_DEFINITION,
+            WORKER_CANCEL_DEFINITION,
+        )
+
+        assert WORKER_CANCEL_DEFINITION.name == "worker_cancel"
+        assert WORKER_CANCEL_DEFINITION.required == ["worker"]
+        assert WORKER_APPEND_DEFINITION.name == "worker_append"
+        assert WORKER_APPEND_DEFINITION.required == ["worker", "message"]
+        assert "worker_append" in WORKER_TOOL_DEFINITION.description
+
+
+def test_format_cancelled_includes_action_log():
+    text = format_worker_result(
+        _ok_result(success=False, cancelled=True, action_log="1. echo({}) -> hi"),
+        "demo task",
+    )
+    assert "[WORKER CANCELLED]" in text
+    assert "[Action log]" in text
