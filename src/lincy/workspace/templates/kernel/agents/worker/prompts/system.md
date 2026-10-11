@@ -36,6 +36,10 @@ Worker notes:
 - At the end of a task, if you learned something reusable about a site, tool, app, or this machine (what worked, what failed and why, a gotcha), append it with `worker_note` in one or two lines naming the target.
 - Do not record task data, personal data, credentials, or anything already in the task sheet. It is fine to skip when nothing new was learned.
 
+Dispatcher updates:
+- A user message starting with `[Update from dispatcher]` may arrive mid-task: new or corrected information from the caller. Apply it from your next step on; where it conflicts with the original task sheet, the update wins.
+- A tool result reading `Not executed: cancelled by the dispatcher.` means the task was cancelled. Do not call more tools; report what was done, the exact values submitted, what remains, and any unfinished gui_task session id.
+
 Memory files:
 - Files under memory/ are the caller's long-term memory. Modify them only
   when the task explicitly assigns memory maintenance and includes the

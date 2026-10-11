@@ -344,7 +344,8 @@ def _run_responder(
     skill_registry: "SkillGovernanceRegistry | None" = None,
     turn_context: "TurnContext | None" = None,
     check_preempt: Callable[[], bool] | None = None,
-    max_preempts: int = 2,
+    on_preempt: Callable[[], bool] | None = None,
+    max_preempts: int = 3,
 ) -> LLMResponse:
     """Run responder with the tool-call loop and return the final response."""
     def _call_model(call_messages: list[Message]) -> LLMResponse:
@@ -468,12 +469,11 @@ def _run_responder(
                 tool_results_this_round[tool_call.id] = result
                 continue
 
-            # -- Preempt check: before a side-effect tool, see if
-            #    fresher inbound has arrived so the LLM can reconsider.
+            # -- Preempt check: before every tool, see if fresher inbound
+            #    for this conversation has arrived so the LLM can reconsider.
             if (
                 check_preempt is not None
                 and preempt_count < max_preempts
-                and registry.is_side_effect(tool_call.name)
                 and check_preempt()
             ):
                 from ..tools.registry import ToolResult as _TR
@@ -610,6 +610,13 @@ def _run_responder(
                 tr = tool_results_this_round.get(tc.id)
                 if tr is not None:
                     conversation.add_tool_result(tc.id, tc.name, tr.content)
+            # Fold the new inbound into this turn and keep going; when it
+            # is gone (e.g. removed meanwhile) end the turn as before.
+            if on_preempt is not None and on_preempt():
+                messages = builder.build(conversation)
+                messages = _prepare_turn_call_messages(messages, message_overlay)
+                response = _call_model(messages)
+                continue
             response.content = None
             response.tool_calls = []
             return response

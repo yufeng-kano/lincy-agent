@@ -90,7 +90,7 @@ channels:
     enabled: true
     debounce_seconds: 5
     max_wait_seconds: 30
-    dm_debounce_seconds: 18 # DM waits longer before assuming you're done
+    dm_debounce_seconds: 8 # DM quiet time before assuming you're done
     dm_max_wait_seconds: 180 # hard cap for one DM burst (slow typers)
     dm_typing_quiet_seconds: 35 # quiet time after last typing event
     send_delay_min: 1.0
@@ -127,6 +127,7 @@ heartbeat:
 # Tool security
 tools:
   max_tool_iterations: 50 # max tool call iterations per turn
+  max_preempts_per_turn: 3 # per turn: fold a new same-conversation message in, dropping pending tool calls
   allowed_paths:
     - "~"
     - "/tmp"

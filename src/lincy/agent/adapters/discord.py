@@ -199,12 +199,6 @@ class DiscordAdapter:
         self._presence_last_status: str | None = None
         self._startup_catchup_done = False
 
-        # Scope IDs with messages still in debounce buffer.
-        # Checked by the preempt mechanism so it can see pending
-        # messages before debounce flushes them into the queue.
-        self._buffered_scopes: set[str] = set()
-        self._buffered_scopes_lock = threading.Lock()
-
     @property
     def attachments_dir(self) -> str:
         return str(self._history.media_dir)
@@ -212,14 +206,6 @@ class DiscordAdapter:
     @property
     def history_store(self) -> DiscordHistoryStore:
         return self._history
-
-    def has_buffered_inbound(self, scope_id: str) -> bool:
-        """Return True if a debounce buffer holds messages for *scope_id*.
-
-        Called from the preempt checker (brain thread) so must be thread-safe.
-        """
-        with self._buffered_scopes_lock:
-            return scope_id in self._buffered_scopes
 
     # -- ChannelAdapter protocol --------------------------------------
 
@@ -1188,13 +1174,6 @@ class DiscordAdapter:
         buf.last_message_monotonic = now
         buf.latest_seq = max(buf.latest_seq or 0, seq)
 
-        # Signal preempt checker immediately (before debounce flush).
-        author_id = snapshot.get("author_id")
-        if author_id:
-            scope_id = f"discord:dm:{author_id}"
-            with self._buffered_scopes_lock:
-                self._buffered_scopes.add(scope_id)
-
     def _buffer_mention(self, channel_id: str, seq: int, snapshot: dict[str, Any]) -> None:
         assert self._loop is not None
         buf = self._mention_buffers.get(channel_id)
@@ -1276,11 +1255,6 @@ class DiscordAdapter:
         buf = self._dm_buffers.pop(channel_id, None)
         if buf is None or not buf.messages or self._agent is None:
             return
-        # Clear preempt signal — message is about to enter the queue.
-        author_id = buf.messages[-1].get("author_id")
-        if author_id:
-            with self._buffered_scopes_lock:
-                self._buffered_scopes.discard(f"discord:dm:{author_id}")
         msgs = sorted(buf.messages, key=lambda m: m.get("message_time") or "")
         last = msgs[-1]
         sender_name = self._contact_map.resolve("discord", last["author_id"]) or last["author_display_name"]

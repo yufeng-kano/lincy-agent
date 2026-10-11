@@ -41,7 +41,7 @@ class TestFilteredToolRegistry:
 
     def test_non_excluded_tools_pass_through(self):
         source = _source_registry()
-        source.set_side_effect_tools(frozenset({"read_file"}))
+        source.set_concurrency_safe_tools(frozenset({"read_file"}))
         view = FilteredToolRegistry(source, frozenset({"execute_shell"}))
 
         result = view.execute(ToolCall(id="c1", name="read_file", arguments={}))
@@ -49,7 +49,7 @@ class TestFilteredToolRegistry:
         assert result.is_error is False
         assert view.has_tool("read_file") is True
         # Unrelated accessors delegate to the source registry.
-        assert view.is_side_effect("read_file") is True
+        assert view.is_concurrency_safe("read_file") is True
 
     def test_tools_registered_after_construction_are_visible(self):
         source = _source_registry()

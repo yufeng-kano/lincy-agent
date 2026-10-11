@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..llm.schema import ToolDefinition, ToolParameter
 from ..tools.background_dispatch import dispatch_background_task
+from .control import WorkerControl, WorkerControlRegistry
 from .runner import WorkerResult, WorkerRunner
 
 if TYPE_CHECKING:
@@ -31,7 +32,9 @@ WORKER_TOOL_DEFINITION = ToolDefinition(
         "The result is delivered later as a [worker, from system] message; "
         "continue the conversation while waiting. "
         "[WORKER BUSY] means the concurrency cap is reached -- wait for a "
-        "running worker's result before dispatching more."
+        "running worker's result before dispatching more. "
+        "Use worker_append / worker_cancel with the dispatched label to "
+        "update or stop a running worker instead of dispatching a duplicate."
     ),
     parameters={
         "prompt": ToolParameter(
@@ -56,6 +59,43 @@ WORKER_TOOL_DEFINITION = ToolDefinition(
 )
 
 
+WORKER_CANCEL_DEFINITION = ToolDefinition(
+    name="worker_cancel",
+    description=(
+        "Stop a running worker subagent. It finishes the tool call in "
+        "progress, skips the rest, and reports what was done as a "
+        "[worker, from system] message marked [WORKER CANCELLED]."
+    ),
+    parameters={
+        "worker": ToolParameter(
+            type="string",
+            description="Worker label from [WORKER DISPATCHED], e.g. worker-3.",
+        ),
+    },
+    required=["worker"],
+)
+
+WORKER_APPEND_DEFINITION = ToolDefinition(
+    name="worker_append",
+    description=(
+        "Send new or corrected information to a running worker subagent. "
+        "The worker sees it as an [Update from dispatcher] message before "
+        "its next step; use this instead of dispatching a duplicate task."
+    ),
+    parameters={
+        "worker": ToolParameter(
+            type="string",
+            description="Worker label from [WORKER DISPATCHED], e.g. worker-3.",
+        ),
+        "message": ToolParameter(
+            type="string",
+            description="Self-contained update: what changed and what to do now.",
+        ),
+    },
+    required=["worker", "message"],
+)
+
+
 class WorkerCounter:
     """Thread-safe per-session counter for worker numbering."""
 
@@ -71,7 +111,9 @@ class WorkerCounter:
 
 def format_worker_result(result: WorkerResult, description: str) -> str:
     """Format a WorkerResult into a human-readable status string."""
-    if result.truncated:
+    if result.cancelled:
+        status = "CANCELLED"
+    elif result.truncated:
         status = "TRUNCATED"
     elif result.success:
         status = "SUCCESS"
@@ -101,6 +143,7 @@ def create_worker_tool(
     counter: WorkerCounter,
     queue: "PersistentPriorityQueue | None" = None,
     max_concurrent: int = 2,
+    controls: WorkerControlRegistry | None = None,
 ) -> Callable[..., str]:
     """Create worker tool callable bound to a WorkerRunner.
 
@@ -111,14 +154,19 @@ def create_worker_tool(
 
     Concurrency is capped by *max_concurrent*; excess dispatches return
     ``[WORKER BUSY]`` instead of queuing.
+
+    Background tasks register a ``WorkerControl`` in *controls* for their
+    lifetime so ``worker_cancel`` / ``worker_append`` can reach them.
     """
     slots = threading.BoundedSemaphore(max_concurrent)
+    control_registry = controls if controls is not None else WorkerControlRegistry()
 
     def _run(
         prompt: str,
         file_list: list[str] | None,
         turns_override: int | None,
         worker_label: str,
+        control: WorkerControl | None = None,
     ) -> WorkerResult:
         return runner.run(
             prompt,
@@ -126,6 +174,7 @@ def create_worker_tool(
             max_turns_override=turns_override,
             agent_os_dir=agent_os_dir,
             worker_label=worker_label,
+            control=control,
         )
 
     def _result_message(worker_label: str, description: str, body: str):
@@ -184,11 +233,20 @@ def create_worker_tool(
                 body = format_worker_result(result, description)
             return _result_message(worker_label, description, body)
 
+        control = WorkerControl(label=worker_label, description=description)
+
+        def _run_controlled() -> WorkerResult:
+            control_registry.register(control)
+            try:
+                return _run(prompt, file_list, turns_override, worker_label, control)
+            finally:
+                control_registry.unregister(worker_label)
+
         busy = dispatch_background_task(
             queue,
             slots,
             "WORKER",
-            lambda: _run(prompt, file_list, turns_override, worker_label),
+            _run_controlled,
             format_background,
         )
         if busy is not None:
@@ -204,3 +262,34 @@ def create_worker_tool(
         )
 
     return worker_impl
+
+
+def create_worker_control_tools(
+    controls: WorkerControlRegistry,
+) -> tuple[Callable[..., str], Callable[..., str]]:
+    """Create the ``worker_cancel`` and ``worker_append`` tool callables."""
+
+    def worker_cancel(worker: str = "", **_kwargs: Any) -> str:
+        control = controls.get(worker.strip())
+        if control is None:
+            return f"Error: no running worker named '{worker}'."
+        control.cancel.set()
+        return (
+            f"[WORKER CANCEL REQUESTED] {control.label} ({control.description}) "
+            "stops after its current step; its report arrives as a "
+            "[worker, from system] message marked [WORKER CANCELLED]."
+        )
+
+    def worker_append(worker: str = "", message: str = "", **_kwargs: Any) -> str:
+        if not message.strip():
+            return "Error: message is required"
+        control = controls.get(worker.strip())
+        if control is None:
+            return f"Error: no running worker named '{worker}'."
+        control.append(message.strip())
+        return (
+            f"[WORKER UPDATED] {control.label} ({control.description}) "
+            "sees the update before its next step."
+        )
+
+    return worker_cancel, worker_append

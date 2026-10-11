@@ -31,6 +31,18 @@ runner 實例同時給兩個呼叫者用：
 - `create_worker_tool(queue=None)` 時退回同步執行（測試 / 直接呼叫相容）
 - Registry 的 concurrency-safe 標記已移除：dispatch 是即時的，不需要 tool-loop 層的 ThreadPool 平行執行
 
+## 中途控制：`worker_cancel` / `worker_append`
+
+派出去的 worker 可以由 brain 中途停掉或補資訊，實作在 `src/lincy/worker/control.py` 與 `tool_adapter.py`：
+
+- 每個背景任務在執行期間於 `WorkerControlRegistry` 登記一個 `WorkerControl`（label、description、cancel `Event`、append 清單），結束時移除。結果訊息回來後 label 就查不到，兩個工具都回 `Error: no running worker named ...`
+- `worker_append(worker, message)`：把 message 放進 append 清單。`WorkerRunner.run` 在每輪 tool result 補完、下一次模型呼叫之前 drain，合成一則 `[Update from dispatcher]` user message 接在 messages 後面（這個位置滿足 Anthropic 對 tool_use / tool_result 順序的要求）。worker prompt 規定更新與原任務單衝突時以更新為準
+- `worker_cancel(worker)`：set cancel `Event`。runner 在每個 tool call 執行前檢查，命中就把該 call 與其後的 call 填入 `Not executed: cancelled by the dispatcher.`；每輪結束也檢查一次，避免多打一次模型。正在跑的那個 tool call 會跑完，佔用的 `task_max_concurrency` slot 要等它回來才釋放
+- 取消後走與 turn 上限相同的強制回報：加一則 user 訊息要求不呼叫工具、回報已完成事項、實際送出的值、未完成項與遺留檔案。結果 `WorkerResult.cancelled=True`、`success=False`、附 action log；`format_worker_result` 標頭為 `[WORKER CANCELLED]`
+- 兩個工具從 worker 自己的 registry 排除（與 `worker` 一樣，防遞迴）。Maintenance 直接呼叫 `WorkerRunner.run` 時不帶 `control`，行為不變
+
+Brain 端規則（brain prompt）：需求變更、使用者補資料、任務單漏東西時用 `worker_append`，不要重派一個做同樣事情的 worker；任務不再需要或方向錯了用 `worker_cancel`；收到 `CANCELLED` 結果時依回報決定是否以新任務單重派。
+
 ## 記憶寫入政策
 
 - 共用 registry 的 `write_file` / `edit_file` 是 guarded 版：`memory/` 路徑一律回 `Use memory_edit` 錯誤（`tool_setup.py` 的 `_is_memory_path` guard）

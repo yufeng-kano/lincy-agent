@@ -296,7 +296,7 @@ class AgentHandle(Protocol):
 ```
 
 - `submit()` 的 channel 規則（預設 `cli`、`system` 不可送、必須是已註冊 adapter）從 `cli/app.py` 的 closure 搬進 handle 實作。channel 比對是精確比對，不做大小寫正規化。content strip 後為空 → `InvalidRequest`。`cli` 走 `ConsoleAdapter.submit()`，其他 channel 直接 `enqueue(InboundMessage(...))`，`metadata={"source": "web_console"}`。
-- `_Handle.submit()` 在 `mark_ready()` 之前對**所有** channel raise `AgentBusy("Agent is still starting.")`。理由：HTTP server 先於 `start()` 起來，`queue.recover()` 還沒跑時 `put()` 的序號從 0 開始，會覆寫磁碟上既有的 pending 檔。`ConsoleAdapter.submit()` 自己也有同樣的檢查；上一個 `cli` turn 還沒結束時 raise `AgentBusy("Still processing the previous turn.")`。
+- `_Handle.submit()` 在 `mark_ready()` 之前對**所有** channel raise `AgentBusy("Agent is still starting.")`。理由：HTTP server 先於 `start()` 起來，`queue.recover()` 還沒跑時 `put()` 的序號從 0 開始，會覆寫磁碟上既有的 pending 檔。`ConsoleAdapter.submit()` 自己也有同樣的檢查。上一個 `cli` turn 還沒結束時**不再**拒絕：訊息直接進 queue，由進行中的 turn 在下一個 tool call 前併入（見 [inbound-preempt.md](inbound-preempt.md)）。
 - `state()` 的優先序：`STOPPING` > `STARTING` > `BUSY` > `READY`。`request_shutdown()` / `request_restart()` 一呼叫就進 `STOPPING`；`mark_ready()` 之前是 `STARTING`。
 - `cancel_turn()` 只呼叫 `TurnCancelController.request()`，不丟 sentinel。
 - `token_status()` 回傳 `AgentCore.get_token_status_text()`。`CtxStatusEvent`（wire `ctx_status`）原本由 Textual 輪詢後發出，現在由 `AgentCore._finalize_turn_token_status()` 在 brain turn 的 responder 結束、token 統計定案時，經 `UiEventConsole.print_ctx_status()` 發出，`text` 同 `get_token_status_text()`。Web Agent 頁 header 的 chip 靠它更新。

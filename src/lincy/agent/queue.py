@@ -349,30 +349,76 @@ class PersistentPriorityQueue:
             results.append((f, msg))
         return results
 
+    # ------------------------------------------------------------------
+    # Preempt support: ready inbound for the conversation being processed
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _matches_conversation(
+        msg: QueueItem, *, scope_id: str | None, channel: str,
+    ) -> bool:
+        """Return True for a user-facing inbound in the given conversation.
+
+        A scope (Discord DM / channel, Gmail thread, ...) is the exact
+        conversation; without one the whole channel counts (cli).
+        """
+        if not isinstance(msg, InboundMessage) or msg.channel == "system":
+            return False
+        if scope_id is not None:
+            return msg.metadata.get("scope_id") == scope_id
+        return msg.channel == channel
+
     def has_ready_pending_inbound_for_scope(self, scope_id: str) -> bool:
         """Return True when a ready non-system inbound exists for *scope_id*."""
-        for _, msg in self.scan_pending():
-            if msg.channel == "system":
-                continue
-            if _is_future(msg.not_before):
-                continue
-            if msg.metadata.get("scope_id") == scope_id:
-                return True
-        return False
+        return self.has_ready_pending_inbound(scope_id=scope_id, channel="")
 
-    def has_ready_pending_inbound_for_channel(self, channel: str) -> bool:
-        """Return True when a ready non-system inbound exists for *channel*.
+    def has_ready_pending_inbound(
+        self, *, scope_id: str | None, channel: str,
+    ) -> bool:
+        """Return True when a ready inbound for this conversation is queued.
 
-        Used by the preempt checker to avoid cancelling side-effect tools
-        due to unrelated traffic on other channels.
+        Reads the in-memory ready queue, so delayed messages and other
+        channels never count.
         """
-        for _, msg in self.scan_pending(channel=channel):
-            if msg.channel == "system":
+        with self._mem.mutex:
+            return any(
+                self._matches_conversation(item, scope_id=scope_id, channel=channel)
+                for _, _, item, _ in self._mem.queue
+            )
+
+    def take_ready_pending_inbound(
+        self, *, scope_id: str | None, channel: str,
+    ) -> list[tuple[InboundMessage, Path]]:
+        """Pull every ready inbound for this conversation out of the queue.
+
+        Each message moves to ``active/`` exactly like ``get()`` would, so the
+        caller must ``ack()`` the returned receipts.  Returned in queue order.
+        """
+        import heapq
+
+        taken: list[tuple[int, InboundMessage, Path | None]] = []
+        with self._mem.mutex:
+            keep = []
+            for entry in self._mem.queue:
+                _, seq, item, filepath = entry
+                if self._matches_conversation(item, scope_id=scope_id, channel=channel):
+                    taken.append((seq, item, filepath))
+                else:
+                    keep.append(entry)
+            if taken:
+                heapq.heapify(keep)
+                self._mem.queue = keep
+        results: list[tuple[InboundMessage, Path]] = []
+        for _, msg, filepath in sorted(taken, key=lambda t: t[0]):
+            assert filepath is not None
+            active_path = self._active_dir / filepath.name
+            try:
+                filepath.rename(active_path)
+            except FileNotFoundError:
+                # Removed externally (schedule_action remove) after it was queued.
                 continue
-            if _is_future(msg.not_before):
-                continue
-            return True
-        return False
+            results.append((msg, active_path))
+        return results
 
     def remove_pending(self, filepath: Path) -> bool:
         """Remove a specific pending message by filepath.

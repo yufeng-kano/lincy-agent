@@ -748,7 +748,15 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
     worker_counter = None
     worker_extra_tools = {}
     if worker_config is not None and worker_config.enabled:
-        from ..worker import WORKER_TOOL_DEFINITION, WorkerRunner, create_worker_tool
+        from ..worker import (
+            WORKER_APPEND_DEFINITION,
+            WORKER_CANCEL_DEFINITION,
+            WORKER_TOOL_DEFINITION,
+            WorkerControlRegistry,
+            WorkerRunner,
+            create_worker_control_tools,
+            create_worker_tool,
+        )
         from ..worker.tool_adapter import WorkerCounter
         from .tool_setup import build_worker_file_tools
 
@@ -796,8 +804,10 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             else:
                 logger.info("Compactor disabled; worker notes compression is off")
 
-        # Always exclude worker itself to prevent recursion.
-        excluded = frozenset(worker_config.excluded_tools) | {"worker"}
+        # Always exclude the worker tools themselves to prevent recursion.
+        excluded = frozenset(worker_config.excluded_tools) | {
+            "worker", "worker_cancel", "worker_append",
+        }
         worker_runner = WorkerRunner(
             worker_client,
             registry,
@@ -816,6 +826,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             notes_summarizer=worker_notes_summarizer,
         )
         worker_counter = WorkerCounter()
+        worker_controls = WorkerControlRegistry()
 
     # Periodic memory backup
     memory_backup_mgr = None
@@ -1001,7 +1012,6 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         ),
         AGENT_NOTE_DEFINITION,
     )
-    registry.add_side_effect_tools(frozenset({"agent_task", "agent_note"}))
 
     # === worker subagent tool ===
     # Runner itself was built earlier (before AgentCore); only register the
@@ -1015,9 +1025,13 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 worker_counter,
                 queue=pqueue,
                 max_concurrent=worker_config.task_max_concurrency,
+                controls=worker_controls,
             ),
             WORKER_TOOL_DEFINITION,
         )
+        worker_cancel, worker_append = create_worker_control_tools(worker_controls)
+        registry.register("worker_cancel", worker_cancel, WORKER_CANCEL_DEFINITION)
+        registry.register("worker_append", worker_append, WORKER_APPEND_DEFINITION)
 
     # All registrations are done by now, so unknown exclusions are real typos.
     validate_excluded_tools(
