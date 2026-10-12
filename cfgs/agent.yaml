@@ -113,6 +113,11 @@ channels:
     auto_read_images_in_guild: true
     auto_read_image_max_per_batch: 3
     auto_read_image_max_mb: 10
+    auto_read_audio: true
+    auto_read_audio_in_dm: true
+    auto_read_audio_in_guild: true
+    auto_read_audio_max_per_batch: 3
+    auto_read_audio_max_mb: 14 # keep under the audio tool's 14 MB inline cap
 
 # Autonomous heartbeat
 heartbeat:
@@ -280,6 +285,15 @@ agents:
     enabled: true
     llm: cfgs/llm/kano-proxy/vision.yaml
     llm_request_timeout: 600
+    llm_transient_retries: 1
+    warn_on_failure: true
+
+  # Audio sub-agent: transcript plus tone/mood cues for voice messages.
+  # Always delegated; the brain's wire format cannot carry audio.
+  audio:
+    enabled: true
+    llm: cfgs/llm/kano-proxy/audio.yaml
+    llm_request_timeout: 180
     llm_transient_retries: 1
     warn_on_failure: true
 

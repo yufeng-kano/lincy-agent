@@ -140,6 +140,8 @@ class OllamaNativeClient:
 
     @staticmethod
     def _split_content_parts(parts: list[ContentPart]) -> tuple[str | None, list[str]]:
+        if any(part.type == "audio" for part in parts):
+            raise ValueError("Ollama native provider does not support audio content")
         text_parts = [part.text for part in parts if part.type == "text" and part.text]
         images = [part.data for part in parts if part.type == "image" and part.data]
         text = "\n".join(text_parts) if text_parts else None

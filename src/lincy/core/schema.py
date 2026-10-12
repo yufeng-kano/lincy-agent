@@ -27,6 +27,7 @@ from .provider_schema import (
     AnthropicConfig as AnthropicConfig,
     HeyrouteConfig as HeyrouteConfig,
     KanoProxyConfig as KanoProxyConfig,
+    KanoProxyOpenAIConfig as KanoProxyOpenAIConfig,
     GeminiThinkingConfig as GeminiThinkingConfig,
     GeminiCapabilities as GeminiCapabilities,
     GeminiReasoningCapabilities as GeminiReasoningCapabilities,
@@ -568,6 +569,12 @@ class DiscordChannelConfig(StrictConfigModel):
     auto_read_images_in_guild: bool = True
     auto_read_image_max_per_batch: int = Field(default=3, ge=0, le=20)
     auto_read_image_max_mb: int = Field(default=10, ge=1, le=200)
+    auto_read_audio: bool = True
+    auto_read_audio_in_dm: bool = True
+    auto_read_audio_in_guild: bool = True
+    auto_read_audio_max_per_batch: int = Field(default=3, ge=0, le=20)
+    # Must stay under the audio tool's inline upload cap (see tools/builtin/audio.py).
+    auto_read_audio_max_mb: int = Field(default=14, ge=1, le=200)
 
     @model_validator(mode="before")
     @classmethod

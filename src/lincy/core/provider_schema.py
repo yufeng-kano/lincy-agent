@@ -30,6 +30,10 @@ class LLMProviderConfig(StrictConfigModel):
     def get_vision(self) -> bool:
         return self.vision
 
+    def get_audio(self) -> bool:
+        """Whether the adapter can carry audio input parts to this model."""
+        return False
+
     @staticmethod
     def _clean_base_url(
         value: str,
@@ -169,6 +173,7 @@ class OpenAIReasoningConfig(StrictConfigModel):
 
 class OpenAICapabilities(StrictConfigModel):
     vision: bool = False
+    audio: bool = False
     reasoning: "OpenAIReasoningCapabilities"
 
 
@@ -227,6 +232,9 @@ class OpenAIConfig(LLMProviderConfig):
 
     def get_vision(self) -> bool:
         return bool(self.capabilities and self.capabilities.vision)
+
+    def get_audio(self) -> bool:
+        return bool(self.capabilities and self.capabilities.audio)
 
     def supports_response_schema(self) -> bool:
         return True
@@ -445,6 +453,33 @@ class KanoProxyConfig(AnthropicConfig):
         return KanoProxyClient(self)
 
 
+class KanoProxyOpenAIConfig(OpenAIConfig):
+    """Kano Proxy gateway on its OpenAI-compatible Chat Completions surface.
+
+    Audio input only exists on this surface; the gateway's Anthropic surface
+    (``KanoProxyConfig``) has no audio block. Same adapter as OpenAI, only the
+    gateway URL and key differ.
+    """
+
+    provider: Literal["kano_proxy_openai"] = "kano_proxy_openai"
+    api_key_env: str | None = "KANO_PROXY_API_KEY"
+    base_url: str = Field(
+        default="https://kano-proxy.yuufeng.com/g/lincy/openai/v1",
+        validate_default=True,
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        return cls._clean_base_url(value, forbidden=[
+            (
+                ("/chat/completions",),
+                "Kano Proxy OpenAI base_url must point to the /openai/v1 surface "
+                "root, not /chat/completions",
+            ),
+        ])
+
+
 class GeminiThinkingConfig(StrictConfigModel):
     """Gemini thinking config.
 
@@ -459,6 +494,7 @@ class GeminiThinkingConfig(StrictConfigModel):
 
 class GeminiCapabilities(StrictConfigModel):
     vision: bool = False
+    audio: bool = False
     reasoning: "GeminiReasoningCapabilities"
 
 
@@ -525,6 +561,9 @@ class GeminiConfig(LLMProviderConfig):
 
     def get_vision(self) -> bool:
         return bool(self.capabilities and self.capabilities.vision)
+
+    def get_audio(self) -> bool:
+        return bool(self.capabilities and self.capabilities.audio)
 
     def supports_response_schema(self) -> bool:
         return True
@@ -649,6 +688,11 @@ class OpenRouterConfig(LLMProviderConfig):
     reasoning: OpenRouterReasoningConfig | None = None
     verbosity: Literal["low", "medium", "high", "max"] | None = None
     provider_routing: OpenRouterProviderRoutingConfig | None = None
+    # Whether the routed model accepts input_audio parts (OpenRouter audio inputs).
+    audio: bool = False
+
+    def get_audio(self) -> bool:
+        return self.audio
 
     def validate_reasoning(self, *, source_path: Path) -> "OpenRouterConfig":
         reasoning = self.reasoning
@@ -690,6 +734,7 @@ LLMConfig = Annotated[
     | KanoProxyConfig
     | GeminiConfig
     | OpenRouterConfig
-    | LiteLLMConfig,
+    | LiteLLMConfig
+    | KanoProxyOpenAIConfig,
     Field(discriminator="provider"),
 ]

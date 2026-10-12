@@ -53,6 +53,9 @@ from ..tools import (
     ShellExecutor,
     ToolRegistry,
     VisionAgent,
+    AudioAgent,
+    READ_AUDIO_BY_SUBAGENT_DEFINITION,
+    create_read_audio_by_subagent,
     create_calendar_tool,
     create_edit_file,
     create_execute_shell,
@@ -151,6 +154,7 @@ def setup_tools(
     use_own_vision_ability: bool = False,
     own_vision_active: Callable[[], bool] | None = None,
     vision_agent: VisionAgent | None = None,
+    audio_agent: AudioAgent | None = None,
     gui_worker: GUIWorker | None = None,
     gui_lock: threading.Lock | None = None,
     screenshot_max_width: int | None = None,
@@ -357,6 +361,15 @@ def setup_tools(
             "read_image",
             create_read_image_with_sub_agent(allowed_paths, agent_os_dir, vision_agent),
             READ_IMAGE_DEFINITION,
+        )
+
+    # Audio has no own-ability path: the brain's wire format carries no audio
+    # block, so listening is always delegated to the audio sub-agent.
+    if audio_agent is not None:
+        registry.register(
+            "read_audio_by_subagent",
+            create_read_audio_by_subagent(allowed_paths, agent_os_dir, audio_agent),
+            READ_AUDIO_BY_SUBAGENT_DEFINITION,
         )
 
     if adaptive_own_vision and vision_gate is not None:

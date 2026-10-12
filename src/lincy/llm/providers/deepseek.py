@@ -75,6 +75,8 @@ class DeepSeekClient(OpenAICompatibleClient):
     def _convert_content_parts(parts: list[ContentPart]) -> list[dict[str, Any]]:
         if any(part.type == "image" for part in parts):
             raise ValueError("DeepSeek provider does not support image content")
+        if any(part.type == "audio" for part in parts):
+            raise ValueError("DeepSeek provider does not support audio content")
         return OpenAICompatibleClient._convert_content_parts(parts)
 
     def _convert_messages(self, messages: list[Message]) -> list[OpenAIMessagePayload]:

@@ -207,7 +207,7 @@ class WorkerRunner:
             for part in content:
                 if part.type == "text" and part.text:
                     total += _estimate_text_tokens(part.text)
-                elif part.type == "image":
+                elif part.type in ("image", "audio"):
                     # Worker traffic is text-heavy. Use a simple fixed cost so
                     # multimodal messages do not look artificially free.
                     total += 256

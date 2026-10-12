@@ -1,0 +1,25 @@
+# Kano Proxy OpenAI-compatible Chat Completions profile for the audio sub-agent.
+# Audio input only exists on the gateway's /openai/v1 surface: the Anthropic
+# Messages format used by every other kano-proxy profile has no audio block.
+provider: kano_proxy_openai
+# Gateway model id. The group must route it to an audio-capable upstream
+# (antigravity Gemini 3.8 Flash); the first target decides, no fallthrough.
+model: audio-agent
+# Dedicated Kano Proxy key.
+api_key_env: KANO_PROXY_API_KEY
+# Gateway OpenAI surface root. The client appends /chat/completions.
+base_url: https://kano-proxy.yuufeng.com/g/lincy/openai/v1
+# Transcript plus delivery notes; voice messages are short.
+max_tokens: 8192
+# HTTP timeout in seconds.
+request_timeout: 180.0
+temperature: null
+# Thinking stays on the gateway tier of the routed model; no reasoning_effort sent.
+reasoning: null
+capabilities:
+  vision: true
+  audio: true
+  reasoning:
+    supports_toggle: false
+    supported_efforts: []
+    supports_max_tokens: false

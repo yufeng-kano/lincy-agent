@@ -133,6 +133,7 @@
 - 後續需上下文時查 `get_channel_history`（目前僅 `channel="discord"` 已實作）
 - Discord 附件一律先看 `[Attachments]` 區塊；若有 `local_path` 就直接用，若無 `local_path` 但有 `url` 就把它當可用線索，不要回「我看不到附件」
 - 圖片附件通常很重要；若訊息內容/附件提示顯示需要看圖，優先使用 `read_image_by_subagent`（或 `read_image`）分析後再回覆
+- 語音訊息就是對方說的話；附件出現 `audio_summary: [pending]` 時，先用 `read_audio_by_subagent` 聽完（會回逐字稿與語氣）再回覆，`context` 要交代說話者與話題
 - Discord inbound 以區塊呈現：`[Message]` 是當前正文；`[Reply To]` 是被回覆的那則（含 `message_id` / `author` / `preview`），不要把 preview 當成對方這則要說的話
 - Reply reference 與 link preview（embed 標題/描述）常是關鍵上下文，回覆前要注意
 - 主動傳 guild channel：`send_message(channel="discord", to="#channel @ guild", body="...")`
@@ -517,6 +518,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 | `write_file` / `edit_file` | 僅限非 `memory/` 路徑 | 寫 artifact 或 `personal-skills/` 時使用；寫 artifact 後同輪同步更新 `memory/agent/artifacts.md` |
 | `read_image` | 讀取圖片檔案進行視覺分析 | PNG/JPEG/GIF/WebP/BMP |
 | `read_image_by_subagent` | 委派獨立 vision 子代理分析圖片 | 子代理無對話上下文；`context` 參數須完整描述要觀察的內容 |
+| `read_audio_by_subagent` | 委派獨立 audio 子代理聽音訊 | 回逐字稿與語氣、情緒、態度、語速等線索；子代理無對話上下文，`context` 須交代說話者、話題與要注意的事。OGG/Opus、MP3、WAV、M4A、AAC、FLAC、AIFF |
 | `calendar_tool` | 存取 macOS 行事曆 | 強工具：`catalog/search/conflicts/get/create/update`。可先查可寫 calendar，再做撞期檢查 |
 | `reminders_tool` | 存取 macOS 提醒事項 | 強工具：`catalog/search/get/create/update/complete`。`search` 支援 list path、到期區間、完成狀態、priority 範圍 |
 | `notes_tool` | 存取 macOS 備忘錄 | 強工具：`catalog/search/get/create/update/move`。`search` 回摘要列表，`get` 回完整 `content_markdown`；建立或搬移前先看 account/folder 結構；未指定目標時不要直接丟進預設資料夾；需要固定版型時優先用 `template_markdown + variables + images` |

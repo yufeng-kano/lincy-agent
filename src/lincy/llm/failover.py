@@ -21,7 +21,7 @@ from .http_error import (
     is_transient_error,
     parse_retry_after_seconds,
 )
-from .schema import ContentPart, LLMResponse, Message, ToolDefinition
+from .schema import LLMResponse, Message, ToolDefinition
 
 T = TypeVar("T")
 
@@ -52,6 +52,7 @@ class FailoverCandidate:
     label: str
     client: LLMClient
     supports_vision: bool = True
+    supports_audio: bool = False
     provider: str | None = None
     model: str | None = None
 
@@ -167,14 +168,22 @@ def preferred_candidate_supports_vision(
 def messages_contain_images(messages: Sequence[Message]) -> bool:
     """Return True when any message content includes an image part."""
 
+    return _messages_contain_part(messages, "image")
+
+
+def messages_contain_audio(messages: Sequence[Message]) -> bool:
+    """Return True when any message content includes an audio part."""
+
+    return _messages_contain_part(messages, "audio")
+
+
+def _messages_contain_part(messages: Sequence[Message], part_type: str) -> bool:
     for message in messages:
         content = message.content
         if not isinstance(content, list):
             continue
         for part in content:
-            if isinstance(part, ContentPart) and part.type == "image":
-                return True
-            if getattr(part, "type", None) == "image":
+            if getattr(part, "type", None) == part_type:
                 return True
     return False
 
@@ -345,14 +354,23 @@ class FailoverLLMClient:
         candidates = self._ordered_candidates()
         last_error: Exception | None = None
         has_images = messages_contain_images(messages)
+        has_audio = messages_contain_audio(messages)
         attempted = False
 
-        for index, candidate in enumerate(candidates):
+        def _can_serve(candidate: FailoverCandidate) -> bool:
             if has_images and not candidate.supports_vision:
+                return False
+            if has_audio and not candidate.supports_audio:
+                return False
+            return True
+
+        for index, candidate in enumerate(candidates):
+            if not _can_serve(candidate):
                 logger.warning(
-                    "%sSkipping %s: model lacks vision but prompt contains images",
+                    "%sSkipping %s: prompt contains %s the model cannot take",
                     _log_prefix(self._label),
                     candidate.label,
+                    "images" if has_images and not candidate.supports_vision else "audio",
                 )
                 continue
 
@@ -371,10 +389,7 @@ class FailoverLLMClient:
                     self._cooldown_seconds,
                 )
                 _COOLDOWNS.mark(candidate.key, cooldown)
-                remaining = any(
-                    later.supports_vision or not has_images
-                    for later in candidates[index + 1 :]
-                )
+                remaining = any(_can_serve(later) for later in candidates[index + 1 :])
                 if not remaining:
                     raise
 
@@ -394,6 +409,10 @@ class FailoverLLMClient:
         if has_images and not attempted:
             raise RuntimeError(
                 "No vision-capable LLM available for a prompt that contains images"
+            )
+        if has_audio and not attempted:
+            raise RuntimeError(
+                "No audio-capable LLM available for a prompt that contains audio"
             )
         raise RuntimeError("Failover client has no candidates")
 

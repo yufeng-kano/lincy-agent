@@ -386,6 +386,7 @@ def load_config(
 
     config = AppConfig.model_validate(raw)
     _validate_vision_coverage(config)
+    _validate_audio_agent(config)
     return config
 
 
@@ -410,6 +411,26 @@ def _validate_vision_coverage(config: AppConfig) -> None:
                 f"support vision, but agents.{agent_name}.use_own_vision_ability "
                 "is true"
             )
+
+
+def _validate_audio_agent(config: AppConfig) -> None:
+    """Fail fast when the audio sub-agent's primary LLM cannot take audio.
+
+    Every candidate in its chain is checked: the audio agent exists only to
+    listen, so a candidate that cannot carry audio parts can never serve it.
+    """
+    agent_config = config.agents.get("audio")
+    if agent_config is None or not agent_config.enabled:
+        return
+    for index, model in enumerate([agent_config.llm, *agent_config.llm_fallbacks]):
+        if model.get_audio():
+            continue
+        field = "llm" if index == 0 else f"llm_fallbacks[{index - 1}]"
+        raise SystemExit(
+            f"Config error: agents.audio.{field} "
+            f"(provider={model.provider}, model={model.model}) does not "
+            "support audio input"
+        )
 
 
 def load_app_timezone(config_path: str = "agent.yaml") -> str:

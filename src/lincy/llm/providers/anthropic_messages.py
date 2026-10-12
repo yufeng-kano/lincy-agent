@@ -32,6 +32,8 @@ def has_active_thinking(thinking: dict[str, Any] | None) -> bool:
 def content_parts_to_blocks(parts: list[ContentPart]) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     for part in parts:
+        if part.type == "audio":
+            raise ValueError("Anthropic Messages API has no audio content block")
         if part.type == "text" and part.text is not None:
             block: dict[str, Any] = {"type": "text", "text": part.text}
             if part.cache_control is not None:

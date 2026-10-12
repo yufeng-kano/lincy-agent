@@ -134,7 +134,8 @@ description: "Discord DM/guild 自然回覆、資料整理呈現策略與 guild/
 - 先看 `[Attachments]` 區塊：若有 `local_path`，代表 runtime 已經把附件下載到本地，可直接拿來用
 - 若沒有 `local_path` 但有 `url`，代表附件至少有可追的連結；不要直接回「我看不到附件」
 - 圖片附件若需要理解畫面內容，先 `read_image_by_subagent`（或 `read_image`）再回覆
-- 非圖片附件若是文字型檔案，可用 `read_file` 看內容；若是音訊、PDF、壓縮檔或其他無法直接讀的格式，先根據 `local_path` / `url` 做下一步，不要把「系統沒給我」當理由回給對方
+- 語音訊息（`audio/*` 附件，通常附 `audio_summary: [pending]`）先 `read_audio_by_subagent` 聽完再回覆；它回的是逐字稿加語氣線索，回覆時把語氣納入考量
+- 非圖片附件若是文字型檔案，可用 `read_file` 看內容；若是 PDF、壓縮檔或其他無法直接讀的格式，先根據 `local_path` / `url` 做下一步，不要把「系統沒給我」當理由回給對方
 
 inbound 區塊範例：
 

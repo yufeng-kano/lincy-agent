@@ -4,7 +4,7 @@ from .schema import ContentPart
 
 
 def content_to_text(content: str | list[ContentPart] | None) -> str:
-    """Extract plain text from content, skipping image parts."""
+    """Extract plain text from content, skipping image and audio parts."""
     if content is None:
         return ""
     if isinstance(content, str):

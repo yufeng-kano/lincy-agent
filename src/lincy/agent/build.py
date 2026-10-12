@@ -29,7 +29,7 @@ from ..memory import BM25MemorySearch, MemoryEditor, MemoryEditPlanner, SessionC
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
 from ..session.debug_client import wrap_llm_client_with_session_debug
-from ..tools import VisionAgent
+from ..tools import AudioAgent, VisionAgent
 from ..tools.builtin.shell_task import SHELL_KEYS, ShellTaskManager
 from ..ui.sink import FanoutUiSink
 from ..workspace import WorkspaceManager
@@ -570,6 +570,23 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 model_fingerprint=model_fingerprint,
             )
 
+    # Audio agent initialization: always a sub-agent (no own-audio path).
+    audio_agent_instance: AudioAgent | None = None
+    if "audio" in config.agents and config.agents["audio"].enabled:
+        audio_config = config.agents["audio"]
+        audio_prompt = _load_agent_prompt("audio")
+        if audio_prompt is not None:
+            audio_agent_instance = AudioAgent(
+                _build_subagent_client("audio", audio_config),
+                audio_prompt,
+                cache_dir=agent_os_dir / "cache" / "audio",
+                model_fingerprint=json.dumps(
+                    audio_config.llm.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+
     # GUI automation agent initialization
     gui_manager_instance: GUIManager | None = None
     gui_worker_instance: GUIWorker | None = None
@@ -713,6 +730,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         use_own_vision_ability=use_own_vision,
         own_vision_active=own_vision_active,
         vision_agent=vision_agent_instance,
+        audio_agent=audio_agent_instance,
         gui_worker=gui_worker_instance,
         gui_lock=gui_lock,
         screenshot_max_width=ss_max_width,

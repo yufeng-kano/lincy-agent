@@ -66,7 +66,7 @@ def test_all_kano_proxy_profiles_load_through_real_loader(monkeypatch):
     assert profile_paths
     for profile_path in profile_paths:
         config = config_module.resolve_llm_config(profile_path)
-        assert config.provider == "kano_proxy"
+        assert config.provider in ("kano_proxy", "kano_proxy_openai")
         assert config.api_key == "test-key"
 
 

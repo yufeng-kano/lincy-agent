@@ -32,6 +32,10 @@ def format_attachment_lines(
             lines.append(
                 f"{detail_prefix}image_summary: [pending] Use read_image_by_subagent on {local_path}"
             )
+        if attachment.get("needs_audio_summary") and local_path:
+            lines.append(
+                f"{detail_prefix}audio_summary: [pending] Use read_audio_by_subagent on {local_path}"
+            )
     return lines
 
 

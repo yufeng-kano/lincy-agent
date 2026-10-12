@@ -26,6 +26,11 @@ from .image import (
     create_read_image_by_subagent,
 )
 from .vision import VisionAgent
+from .audio import (
+    READ_AUDIO_BY_SUBAGENT_DEFINITION,
+    AudioAgent,
+    create_read_audio_by_subagent,
+)
 from .agent_task import AGENT_TASK_DEFINITION, create_agent_task
 from .agent_note import AGENT_NOTE_DEFINITION, create_agent_note
 from .macos_apps import (
@@ -66,6 +71,9 @@ __all__ = [
     "create_read_image_vision",
     "create_read_image_with_sub_agent",
     "create_read_image_by_subagent",
+    "READ_AUDIO_BY_SUBAGENT_DEFINITION",
+    "AudioAgent",
+    "create_read_audio_by_subagent",
     "VisionAgent",
     "AGENT_TASK_DEFINITION",
     "create_agent_task",
