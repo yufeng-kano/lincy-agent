@@ -79,8 +79,8 @@ class MediaDescribeAgent:
 
     @staticmethod
     def _write_cache(path: Path | None, content: str) -> None:
-        """Persist a result."""
-        if path is None:
+        """Persist a result. An empty reply is a failure, not an answer."""
+        if path is None or not content:
             return
         tmp = path.with_suffix(".tmp")
         tmp.write_text(

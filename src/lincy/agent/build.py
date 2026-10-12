@@ -381,6 +381,14 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             )
         return client
 
+    def _media_model_fingerprint(agent_config) -> str:
+        """Cache namespace for media sub-agents; key rotation must not evict."""
+        return json.dumps(
+            agent_config.llm.model_dump(mode="json", exclude={"api_key"}),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
     def _load_agent_prompt(name: str) -> str | None:
         """Load an optional subagent prompt; a missing file disables that subagent."""
         try:
@@ -558,16 +566,11 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         vision_client = _build_subagent_client("vision", vision_config)
         vision_prompt = _load_agent_prompt("vision")
         if vision_prompt is not None:
-            model_fingerprint = json.dumps(
-                vision_config.llm.model_dump(mode="json"),
-                ensure_ascii=False,
-                sort_keys=True,
-            )
             vision_agent_instance = VisionAgent(
                 vision_client,
                 vision_prompt,
                 cache_dir=agent_os_dir / "cache" / "vision",
-                model_fingerprint=model_fingerprint,
+                model_fingerprint=_media_model_fingerprint(vision_config),
             )
 
     # Audio agent initialization: always a sub-agent (no own-audio path).
@@ -580,11 +583,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 _build_subagent_client("audio", audio_config),
                 audio_prompt,
                 cache_dir=agent_os_dir / "cache" / "audio",
-                model_fingerprint=json.dumps(
-                    audio_config.llm.model_dump(mode="json"),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
+                model_fingerprint=_media_model_fingerprint(audio_config),
             )
 
     # GUI automation agent initialization

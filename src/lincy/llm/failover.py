@@ -171,12 +171,6 @@ def messages_contain_images(messages: Sequence[Message]) -> bool:
     return _messages_contain_part(messages, "image")
 
 
-def messages_contain_audio(messages: Sequence[Message]) -> bool:
-    """Return True when any message content includes an audio part."""
-
-    return _messages_contain_part(messages, "audio")
-
-
 def _messages_contain_part(messages: Sequence[Message], part_type: str) -> bool:
     for message in messages:
         content = message.content
@@ -354,7 +348,7 @@ class FailoverLLMClient:
         candidates = self._ordered_candidates()
         last_error: Exception | None = None
         has_images = messages_contain_images(messages)
-        has_audio = messages_contain_audio(messages)
+        has_audio = _messages_contain_part(messages, "audio")
         attempted = False
 
         def _can_serve(candidate: FailoverCandidate) -> bool:

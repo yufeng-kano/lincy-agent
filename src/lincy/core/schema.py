@@ -573,8 +573,9 @@ class DiscordChannelConfig(StrictConfigModel):
     auto_read_audio_in_dm: bool = True
     auto_read_audio_in_guild: bool = True
     auto_read_audio_max_per_batch: int = Field(default=3, ge=0, le=20)
-    # Must stay under the audio tool's inline upload cap (see tools/builtin/audio.py).
-    auto_read_audio_max_mb: int = Field(default=14, ge=1, le=200)
+    # Upper bound is the audio tool's file cap (MAX_AUDIO_FILE_BYTES in
+    # tools/builtin/audio.py); a larger value would hint files the tool rejects.
+    auto_read_audio_max_mb: int = Field(default=14, ge=1, le=14)
 
     @model_validator(mode="before")
     @classmethod

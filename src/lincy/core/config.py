@@ -421,6 +421,13 @@ def _validate_audio_agent(config: AppConfig) -> None:
     """
     agent_config = config.agents.get("audio")
     if agent_config is None or not agent_config.enabled:
+        discord = config.channels.discord
+        if discord.enabled and discord.auto_read_audio:
+            raise SystemExit(
+                "Config error: channels.discord.auto_read_audio is true but "
+                "agents.audio is missing or disabled; the brain would be told "
+                "to call read_audio_by_subagent, which is not registered"
+            )
         return
     for index, model in enumerate([agent_config.llm, *agent_config.llm_fallbacks]):
         if model.get_audio():

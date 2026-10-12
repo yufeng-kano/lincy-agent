@@ -145,3 +145,19 @@ def test_definition_structure():
     assert READ_AUDIO_BY_SUBAGENT_DEFINITION.name == "read_audio_by_subagent"
     assert READ_AUDIO_BY_SUBAGENT_DEFINITION.required == ["path", "context"]
     assert MAX_AUDIO_FILE_BYTES < 20 * 1024 * 1024
+
+
+def test_empty_reply_is_not_cached(tmp_path):
+    class Client:
+        replies = ["", "ok"]
+
+        def chat(self, messages, response_schema=None, temperature=None):
+            return Client.replies.pop(0)
+
+        def chat_with_tools(self, messages, tools, temperature=None):
+            raise NotImplementedError
+
+    agent = AudioAgent(Client(), "listen", cache_dir=tmp_path, model_fingerprint="m")
+    parts = [ContentPart(type="audio", media_type="audio/ogg", data="abc")]
+    assert agent.describe(parts) == ""
+    assert agent.describe(parts) == "ok"

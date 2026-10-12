@@ -644,3 +644,20 @@ def test_load_config_accepts_audio_agent_with_audio_capable_chain(
 
     config = config_module.load_config("basic.yaml")
     assert config.agents["audio"].llm.get_audio() is True
+
+
+def test_load_config_rejects_discord_auto_read_audio_without_audio_agent(
+    monkeypatch, tmp_path: Path
+):
+    _write_ollama_profile(tmp_path / "llm" / "brain.yaml", model="b", vision=True)
+    _write_yaml(
+        tmp_path / "basic.yaml",
+        {
+            "channels": {"discord": {"enabled": True}},
+            "agents": {"brain": {"llm": "llm/brain.yaml"}},
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit, match="auto_read_audio is true but agents.audio"):
+        config_module.load_config("basic.yaml")

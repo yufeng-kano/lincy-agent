@@ -19,6 +19,7 @@ import httpx
 from ..contact_map import ContactMap
 from ..discord_history import DiscordHistoryStore
 from ..schema import InboundMessage, OutboundMessage
+from ...tools.builtin.audio import AUDIO_MIME_TYPES
 from .formatting import format_attachment_lines
 
 if TYPE_CHECKING:
@@ -1051,15 +1052,15 @@ class DiscordAdapter:
                 ):
                     item["needs_summary"] = True
                     image_hint_count += 1
-            if item["is_audio"] and item["local_path"]:
-                item["sha256"] = self._history.compute_sha256(Path(item["local_path"]))
-                if (
-                    should_auto_listen
-                    and (size_int is None or size_int <= max_auto_listen_bytes)
-                    and audio_hint_count < self._config.auto_read_audio_max_per_batch
-                ):
-                    item["needs_audio_summary"] = True
-                    audio_hint_count += 1
+            if (
+                should_auto_listen
+                and item["local_path"]
+                and Path(item["local_path"]).suffix.lower() in AUDIO_MIME_TYPES
+                and (size_int is None or size_int <= max_auto_listen_bytes)
+                and audio_hint_count < self._config.auto_read_audio_max_per_batch
+            ):
+                item["needs_audio_summary"] = True
+                audio_hint_count += 1
             result.append(item)
         return result
 

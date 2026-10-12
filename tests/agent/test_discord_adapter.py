@@ -883,7 +883,6 @@ class TestDiscordAudioAttachments:
         att = history.read_events("1")[0]["attachments"][0]
         assert att["is_audio"] is True
         assert att["needs_audio_summary"] is True
-        assert att["sha256"]
         assert "- voice-message.ogg (audio/ogg) -> " in content
         assert f"audio_summary: [pending] Use read_audio_by_subagent on {att['local_path']}" in content
         assert "[Discord audio hint]" in content
@@ -907,6 +906,17 @@ class TestDiscordAudioAttachments:
         content = await self._ingest(adapter, data=b"x" * (1024 * 1024 + 1))
 
         att = history.read_events("1")[0]["attachments"][0]
+        assert att["local_path"] is not None
+        assert att["needs_audio_summary"] is False
+        assert "audio_summary" not in content
+
+    async def test_audio_format_the_tool_rejects_gets_no_hint(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+
+        content = await self._ingest(adapter, content_type="audio/webm", filename="clip.webm")
+
+        att = history.read_events("1")[0]["attachments"][0]
+        assert att["is_audio"] is True
         assert att["local_path"] is not None
         assert att["needs_audio_summary"] is False
         assert "audio_summary" not in content
