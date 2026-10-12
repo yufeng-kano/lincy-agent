@@ -856,3 +856,67 @@ class TestDiscordPresence:
 
         adapter._client.change_presence.assert_not_awaited()
         assert adapter._presence_last_status == "online"
+
+
+@pytest.mark.asyncio
+class TestDiscordAudioAttachments:
+    async def _ingest(self, adapter, *, content_type="audio/ogg", data=b"OggS", filename="voice-message.ogg"):
+        adapter._agent = _FakeAgent()
+        adapter._loop = asyncio.get_running_loop()
+        adapter._self_user_id = "999"
+        msg = _FakeMessage(
+            message_id=10,
+            channel=_FakeInboundChannel(1, "dm", None),
+            author=_FakeUser(id=1, name="alice", display_name="Alice"),
+            content="",
+            attachments=[_FakeAttachment(filename=filename, content_type=content_type, data=data)],
+        )
+        await adapter._handle_message(msg)
+        adapter._flush_dm_buffer("1")
+        return adapter._agent.enqueued[0].content
+
+    async def test_voice_message_gets_pending_audio_hint(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+
+        content = await self._ingest(adapter)
+
+        att = history.read_events("1")[0]["attachments"][0]
+        assert att["is_audio"] is True
+        assert att["needs_audio_summary"] is True
+        assert "- voice-message.ogg (audio/ogg) -> " in content
+        assert f"audio_summary: [pending] Use read_audio_by_subagent on {att['local_path']}" in content
+        assert "[Discord audio hint]" in content
+        assert "image_summary" not in content
+
+    async def test_audio_hint_respects_disable_flag(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path, auto_read_audio=False)
+
+        content = await self._ingest(adapter)
+
+        att = history.read_events("1")[0]["attachments"][0]
+        assert att["is_audio"] is True
+        assert att["needs_audio_summary"] is False
+        assert att["local_path"] is not None
+        assert "audio_summary" not in content
+        assert "[Discord audio hint]" not in content
+
+    async def test_audio_over_size_cap_is_downloaded_without_hint(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path, auto_read_audio_max_mb=1)
+
+        content = await self._ingest(adapter, data=b"x" * (1024 * 1024 + 1))
+
+        att = history.read_events("1")[0]["attachments"][0]
+        assert att["local_path"] is not None
+        assert att["needs_audio_summary"] is False
+        assert "audio_summary" not in content
+
+    async def test_audio_format_the_tool_rejects_gets_no_hint(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+
+        content = await self._ingest(adapter, content_type="audio/webm", filename="clip.webm")
+
+        att = history.read_events("1")[0]["attachments"][0]
+        assert att["is_audio"] is True
+        assert att["local_path"] is not None
+        assert att["needs_audio_summary"] is False
+        assert "audio_summary" not in content

@@ -190,6 +190,7 @@ from .m0177_worker_gui_escalation import M0177WorkerGuiEscalation
 from .m0178_worker_notes import M0178WorkerNotes
 from .m0179_native_gui_backend import M0179NativeGuiBackend
 from .m0180_worker_control_and_preempt import M0180WorkerControlAndPreempt
+from .m0181_audio_agent import M0181AudioAgent
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -370,4 +371,5 @@ ALL_MIGRATIONS = [
     M0178WorkerNotes(),
     M0179NativeGuiBackend(),
     M0180WorkerControlAndPreempt(),
+    M0181AudioAgent(),
 ]

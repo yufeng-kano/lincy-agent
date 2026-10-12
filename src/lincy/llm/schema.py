@@ -33,10 +33,10 @@ def raise_if_context_length_error(
 class ContentPart(BaseModel):
     """A single part of multimodal message content."""
 
-    type: Literal["text", "image"]
+    type: Literal["text", "image", "audio"]
     text: str | None = None
-    media_type: str | None = None  # e.g. "image/png"
-    data: str | None = None  # base64-encoded image data
+    media_type: str | None = None  # e.g. "image/png", "audio/ogg"
+    data: str | None = None  # base64-encoded image or audio data
     width: int | None = None
     height: int | None = None
     cache_control: dict[str, str] | None = (

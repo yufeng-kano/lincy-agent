@@ -1837,3 +1837,46 @@ class TestM0179NativeGuiBackend:
 
         for rel in files:
             assert (kernel_dir / rel).read_text() == f"new::{rel}"
+
+
+class TestM0181AudioAgent:
+    def test_adds_audio_config_prompt_and_cache_dir(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0181_audio_agent import M0181AudioAgent
+
+        kernel_dir = tmp_path / "kernel"
+        prompt = tmp_path / "templates/agents/audio/prompts/system.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("audio prompt")
+        config_path = tmp_path / "cfgs/agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "agents:\n"
+            "  vision:\n"
+            "    llm: cfgs/llm/kano-proxy/vision.yaml\n",
+            encoding="utf-8",
+        )
+
+        M0181AudioAgent().upgrade(kernel_dir, tmp_path / "templates")
+
+        config = yaml.safe_load(config_path.read_text())
+        assert config["agents"]["audio"] == {
+            "enabled": True,
+            "llm": "cfgs/llm/kano-proxy/audio.yaml",
+            "llm_request_timeout": 180,
+            "llm_transient_retries": 1,
+            "warn_on_failure": True,
+        }
+        assert config["agents"]["vision"]["llm"] == "cfgs/llm/kano-proxy/vision.yaml"
+        assert (kernel_dir / "agents/audio/prompts/system.md").read_text() == "audio prompt"
+        assert (tmp_path / "cache" / "audio").is_dir()
+
+    def test_keeps_existing_audio_config(self, tmp_path: Path):
+        from lincy.workspace.migrations.m0181_audio_agent import M0181AudioAgent
+
+        config_path = tmp_path / "cfgs/agent.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text("agents:\n  audio:\n    enabled: false\n", encoding="utf-8")
+
+        M0181AudioAgent().upgrade(tmp_path / "kernel", tmp_path / "templates")
+
+        assert yaml.safe_load(config_path.read_text())["agents"]["audio"] == {"enabled": False}

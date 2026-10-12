@@ -246,3 +246,59 @@ class TestGeminiMultimodal:
         assert content.parts[0].text == "What is this?"
         assert content.parts[1].inline_data is not None
         assert content.parts[1].inline_data.mime_type == "image/jpeg"
+
+
+class TestAudioParts:
+    def _audio_message(self, role="user", **kwargs):
+        return Message(
+            role=role,
+            content=[
+                ContentPart(type="text", text="listen"),
+                ContentPart(type="audio", media_type="audio/ogg", data="b64"),
+            ],
+            **kwargs,
+        )
+
+    def test_openai_compat_maps_input_audio(self):
+        client = TestOpenAICompatMultimodal._make_client(self)
+        result = client._convert_messages([self._audio_message()])
+        assert result[0].content[1] == {
+            "type": "input_audio",
+            "input_audio": {"data": "b64", "format": "ogg"},
+        }
+
+    def test_openai_compat_defers_tool_result_audio_to_user_message(self):
+        client = TestOpenAICompatMultimodal._make_client(self)
+        result = client._convert_messages(
+            [self._audio_message(role="tool", tool_call_id="c1", name="read_audio")]
+        )
+        assert result[0].role == "tool"
+        assert result[0].content == "listen"
+        assert result[1].role == "user"
+        assert result[1].content[0]["type"] == "input_audio"
+
+    def test_openai_compat_rejects_unknown_audio_media_type(self):
+        import pytest
+
+        client = TestOpenAICompatMultimodal._make_client(self)
+        message = Message(
+            role="user",
+            content=[ContentPart(type="audio", media_type="audio/webm", data="b64")],
+        )
+        with pytest.raises(ValueError, match="Unsupported audio media type"):
+            client._convert_messages([message])
+
+    def test_gemini_maps_inline_data(self):
+        client = TestGeminiMultimodal._make_client(self)
+        _, contents = client._convert_messages([self._audio_message()])
+        part = contents[0].parts[1]
+        assert part.inline_data is not None
+        assert part.inline_data.mime_type == "audio/ogg"
+        assert part.inline_data.data == "b64"
+
+    def test_anthropic_rejects_audio(self):
+        import pytest
+
+        client = TestAnthropicMultimodal._make_client(self)
+        with pytest.raises(ValueError, match="no audio content block"):
+            client._convert_messages([self._audio_message()])

@@ -651,3 +651,52 @@ def test_signatures_from_another_upstream_behind_the_same_candidate_are_not_repl
     assert second[1].reasoning_details[0]["signature"] == "claude-blob"
     assert second[2].reasoning_details is None
     assert second[3].reasoning_details is None
+
+
+def test_failover_skips_candidate_without_audio_when_messages_have_audio():
+    primary = _StubClient(chat_effects=[_make_429()])
+    no_audio = _StubClient(chat_effects=["should-not-run"])
+    audio_fallback = _StubClient(chat_effects=["ok"])
+    client = with_llm_failover(
+        [
+            FailoverCandidate("primary", "primary", primary, supports_audio=True),
+            FailoverCandidate("no-audio", "no-audio", no_audio, supports_vision=True),
+            FailoverCandidate("audio-fallback", "audio-fallback", audio_fallback, supports_audio=True),
+        ],
+        cooldown_seconds=1800,
+        label="audio",
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[ContentPart(type="audio", media_type="audio/ogg", data="abc")],
+        )
+    ]
+
+    assert client.chat(messages) == "ok"
+    assert primary.chat_calls == 1
+    assert no_audio.chat_calls == 0
+    assert audio_fallback.chat_calls == 1
+
+
+def test_failover_errors_when_no_candidate_supports_audio():
+    no_audio = _StubClient(chat_effects=["should-not-run"])
+    also_no_audio = _StubClient(chat_effects=["should-not-run"])
+    client = with_llm_failover(
+        [
+            FailoverCandidate("no-audio", "no-audio", no_audio, supports_vision=True),
+            FailoverCandidate("no-audio-2", "no-audio-2", also_no_audio),
+        ],
+        cooldown_seconds=1800,
+        label="audio",
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[ContentPart(type="audio", media_type="audio/ogg", data="abc")],
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="No audio-capable LLM"):
+        client.chat(messages)
+    assert no_audio.chat_calls == 0

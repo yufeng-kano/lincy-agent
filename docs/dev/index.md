@@ -35,6 +35,7 @@
 | [memory-curation.md](memory-curation.md) | 記憶檔案自動化重量管理（字元預算警告、超標佇列、curator 蒸餾）與對話 compaction 三層架構（codex remote / compactor agent / local） |
 | [local-config-override.md](local-config-override.md) | `cfgs/agent.override.yaml` 本機設定覆蓋：合併規則、統一讀取路徑 |
 | [inbound-preempt.md](inbound-preempt.md) | 同一對話的新訊息併入進行中的 turn：取消待執行 tool call、從 queue 取訊息接續、scope 規則、每輪上限 |
+| [audio-read.md](audio-read.md) | Audio Read：語音訊息交給 audio 子代理（`read_audio_by_subagent`）、`ContentPart` audio、provider 映射與拒絕規則、kano-proxy `/openai/v1` 路由、Discord 自動提示 |
 | [host-runtime.md](host-runtime.md) | 單一 `lincy` 程序：host/agent/channels 分層、validate/build/run/web 四階段、`AgentHandle`、control API、手動升級與 rollback、launchd |
 
 ## 子資料夾

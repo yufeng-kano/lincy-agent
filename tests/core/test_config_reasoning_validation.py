@@ -573,3 +573,91 @@ def test_load_config_accepts_full_vision_coverage_when_use_own_vision_ability(
     config = config_module.load_config("basic.yaml")
     assert config.agents["brain"].use_own_vision_ability is True
     assert config.agents["brain"].llm_fallbacks[0].get_vision() is True
+
+
+def _write_openai_profile(path: Path, *, audio: bool) -> None:
+    _write_yaml(
+        path,
+        {
+            "provider": "openai",
+            "model": "gw-model",
+            "api_key": "k",
+            "capabilities": {
+                "vision": True,
+                "audio": audio,
+                "reasoning": {
+                    "supports_toggle": False,
+                    "supported_efforts": [],
+                    "supports_max_tokens": False,
+                },
+            },
+        },
+    )
+
+
+def test_load_config_rejects_audio_agent_without_audio_capable_primary(
+    monkeypatch, tmp_path: Path
+):
+    _write_ollama_profile(tmp_path / "llm" / "brain.yaml", model="b", vision=True)
+    _write_openai_profile(tmp_path / "llm" / "text-only.yaml", audio=False)
+    _write_yaml(
+        tmp_path / "basic.yaml",
+        {"agents": {"brain": {"llm": "llm/brain.yaml"}, "audio": {"llm": "llm/text-only.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit, match="agents.audio.llm .*does not support audio"):
+        config_module.load_config("basic.yaml")
+
+
+def test_load_config_rejects_audio_agent_fallback_without_audio(
+    monkeypatch, tmp_path: Path
+):
+    _write_ollama_profile(tmp_path / "llm" / "brain.yaml", model="b", vision=True)
+    _write_openai_profile(tmp_path / "llm" / "audio.yaml", audio=True)
+    _write_ollama_profile(tmp_path / "llm" / "no-audio.yaml", model="a", vision=True)
+    _write_yaml(
+        tmp_path / "basic.yaml",
+        {
+            "agents": {
+                "brain": {"llm": "llm/brain.yaml"},
+                "audio": {"llm": "llm/audio.yaml", "llm_fallbacks": ["llm/no-audio.yaml"]},
+            }
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit, match=r"agents.audio.llm_fallbacks\[0\] .*does not support audio"):
+        config_module.load_config("basic.yaml")
+
+
+def test_load_config_accepts_audio_agent_with_audio_capable_chain(
+    monkeypatch, tmp_path: Path
+):
+    _write_ollama_profile(tmp_path / "llm" / "brain.yaml", model="b", vision=True)
+    _write_openai_profile(tmp_path / "llm" / "audio.yaml", audio=True)
+    _write_yaml(
+        tmp_path / "basic.yaml",
+        {"agents": {"brain": {"llm": "llm/brain.yaml"}, "audio": {"llm": "llm/audio.yaml"}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("basic.yaml")
+    assert config.agents["audio"].llm.get_audio() is True
+
+
+def test_load_config_rejects_discord_auto_read_audio_without_audio_agent(
+    monkeypatch, tmp_path: Path
+):
+    _write_ollama_profile(tmp_path / "llm" / "brain.yaml", model="b", vision=True)
+    _write_yaml(
+        tmp_path / "basic.yaml",
+        {
+            "channels": {"discord": {"enabled": True}},
+            "agents": {"brain": {"llm": "llm/brain.yaml"}},
+        },
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit, match="auto_read_audio is true but agents.audio"):
+        config_module.load_config("basic.yaml")

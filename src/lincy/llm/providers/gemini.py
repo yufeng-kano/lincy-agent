@@ -103,7 +103,7 @@ class GeminiClient:
         for part in parts:
             if part.type == "text" and part.text is not None:
                 result.append(GeminiPart(text=part.text))
-            elif part.type == "image" and part.data and part.media_type:
+            elif part.type in ("image", "audio") and part.data and part.media_type:
                 result.append(GeminiPart(
                     inline_data=GeminiInlineData(
                         mime_type=part.media_type,
@@ -140,9 +140,9 @@ class GeminiClient:
                             )
                         ),
                     ]
-                    # Add image parts for the model to see
+                    # Add media parts for the model to see
                     for cp in m.content:
-                        if cp.type == "image" and cp.data and cp.media_type:
+                        if cp.type in ("image", "audio") and cp.data and cp.media_type:
                             tool_parts.append(GeminiPart(
                                 inline_data=GeminiInlineData(
                                     mime_type=cp.media_type,

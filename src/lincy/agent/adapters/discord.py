@@ -19,6 +19,7 @@ import httpx
 from ..contact_map import ContactMap
 from ..discord_history import DiscordHistoryStore
 from ..schema import InboundMessage, OutboundMessage
+from ...tools.builtin.audio import AUDIO_MIME_TYPES
 from .formatting import format_attachment_lines
 
 if TYPE_CHECKING:
@@ -985,7 +986,9 @@ class DiscordAdapter:
         result: list[dict[str, Any]] = []
         max_download_bytes = self._config.auto_download_attachment_max_mb * 1024 * 1024
         max_auto_read_bytes = self._config.auto_read_image_max_mb * 1024 * 1024
+        max_auto_listen_bytes = self._config.auto_read_audio_max_mb * 1024 * 1024
         image_hint_count = 0
+        audio_hint_count = 0
         for att in attachments:
             filename = _safe_text(getattr(att, "filename", "")) or "attachment"
             content_type = _safe_text(getattr(att, "content_type", "")) or None
@@ -1002,8 +1005,10 @@ class DiscordAdapter:
                 "url": url,
                 "local_path": None,
                 "is_image": bool(content_type and content_type.startswith("image/")),
+                "is_audio": bool(content_type and content_type.startswith("audio/")),
                 "image_summary": None,
                 "needs_summary": False,
+                "needs_audio_summary": False,
                 "sha256": None,
                 "download_note": None,
             }
@@ -1014,6 +1019,14 @@ class DiscordAdapter:
                 and (
                     (is_dm and self._config.auto_read_images_in_dm)
                     or (not is_dm and self._config.auto_read_images_in_guild)
+                )
+            )
+            should_auto_listen = (
+                self._config.auto_read_audio
+                and item["is_audio"]
+                and (
+                    (is_dm and self._config.auto_read_audio_in_dm)
+                    or (not is_dm and self._config.auto_read_audio_in_guild)
                 )
             )
             if size_int is not None and size_int > max_download_bytes:
@@ -1039,6 +1052,15 @@ class DiscordAdapter:
                 ):
                     item["needs_summary"] = True
                     image_hint_count += 1
+            if (
+                should_auto_listen
+                and item["local_path"]
+                and Path(item["local_path"]).suffix.lower() in AUDIO_MIME_TYPES
+                and (size_int is None or size_int <= max_auto_listen_bytes)
+                and audio_hint_count < self._config.auto_read_audio_max_per_batch
+            ):
+                item["needs_audio_summary"] = True
+                audio_hint_count += 1
             result.append(item)
         return result
 
@@ -1405,6 +1427,15 @@ class DiscordAdapter:
                 lines.append(
                     "[Discord image hint] Images are likely important. "
                     "Use read_image_by_subagent/read_image on local paths before replying if relevant."
+                )
+        if self._config.auto_read_audio and (
+            (is_dm and self._config.auto_read_audio_in_dm)
+            or (not is_dm and self._config.auto_read_audio_in_guild)
+        ):
+            if any(att.get("needs_audio_summary") and att.get("local_path") for att in atts):
+                lines.append(
+                    "[Discord audio hint] A voice message is part of this conversation. "
+                    "Use read_audio_by_subagent on the local path before replying."
                 )
 
     # -- Presence ----------------------------------------------------

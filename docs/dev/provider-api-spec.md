@@ -25,6 +25,7 @@
 | Effort 值（GPT-5.2+） | `"none"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` | 官方文件 | [GPT-5.2 Guide](https://developers.openai.com/api/docs/guides/latest-model/) | 高 | 是（xhigh + none 僅 GPT-5.2+） |
 | Reasoning summary | `reasoning: {"summary": "auto"\|"detailed"}`（Responses API） | 官方文件 | [OpenAI Reasoning Guide](https://developers.openai.com/api/docs/guides/reasoning/) | 高 | 是 |
 | Vision | `image_url` content parts | 官方文件 | [OpenAI Chat API Reference](https://platform.openai.com/docs/api-reference/chat) | 高 | 是（vision models） |
+| Audio input | `{"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"\|"mp3"\|...}}` content part；`format` 是容器名不是 mime | 官方文件 + OpenRouter 文件 | [OpenAI gpt-audio](https://developers.openai.com/api/docs/models/gpt-audio)、[OpenRouter Audio Inputs](https://openrouter.ai/docs/features/multimodal/audio) | 高 | 是（audio models；OpenRouter 列出 wav/mp3/aiff/aac/ogg/flac/m4a/pcm16/pcm24，實際依模型） |
 | Tools | OpenAI function calling format（`type: "function"`, `function: {name, description, parameters}`） | 官方文件 | 同上 | 高 | 否 |
 | max_tokens | 可選；GPT-5+ 需改用 `max_completion_tokens` | 官方文件 | 同上 | 高 | 是（GPT-5+ 拒絕 `max_tokens`） |
 | **max_completion_tokens** | GPT-5+ 必用（替代 `max_tokens`） | 官方文件 | 同上 | 高 | 是（GPT-5+） |
@@ -45,6 +46,7 @@
 | `max_tokens` 在 reasoning 裡擋掉 | OpenAI provider schema 不提供 reasoning.max_tokens 欄位 | `src/lincy/core/provider_schema.py`（`OpenAIReasoningConfig`） | 本專案規則 |
 | `max_completion_tokens` 切換 | `OpenAIConfig.use_max_completion_tokens=true` 時，client 送 `max_completion_tokens` 並 null 掉 `max_tokens` | `src/lincy/llm/providers/openai.py` + `src/lincy/core/provider_schema.py` | GPT-5+ 必要 |
 | `prompt_cache_retention` passthrough | agent cache config `ttl: "24h"` 時，組裝層傳入 `prompt_cache_retention="24h"` 給 `OpenAIClient` | `src/lincy/agent/build.py` + `src/lincy/llm/providers/openai.py` | 不走 breakpoint path |
+| Audio content part | `ContentPart(type="audio")` 轉成 `input_audio`，`format` 由 `audio_format_for_media_type` 的 mime 對照表決定（ogg/opus→`ogg`、mpeg/mp3→`mp3`、wav、mp4/m4a→`m4a`、aac、flac、aiff）；未知 mime raise，不猜。tool result 內的音訊與圖片一樣延後成尾端 user message。能力由 `capabilities.audio` 宣告 | `src/lincy/llm/providers/openai_compat.py` + `src/lincy/core/provider_schema.py` | 對照表與 kano-proxy `/openai/v1` 的 format→mime 表一致 |
 | Cache TTL clamp | 組裝層依 provider 最大支援 TTL 做 clamp：OpenRouter `1h`、Anthropic/ClaudeCode `ephemeral`、OpenAI `24h` | `src/lincy/agent/build.py` | 避免 provider 切換時 silent misconfiguration |
 
 ### 3. 逆向/實測資訊
@@ -224,6 +226,16 @@
 
 2026-09-16 實測：brain 與 worker 同時連續 `400 Corrupted thought signature`。session 紀錄顯示 22:47–22:52 之間 kano-proxy 的 group 從 Antigravity Gemini failover 到另一個 target，回應的 `thinking.signature` 變成 36 字元 UUID、tool id 變成 `call_00_…`；Gemini 回來後這些 UUID 被原樣 echo 成 `thoughtSignature`，每次重送都失敗。根因在 proxy（core 已改為丟棄非 Gemini 形狀的 signature 並補 `skip_thought_signature_validator`）。本專案的對應規則：(1) `LLMResponse.served_by` 記錄產生回應的 failover candidate（`key#model`），存成 `Message.reasoning_origin`；failover 打某個 candidate 時，只 replay 該 candidate 自己產生的 `reasoning_details`，其他 candidate 的一律剝掉（origin 為 None 的舊紀錄照舊送）。(2) 收到 400 且錯誤訊息含 `signature` 時，同一 candidate 剝掉全部 `reasoning_details` 重送一次；再失敗就照一般規則處理，不做 failover。這兩條都在 `llm/failover.py`，provider adapter 本身不變。
 
+### 5. OpenAI-compatible surface 與音訊
+
+| 項目 | 事實 / 規則 | 來源類型 | 可信度 | 備註 |
+|------|------------|---------|--------|------|
+| Endpoint | `https://<domain>/g/<group>/openai/v1/chat/completions`，Bearer 為同一把 group key | kano-proxy `docs/api.md` | 高 | `model` 必須是 group 內設定的名稱，否則 `400 invalid_model` |
+| Audio input | user message 內接 OpenAI/OpenRouter 的 `input_audio` part；antigravity target 轉成 Gemini `inlineData`，`format`→mime 對照：wav、mp3/mpeg、m4a/mp4、aac、flac、ogg/opus→`audio/ogg`、aiff；未知 format 回 `400 unsupported_audio_format` | kano-proxy `docs/api.md` § Audio | 高 | 只看**最高優先 target** 判定能否吃音訊，不 fallthrough；claude-code / codex / anthropic-format target 回 `400 unsupported_modality` |
+| `/anthropic` 無音訊 | Anthropic Messages 沒有 audio block，gateway 的 Anthropic surface 不接也不轉，包括 antigravity | kano-proxy `docs/api.md` | 高 | 音訊一律走 `/openai/v1` |
+| 本專案 provider | `provider: kano_proxy_openai`，`KanoProxyOpenAIConfig(OpenAIConfig)`，client 直接用 `OpenAIClient`；base_url 預設 `https://kano-proxy.yuufeng.com/g/lincy/openai/v1`，validator 拒絕 `/chat/completions` 尾綴；`api_key_env` 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` | — | 同一 gateway 兩種 wire format 拆成兩個 config，依 provider-architecture 規則 |
+| 實測 2026-10-12 | 從 lincy 主機送 Ogg/Opus（`format: ogg`）到 `init-agent`（唯一純 antigravity Gemini 的 group model）：200、6.0 秒、逐字稿正確、132 prompt tokens / 116 reasoning tokens；`vision-agent`（首 target 為 OpenRouter gpt-5.6）回 404 `No endpoints found that support input audio`；`prompt_cache_retention: null` 與 `"24h"` 都被接受 | 實測 | 高 | 逐字稿預設簡體，audio prompt 明寫臺灣用字 |
+
 ### 4. 對話與任務的快取識別
 
 - Kano Proxy adapter 在 request body 加入 `metadata.user_id`，取自呼叫端的 `llm_session` 範圍。識別由 agent 名稱與 session/task ID 雜湊成 64 個 ASCII 字元，不含使用者姓名、prompt 或金鑰。
@@ -245,6 +257,7 @@
 | Endpoint | `generateContent`（REST） | 官方文件 | [Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) | 高 | 否 |
 | Auth | `x-goog-api-key` header 或 `key=` query parameter | 官方文件 | 同上（範例中兩種都有） | 高 | 否 |
 | Tools | `functionDeclarations` format：`{name, description, parameters: {type, properties, required}}`。Response function call 用 `args`（非 OpenAI 的 `arguments` JSON string）。Result 用 `functionResponse: {name, response: {...}}`（非 OpenAI 的 `role: "tool"`） | 官方文件 | [Gemini Function Calling](https://ai.google.dev/gemini-api/docs/function-calling)，declaration 結構 + response `args` 欄位 + result `functionResponse` 欄位 | 高 | 否 |
+| Audio input | `inlineData: {mimeType, data}`，mime 支援 wav/mp3/aiff/aac/ogg/flac/mpeg/m4a/l16/opus/alaw/mulaw/webm；inline request 總量 20 MB；每秒音訊 32 tokens；單次 prompt 最長 9.5 小時 | 官方文件 | [Gemini Audio understanding](https://ai.google.dev/gemini-api/docs/audio) | 高 | 是（Gemini 多模態模型） |
 | Vision | `inlineData` parts（base64） | 官方文件 | 同上 | 高 | 否 |
 | max_tokens | `generationConfig.maxOutputTokens` | 官方文件 | 同上 | 高 | 否 |
 | **thinkingLevel（Gemini 3）** | `thinkingConfig: {"thinkingLevel": "minimal"\|"low"\|"medium"\|"high"}` | 官方文件 | [Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) | 高 | 是 |
@@ -368,12 +381,13 @@
 | Effort 值 | low/medium/high/xhigh/max（adapter passthrough；官方另列 none） | low/medium/high/max（output_config） | low/medium/high/xhigh/max（假設相容/未驗證） | minimal/low/medium/high（依模型） | none/minimal/low/medium/high/xhigh | low/medium/high/xhigh/max（adapter passthrough） |
 | Token budget | 無 | `thinking.budget_tokens` | `thinking.budget_tokens`（假設相容/未驗證） | `thinkingBudget` | `reasoning.max_tokens` | 無 |
 | Vision | `image_url` | `image` block（base64/url） | `image` block（假設相容/未驗證） | `inlineData`（base64） | `image_url` | 依模型 |
+| Audio input | `input_audio`（`capabilities.audio`） | **無**（adapter raise） | **無**（adapter raise） | `inlineData`（`capabilities.audio`） | `input_audio`（`audio: true`） | **無**（adapter raise） |
 | Tools | OpenAI function | Anthropic `input_schema` | Anthropic `input_schema`（假設相容/未驗證） | Gemini `functionDeclarations` | OpenAI function | native `tools` |
 | Auth | Bearer token | Bearer/x-api-key + version | x-api-key + version（假設相容/未驗證） | API key (header/query) | Bearer token | 本機 daemon 無 |
 | max_tokens | 可選（GPT-5+ 用 `max_completion_tokens`） | **必填** | **必填**（假設相容/未驗證） | 可選（maxOutputTokens） | 可選 | `options.num_predict` |
 | Prompt cache | 自動 prefix（`prompt_cache_retention: "24h"`） | Anthropic breakpoint | Anthropic breakpoint（假設相容/未驗證） | 無 | `cache_control` breakpoint | 無 |
 
-Kano Proxy 不另開欄：獨立 `provider: kano_proxy`，payload / auth header / cache breakpoint 與 Anthropic、Heyroute 同一 adapter；差異只有 gateway URL 與 `KANO_PROXY_API_KEY`。
+Kano Proxy 不另開欄：獨立 `provider: kano_proxy`，payload / auth header / cache breakpoint 與 Anthropic、Heyroute 同一 adapter；差異只有 gateway URL 與 `KANO_PROXY_API_KEY`。`provider: kano_proxy_openai` 則與 OpenAI 同一 adapter，只有 audio 子代理用它（見下方 Kano Proxy § 5）。
 
 ---
 

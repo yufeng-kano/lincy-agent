@@ -16,6 +16,35 @@ from ..schema import (
 logger = logging.getLogger(__name__)
 _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 _CONTEXT_LENGTH_PATTERNS = ("max_prompt_tokens_exceeded", "context_length_exceeded")
+_MEDIA_BLOCK_TYPES = ("image_url", "input_audio")
+# input_audio carries a container name, not a mime type. Only containers the
+# audio-capable gateways document are mapped; anything else fails loudly here
+# instead of being guessed upstream.
+_AUDIO_FORMAT_BY_MEDIA_TYPE = {
+    "audio/ogg": "ogg",
+    "audio/opus": "ogg",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/mp4": "m4a",
+    "audio/m4a": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/flac": "flac",
+    "audio/aiff": "aiff",
+    "audio/x-aiff": "aiff",
+}
+
+
+def audio_format_for_media_type(media_type: str) -> str:
+    """Map an audio mime type to the OpenAI-compatible input_audio format."""
+    try:
+        return _AUDIO_FORMAT_BY_MEDIA_TYPE[media_type.lower()]
+    except KeyError:
+        raise ValueError(
+            f"Unsupported audio media type for input_audio: {media_type}"
+        ) from None
 
 
 def merge_leading_system_messages(messages: list[OpenAIMessagePayload]) -> list[OpenAIMessagePayload]:
@@ -116,20 +145,24 @@ class OpenAICompatibleClient:
                 result.append(item)
             elif part.type == "image" and part.data and part.media_type:
                 result.append({"type": "image_url", "image_url": {"url": f"data:{part.media_type};base64,{part.data}"}})
+            elif part.type == "audio" and part.data and part.media_type:
+                result.append({"type": "input_audio", "input_audio": {"data": part.data, "format": audio_format_for_media_type(part.media_type)}})
         return result
 
     def _convert_messages(self, messages: list[Message]) -> list[OpenAIMessagePayload]:
         messages = repair_missing_tool_results(messages, repair_names=False, drop_orphans=True)
         result: list[OpenAIMessagePayload] = []
-        pending_images: list[dict[str, Any]] = []
+        # Tool messages carry text only; media from tool results is replayed
+        # in a trailing user message so the model can still see it.
+        pending_media: list[dict[str, Any]] = []
         for message in messages:
-            if message.role != "tool" and pending_images:
-                result.append(OpenAIMessagePayload(role="user", content=pending_images))
-                pending_images = []
+            if message.role != "tool" and pending_media:
+                result.append(OpenAIMessagePayload(role="user", content=pending_media))
+                pending_media = []
             if message.role == "tool":
                 if isinstance(message.content, list):
                     result.append(OpenAIMessagePayload(role="tool", content="\n".join(part.text for part in message.content if part.type == "text" and part.text), tool_call_id=message.tool_call_id, name=message.name))
-                    pending_images.extend(block for block in self._convert_content_parts(message.content) if block.get("type") == "image_url")
+                    pending_media.extend(block for block in self._convert_content_parts(message.content) if block.get("type") in _MEDIA_BLOCK_TYPES)
                 else:
                     result.append(OpenAIMessagePayload(role="tool", content=message.content, tool_call_id=message.tool_call_id, name=message.name))
             elif message.role == "assistant" and message.tool_calls:
@@ -144,8 +177,8 @@ class OpenAICompatibleClient:
                 result.append(OpenAIMessagePayload(role=message.role, content=[{"type": "text", "text": message.content or "", "cache_control": message.cache_control}]))
             else:
                 result.append(OpenAIMessagePayload(role=message.role, content=message.content))
-        if pending_images:
-            result.append(OpenAIMessagePayload(role="user", content=pending_images))
+        if pending_media:
+            result.append(OpenAIMessagePayload(role="user", content=pending_media))
         return result
 
     def _parse_response(self, response: OpenAIResponse) -> LLMResponse:
