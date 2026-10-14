@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from .apple_events import automation_problem
 from .runtime import _datetime_to_app_iso
 
 MAIL_ROOT = Path.home() / "Library" / "Mail" / "V10"
@@ -50,12 +51,16 @@ _MESSAGE_JOINS = """
 
 
 def mail_permission_problems(root: Path = MAIL_ROOT) -> list[str]:
-    """Return blocking problems for reading Mail data; empty means readable."""
+    """Return blocking problems for reading Mail data and for the Mail JXA trash call."""
+    problems = []
     try:
         MailStore(root).connect().close()
     except RuntimeError as exc:
-        return [str(exc)]
-    return []
+        problems.append(str(exc))
+    automation = automation_problem("com.apple.mail", "Mail")
+    if automation:
+        problems.append(automation)
+    return problems
 
 
 def parse_message_ref(message_ref: str) -> int | None:

@@ -19,6 +19,8 @@ import sqlite3
 from typing import Any
 import zlib
 
+from .apple_events import automation_problem
+
 logger = logging.getLogger(__name__)
 
 NOTE_STORE_PATH = (
@@ -77,12 +79,16 @@ class StoredNote:
 
 
 def notes_permission_problems() -> list[str]:
-    """Return human-readable problems that prevent reading the Notes database."""
+    """Return human-readable problems for the Notes database and the Notes JXA calls."""
+    problems = []
     try:
         NoteStore.open().close()
     except (PermissionError, RuntimeError) as exc:
-        return [str(exc)]
-    return []
+        problems.append(str(exc))
+    automation = automation_problem("com.apple.Notes", "Notes")
+    if automation:
+        problems.append(automation)
+    return problems
 
 
 def core_data_to_iso(value: float) -> str:

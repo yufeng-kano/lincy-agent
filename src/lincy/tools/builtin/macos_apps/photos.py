@@ -132,17 +132,24 @@ _STATUS_NAMES = {
 # Every asset localIdentifier is "<UUID>/L0/001"; Photos.sqlite rows only
 # carry the UUID, so this suffix maps database matches back to PhotoKit ids.
 _ASSET_ID_SUFFIX = "/L0/001"
+# Export slots: each slot writes the first resource type present. A Live
+# Photo is a still plus a paired video, and a RAW+JPEG import keeps the second
+# file as AlternatePhoto, so one asset can export several files.
 _ORIGINAL_RESOURCE_TYPES = (
-    Photos.PHAssetResourceTypePhoto,
-    Photos.PHAssetResourceTypeVideo,
-    Photos.PHAssetResourceTypeAudio,
+    (Photos.PHAssetResourceTypePhoto,),
+    (Photos.PHAssetResourceTypeAlternatePhoto,),
+    (Photos.PHAssetResourceTypePairedVideo,),
+    (Photos.PHAssetResourceTypeVideo,),
+    (Photos.PHAssetResourceTypeAudio,),
 )
 # Full-size renders exist only for edited assets; otherwise the original is
-# already the current version.
+# already the current version. An edit renders one photo, so the RAW/JPEG
+# alternate has no current version.
 _CURRENT_RESOURCE_TYPES = (
-    Photos.PHAssetResourceTypeFullSizePhoto,
-    Photos.PHAssetResourceTypeFullSizeVideo,
-    *_ORIGINAL_RESOURCE_TYPES,
+    (Photos.PHAssetResourceTypeFullSizePhoto, Photos.PHAssetResourceTypePhoto),
+    (Photos.PHAssetResourceTypeFullSizePairedVideo, Photos.PHAssetResourceTypePairedVideo),
+    (Photos.PHAssetResourceTypeFullSizeVideo, Photos.PHAssetResourceTypeVideo),
+    (Photos.PHAssetResourceTypeAudio,),
 )
 
 
@@ -176,6 +183,17 @@ def photos_permission_problems() -> list[str]:
     except PermissionError as exc:
         problems.append(str(exc))
     return problems
+
+
+def _all_sources_fetch_options() -> Any:
+    # PhotoKit's default fetch skips iCloud Shared Album and iTunes-synced assets.
+    options = Photos.PHFetchOptions.alloc().init()
+    options.setIncludeAssetSourceTypes_(
+        Photos.PHAssetSourceTypeUserLibrary
+        | Photos.PHAssetSourceTypeCloudShared
+        | Photos.PHAssetSourceTypeiTunesSynced
+    )
+    return options
 
 
 def _fetched(result: Any) -> list[Any]:
@@ -298,14 +316,17 @@ def _search_predicate(
     return NSPredicate.predicateWithFormat_argumentArray_(" AND ".join(clauses), arguments)
 
 
-def _pick_resource(resources: list[Any], use_originals: bool) -> Any | None:
+def _pick_resources(resources: list[Any], use_originals: bool) -> list[Any]:
+    """Return the resources to export, at most one per slot."""
     by_type: dict[int, Any] = {}
     for resource in resources:
         by_type.setdefault(resource.type(), resource)
-    for resource_type in _ORIGINAL_RESOURCE_TYPES if use_originals else _CURRENT_RESOURCE_TYPES:
-        if resource_type in by_type:
-            return by_type[resource_type]
-    return None
+    picked = []
+    for slot in _ORIGINAL_RESOURCE_TYPES if use_originals else _CURRENT_RESOURCE_TYPES:
+        present = [by_type[resource_type] for resource_type in slot if resource_type in by_type]
+        if present:
+            picked.append(present[0])
+    return picked
 
 
 def _export_filename(resources: list[Any], chosen: Any) -> str:
@@ -314,7 +335,8 @@ def _export_filename(resources: list[Any], chosen: Any) -> str:
     Edited renders are stored as e.g. "FullSizeRender.jpeg", which says
     nothing about which photo it is.
     """
-    original = _pick_resource(resources, use_originals=True) or chosen
+    originals = _pick_resources(resources, use_originals=True)
+    original = originals[0] if originals else chosen
     return Path(original.originalFilename()).stem + Path(chosen.originalFilename()).suffix
 
 
@@ -405,7 +427,7 @@ class MacOSAppBridge:
             matched = {uuid + _ASSET_ID_SUFFIX for uuid in match_query_uuids(query)}
             ids = matched if ids is None else ids & matched
 
-        options = Photos.PHFetchOptions.alloc().init()
+        options = _all_sources_fetch_options()
         options.setPredicate_(_search_predicate(start=start_at, end=end_at, favorite=favorite, ids=ids))
         options.setSortDescriptors_(
             [NSSortDescriptor.sortDescriptorWithKey_ascending_("creationDate", sort_by == "date_asc")]
@@ -443,7 +465,9 @@ class MacOSAppBridge:
     def photos_get_media(self, *, media_ids: list[str]) -> dict[str, Any]:
         """Fetch media metadata by ids, in the requested order; unknown ids are skipped."""
         _require_photos_access()
-        fetched = _fetched(Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(media_ids, None))
+        fetched = _fetched(
+            Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(media_ids, _all_sources_fetch_options())
+        )
         by_id = {row["id"]: row for row in _asset_rows(fetched)}
         results = [by_id[media_id] for media_id in media_ids if media_id in by_id]
         return {"ok": True, "results": results, "count": len(results)}
@@ -460,7 +484,9 @@ class MacOSAppBridge:
         export_dir = self._prepare_export_dir(destination_dir, self._photos_export_dir)
         assets = {
             asset.localIdentifier(): asset
-            for asset in _fetched(Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(media_ids, None))
+            for asset in _fetched(
+                Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(media_ids, _all_sources_fetch_options())
+            )
         }
         missing = [media_id for media_id in media_ids if media_id not in assets]
         if missing:
@@ -475,48 +501,50 @@ class MacOSAppBridge:
         failed: list[dict[str, str]] = []
         for media_id in media_ids:
             resources = list(Photos.PHAssetResource.assetResourcesForAsset_(assets[media_id]))
-            resource = _pick_resource(resources, use_originals)
-            if resource is None:
+            chosen = _pick_resources(resources, use_originals)
+            if not chosen:
                 failed.append({"id": media_id, "error": "asset has no exportable photo/video resource"})
                 continue
-            name = _export_filename(resources, resource)
-            target = export_dir / name
-            suffix_index = 1
-            while target.exists():
-                target = export_dir / f"{Path(name).stem} ({suffix_index}){Path(name).suffix}"
-                suffix_index += 1
+            # Live Photos and RAW+JPEG pairs export one file per resource.
+            for resource in chosen:
+                name = _export_filename(resources, resource)
+                target = export_dir / name
+                suffix_index = 1
+                while target.exists():
+                    target = export_dir / f"{Path(name).stem} ({suffix_index}){Path(name).suffix}"
+                    suffix_index += 1
 
-            # The completion handler runs on a PhotoKit queue, so a plain
-            # Event works without a run loop on the calling thread. It binds
-            # this iteration's objects because a timed-out write can still
-            # complete after the loop has moved on.
-            done = threading.Event()
-            errors: list[str] = []
+                # The completion handler runs on a PhotoKit queue, so a plain
+                # Event works without a run loop on the calling thread. It binds
+                # this iteration's objects because a timed-out write can still
+                # complete after the loop has moved on.
+                done = threading.Event()
+                errors: list[str] = []
 
-            def finished(error: Any, done: threading.Event = done, errors: list[str] = errors) -> None:
-                if error is not None:
-                    errors.append(str(error.localizedDescription()))
-                done.set()
+                def finished(error: Any, done: threading.Event = done, errors: list[str] = errors) -> None:
+                    if error is not None:
+                        errors.append(str(error.localizedDescription()))
+                    done.set()
 
-            manager.writeDataForAssetResource_toFile_options_completionHandler_(
-                resource, NSURL.fileURLWithPath_(str(target)), options, finished
-            )
-            if not done.wait(self._timeout_seconds):
-                failed.append(
-                    {
-                        "id": media_id,
-                        "error": (
-                            f"timed out after {self._timeout_seconds:.0f}s writing {target.name}; "
-                            "the iCloud download may still finish in the background"
-                        ),
-                    }
+                manager.writeDataForAssetResource_toFile_options_completionHandler_(
+                    resource, NSURL.fileURLWithPath_(str(target)), options, finished
                 )
-            elif errors:
-                failed.append(
-                    {"id": media_id, "error": f"could not export {target.name} (iCloud download or write failed): {errors[0]}"}
-                )
-            else:
-                files.append(str(target))
+                if not done.wait(self._timeout_seconds):
+                    failed.append(
+                        {
+                            "id": media_id,
+                            "error": (
+                                f"timed out after {self._timeout_seconds:.0f}s writing {target.name}; "
+                                "the iCloud download may still finish in the background"
+                            ),
+                        }
+                    )
+                elif errors:
+                    failed.append(
+                        {"id": media_id, "error": f"could not export {target.name} (iCloud download or write failed): {errors[0]}"}
+                    )
+                else:
+                    files.append(str(target))
         if failed and not files:
             return {"ok": False, "error": "; ".join(f"{row['id']}: {row['error']}" for row in failed)}
         return {

@@ -55,6 +55,10 @@ tools:
 
 `tools.apple_apps.enabled` 時，validate 階段（`host/check.py`）會呼叫各工具的 `*_permission_problems()`，任一項缺少就 `EnvironmentCheckFailed`，不啟動。理由同 GUI 權限：少了權限每次呼叫都會失敗，寧可啟動時就停。
 
+自動化授權也在這一步檢查。`apple_events.py` 用 `AEDeterminePermissionToAutomateTarget` 查 Reminders、Notes、Mail，固定不跳授權視窗。被拒（-1743）或從未詢問（-1744）都擋下啟動。
+
+目標 app 沒在執行時，macOS 回 -600，無法判斷授權狀態。這種情況直接略過，不在啟動時開 app。缺少的授權會在第一次 JXA 呼叫時才出現。
+
 TCC 以負責程序計。正式環境 lincy 跑在 Terminal 裡的 tmux，權限要給 Terminal；改成 launchd 啟動時要給 `.venv/bin/python` 解析後的真正 binary（見 [gui-computer-use.md](gui-computer-use.md)「權限與部署」）。
 
 ### 權限預熱
@@ -310,6 +314,9 @@ actions：
 - id 是 PhotoKit `localIdentifier`（例如 `<UUID>/L0/001`），與舊 JXA id 相同
 - `album_path` / `folder_path` 格式不變：`資料夾/子資料夾/相簿`，頂層相簿只有名稱；album 列另有 `path`、`parent_folder_id`、`parent_folder_name`
 - `export` 回傳 `failed: [{id, error}]`；全部失敗或 id 不存在會報錯；iCloud 最佳化儲存的原檔會下載
+- `search`、`get_media`、`export` 的 PhotoKit fetch 包含 iCloud 共享相簿與 iTunes 同步的 asset。PhotoKit 預設只取個人圖庫
+- `export` 會寫出 asset 的每個內容 resource。原始檔：照片、RAW+JPEG 的另一半（AlternatePhoto）、原況照片的影片、影片、音訊。目前版本：編輯後的照片與原況影片（沒編輯就用原檔）、影片、音訊，不含 AlternatePhoto
+- 同一 asset 的檔名都用第一個原始 resource 的檔名主體，加上各自的副檔名，例如 `IMG_0001.HEIC` 與 `IMG_0001.MOV`；單一 resource 寫入失敗只進 `failed`，其他檔案照常回傳
 - PhotoKit 已回傳但 Photos.sqlite 還沒有對應列的 asset（例如匯入或同步中），`title`、`filename`、`description`、`size` 回 null、`keywords` 回空陣列
 
 ### `mail_tool`

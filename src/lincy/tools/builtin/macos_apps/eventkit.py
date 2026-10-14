@@ -23,6 +23,7 @@ from Foundation import (
     NSTimeZone,
 )
 
+from .apple_events import automation_problem
 from .reminders_db import read_flags
 from .runtime import _datetime_in_app_tz, _datetime_to_app_iso
 
@@ -62,12 +63,14 @@ def _permission_problem(entity_type: int) -> str | None:
 def eventkit_permission_problems() -> list[str]:
     """Return human-readable permission problems for the Calendar and Reminders tools.
 
-    Covers EventKit full access for events and reminders, plus Full Disk Access
-    for the Reminders database that supplies the flagged state.
+    Covers EventKit full access for events and reminders, Full Disk Access
+    for the Reminders database that supplies the flagged state, and Automation
+    for the JXA call that writes it.
     """
     problems = [
         _permission_problem(EventKit.EKEntityTypeEvent),
         _permission_problem(EventKit.EKEntityTypeReminder),
+        automation_problem("com.apple.reminders", "Reminders"),
     ]
     try:
         read_flags()

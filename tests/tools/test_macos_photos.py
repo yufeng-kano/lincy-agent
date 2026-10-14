@@ -81,6 +81,7 @@ class FakeOptions:
     def __init__(self):
         self.predicate = None
         self.fetch_limit = None
+        self.source_types = None
 
     def init(self):
         return self
@@ -93,6 +94,16 @@ class FakeOptions:
 
     def setFetchLimit_(self, limit):
         self.fetch_limit = limit
+
+    def setIncludeAssetSourceTypes_(self, source_types):
+        self.source_types = source_types
+
+
+ALL_SOURCES = (
+    Photos.PHAssetSourceTypeUserLibrary
+    | Photos.PHAssetSourceTypeCloudShared
+    | Photos.PHAssetSourceTypeiTunesSynced
+)
 
 
 def _make_bridge(tmp_path: Path) -> MacOSAppBridge:
@@ -110,6 +121,9 @@ def _fake_photos(**overrides):
     return SimpleNamespace(
         PHAccessLevelReadWrite=Photos.PHAccessLevelReadWrite,
         PHAuthorizationStatusAuthorized=Photos.PHAuthorizationStatusAuthorized,
+        PHAssetSourceTypeUserLibrary=Photos.PHAssetSourceTypeUserLibrary,
+        PHAssetSourceTypeCloudShared=Photos.PHAssetSourceTypeCloudShared,
+        PHAssetSourceTypeiTunesSynced=Photos.PHAssetSourceTypeiTunesSynced,
         **overrides,
     )
 
@@ -139,26 +153,48 @@ def test_search_predicate_is_none_without_filters():
     assert photos_module._search_predicate(start=None, end=None, favorite=None, ids=None) is None
 
 
-def test_pick_resource_prefers_original_or_edited_render():
-    resources = [
+def _live_photo_resources():
+    return [
         FakeResource(Photos.PHAssetResourceTypeFullSizePhoto, "FullSizeRender.jpeg"),
         FakeResource(Photos.PHAssetResourceTypePhoto, "IMG_0001.HEIC"),
         FakeResource(Photos.PHAssetResourceTypePairedVideo, "IMG_0001.MOV"),
+        FakeResource(Photos.PHAssetResourceTypeFullSizePairedVideo, "FullSizeRender.mov"),
+        FakeResource(Photos.PHAssetResourceTypeAdjustmentData, "Adjustments.plist"),
     ]
 
-    original = photos_module._pick_resource(resources, use_originals=True)
-    current = photos_module._pick_resource(resources, use_originals=False)
 
-    assert original.originalFilename() == "IMG_0001.HEIC"
-    assert current.originalFilename() == "FullSizeRender.jpeg"
-    assert photos_module._export_filename(resources, original) == "IMG_0001.HEIC"
-    assert photos_module._export_filename(resources, current) == "IMG_0001.jpeg"
+def _raw_jpeg_resources():
+    return [
+        FakeResource(Photos.PHAssetResourceTypePhoto, "IMG_0002.JPG"),
+        FakeResource(Photos.PHAssetResourceTypeAlternatePhoto, "IMG_0002.CR2"),
+    ]
 
 
-def test_pick_resource_returns_none_without_media_resource():
+def test_pick_resources_returns_still_and_paired_video_of_live_photo():
+    resources = _live_photo_resources()
+
+    originals = photos_module._pick_resources(resources, use_originals=True)
+    current = photos_module._pick_resources(resources, use_originals=False)
+
+    assert [r.originalFilename() for r in originals] == ["IMG_0001.HEIC", "IMG_0001.MOV"]
+    assert [r.originalFilename() for r in current] == ["FullSizeRender.jpeg", "FullSizeRender.mov"]
+    assert [photos_module._export_filename(resources, r) for r in current] == ["IMG_0001.jpeg", "IMG_0001.mov"]
+
+
+def test_pick_resources_returns_both_halves_of_raw_jpeg_original_only():
+    resources = _raw_jpeg_resources()
+
+    originals = photos_module._pick_resources(resources, use_originals=True)
+    current = photos_module._pick_resources(resources, use_originals=False)
+
+    assert [r.originalFilename() for r in originals] == ["IMG_0002.JPG", "IMG_0002.CR2"]
+    assert [r.originalFilename() for r in current] == ["IMG_0002.JPG"]
+
+
+def test_pick_resources_is_empty_without_media_resource():
     resources = [FakeResource(Photos.PHAssetResourceTypeAdjustmentData, "Adjustments.plist")]
 
-    assert photos_module._pick_resource(resources, use_originals=False) is None
+    assert photos_module._pick_resources(resources, use_originals=False) == []
 
 
 def test_denied_photos_access_raises_permission_error(monkeypatch, tmp_path: Path):
@@ -347,6 +383,7 @@ def test_search_folder_scopes_to_subtree_album_members(granted, monkeypatch, tmp
     start_offset = datetime(2026, 10, 6, 16, tzinfo=timezone.utc).timestamp() - 978307200
     assert f'creationDate >= CAST({start_offset:.6f}, "NSDate")' in predicate
     assert fetched_with[0].fetch_limit == 5
+    assert fetched_with[0].source_types == ALL_SOURCES
 
 
 class FakeChangeLibrary:
@@ -507,13 +544,18 @@ def test_tool_output_is_json(granted, monkeypatch, tmp_path: Path):
 
 
 def test_get_media_without_library_row_returns_empty_text_metadata(granted, monkeypatch, tmp_path: Path):
+    fetched_with: list[FakeOptions] = []
+
+    def fetch_by_ids(ids, options):
+        fetched_with.append(options)
+        return FakeFetch(FakeAsset(i) for i in ids)
+
     monkeypatch.setattr(
         photos_module,
         "Photos",
         _fake_photos(
-            PHAsset=SimpleNamespace(
-                fetchAssetsWithLocalIdentifiers_options_=lambda ids, options: FakeFetch(FakeAsset(i) for i in ids)
-            )
+            PHFetchOptions=SimpleNamespace(alloc=FakeOptions),
+            PHAsset=SimpleNamespace(fetchAssetsWithLocalIdentifiers_options_=fetch_by_ids),
         ),
     )
     # Photos.sqlite has a row for A only; B is still importing.
@@ -529,3 +571,98 @@ def test_get_media_without_library_row_returns_empty_text_metadata(granted, monk
     missing = result["results"][1]
     assert (missing["title"], missing["description"], missing["keywords"], missing["size"]) == (None, None, [], None)
     assert missing["width"] == 10
+
+    # Shared-album and synced assets are excluded unless asked for.
+    assert fetched_with[0].source_types == ALL_SOURCES
+
+
+class FakeResourceManager:
+    def __init__(self, failing=()):
+        self.failing = set(failing)
+
+    def writeDataForAssetResource_toFile_options_completionHandler_(self, resource, url, options, handler):
+        if resource.originalFilename() in self.failing:
+            handler(SimpleNamespace(localizedDescription=lambda: "network unavailable"))
+            return
+        Path(url.path()).write_text(resource.originalFilename())
+        handler(None)
+
+
+def _export_photos(resources_by_id, manager, fetched_with):
+    def fetch_by_ids(ids, options):
+        fetched_with.append(options)
+        return FakeFetch(FakeAsset(i) for i in ids if i in resources_by_id)
+
+    return _fake_photos(
+        PHFetchOptions=SimpleNamespace(alloc=FakeOptions),
+        PHAsset=SimpleNamespace(fetchAssetsWithLocalIdentifiers_options_=fetch_by_ids),
+        PHAssetResource=SimpleNamespace(
+            assetResourcesForAsset_=lambda asset: resources_by_id[asset.localIdentifier()]
+        ),
+        PHAssetResourceManager=SimpleNamespace(defaultManager=lambda: manager),
+        PHAssetResourceRequestOptions=SimpleNamespace(
+            alloc=lambda: SimpleNamespace(init=lambda: SimpleNamespace(setNetworkAccessAllowed_=lambda allowed: None))
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("use_originals", "expected"),
+    [
+        (True, {"IMG_0001.HEIC": "IMG_0001.HEIC", "IMG_0001.MOV": "IMG_0001.MOV"}),
+        (False, {"IMG_0001.jpeg": "FullSizeRender.jpeg", "IMG_0001.mov": "FullSizeRender.mov"}),
+    ],
+)
+def test_export_writes_still_and_paired_video_of_live_photo(
+    granted, monkeypatch, tmp_path: Path, use_originals, expected
+):
+    fetched_with: list[FakeOptions] = []
+    monkeypatch.setattr(
+        photos_module,
+        "Photos",
+        _export_photos({"LIVE/L0/001": _live_photo_resources()}, FakeResourceManager(), fetched_with),
+    )
+
+    result = _make_bridge(tmp_path).photos_export(
+        media_ids=["LIVE/L0/001"], destination_dir=str(tmp_path / "out"), use_originals=use_originals
+    )
+
+    assert result["ok"] is True
+    assert result["failed"] == []
+    assert {Path(f).name: Path(f).read_text() for f in result["files"]} == expected
+    assert fetched_with[0].source_types == ALL_SOURCES
+
+
+def test_export_writes_both_halves_of_raw_jpeg_original(granted, monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        photos_module,
+        "Photos",
+        _export_photos({"RAW/L0/001": _raw_jpeg_resources()}, FakeResourceManager(), []),
+    )
+
+    result = _make_bridge(tmp_path).photos_export(
+        media_ids=["RAW/L0/001"], destination_dir=str(tmp_path / "out"), use_originals=True
+    )
+
+    assert sorted(Path(f).name for f in result["files"]) == ["IMG_0002.CR2", "IMG_0002.JPG"]
+    assert result["count"] == 2
+
+
+def test_export_reports_failed_resource_and_keeps_the_rest(granted, monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        photos_module,
+        "Photos",
+        _export_photos(
+            {"LIVE/L0/001": _live_photo_resources()}, FakeResourceManager(failing={"IMG_0001.MOV"}), []
+        ),
+    )
+
+    result = _make_bridge(tmp_path).photos_export(
+        media_ids=["LIVE/L0/001"], destination_dir=str(tmp_path / "out"), use_originals=True
+    )
+
+    assert result["ok"] is True
+    assert [Path(f).name for f in result["files"]] == ["IMG_0001.HEIC"]
+    assert len(result["failed"]) == 1
+    assert result["failed"][0]["id"] == "LIVE/L0/001"
+    assert "IMG_0001.MOV" in result["failed"][0]["error"]
