@@ -258,6 +258,8 @@ actions：
 - `note_id` 格式 `x-coredata://<Z_UUID>/ICNote/p<Z_PK>`，與舊 JXA id 相同
 - `search` 完全不呼叫 Notes.app：快取新鮮（`modified_stamp` 相符）時用快取的摘要，否則用資料庫純文字做摘要；結果帶 `summary_source`（`cache` / `plain_text` / `none`）。純文字摘要另存在快取的 `plain_summary`，不會讓完整內容的快取看起來是新的
 - `get` 用一次 JXA `notes.byId(id).body()` 取完整 HTML 並更新快取，之後的 search 會變成 `summary_source: "cache"`
+- `query` 比對標題、資料庫純文字，再比對新鮮快取的 Markdown 與摘要。純文字摘要以 `plain_summary_stamp` 判斷新鮮：與筆記目前的修改時間相符才拿來比對，筆記改過就不算
+- 本文沒下載或無法解碼、標題也不符的筆記無法判斷是否符合，計入 `body_unavailable_count`（帶 `query` 時才回傳）。只要有一則，`total_matches_exact` 就是 false，`warning` 也會說明。上鎖筆記和已有新鮮完整快取的筆記不計入
 - Notes.app 偶爾會在單次 `body()` 卡住 8 到 85 秒，這是 search 不呼叫 Notes.app 的原因
 - 「最近刪除」資料夾與其中筆記一律排除；上鎖筆記回 `password_protected: true`、`content_kind: "locked_note"`，不讀內容
 - 本文尚未同步（`ZDATA` 為 NULL，例如未下載的共享筆記）或無法解碼的筆記只影響自己：search 回 `content_kind: "unavailable_note"`、`summary_source: "none"`；缺少建立或修改時間的筆記回 `created_at` / `modified_at` 為 null，日期篩選不會命中、排序排在最後，也不使用快取；`get` 照常向 Notes.app 取 body
@@ -314,7 +316,7 @@ actions：
 - id 是 PhotoKit `localIdentifier`（例如 `<UUID>/L0/001`），與舊 JXA id 相同
 - `album_path` / `folder_path` 格式不變：`資料夾/子資料夾/相簿`，頂層相簿只有名稱；album 列另有 `path`、`parent_folder_id`、`parent_folder_name`
 - `export` 回傳 `failed: [{id, error}]`；全部失敗或 id 不存在會報錯；iCloud 最佳化儲存的原檔會下載
-- `search`、`get_media`、`export` 的 PhotoKit fetch 包含 iCloud 共享相簿與 iTunes 同步的 asset。PhotoKit 預設只取個人圖庫
+- `search`、`get_media`、`export`、`add_to_album` 依 id 查 asset 的 PhotoKit fetch 包含 iCloud 共享相簿與 iTunes 同步的 asset。PhotoKit 預設只取個人圖庫
 - `export` 會寫出 asset 的每個內容 resource。原始檔：照片、RAW+JPEG 的另一半（AlternatePhoto）、原況照片的影片、影片、音訊。目前版本：編輯後的照片與原況影片（沒編輯就用原檔）、影片、音訊，不含 AlternatePhoto
 - 同一 asset 的檔名都用第一個原始 resource 的檔名主體，加上各自的副檔名，例如 `IMG_0001.HEIC` 與 `IMG_0001.MOV`；單一 resource 寫入失敗只進 `failed`，其他檔案照常回傳
 - `query` 比對標題、檔名、描述、關鍵字，不分大小寫，含非 ASCII 字母（`Été` 可找到 `été`）。兩邊都先轉 NFC 再比，Photos 存成分解形式（NFD）也找得到
@@ -364,8 +366,11 @@ actions：
 - `search_body=true` 時，正文沒下載到本機、標頭也不符的信會跳過，計入 `body_unavailable_count`。這種信可能其實符合，所以只要有一封，`matched_count_exact` 就是 false，`warning` 也會說明
 - `search` 回傳 `message_ref`（格式 `mailmsg:<ROWID>`，輸入也接受裸數字 ROWID，與舊 JXA 相容；ROWID 即 Envelope Index `messages.ROWID`，也等於 Mail AppleScript 的 message `id`），後續 `get`、`export_attachment`、`trash` 都用它，不讓 agent 自行拼 Mail.app 內部位置
 - `attachment_ids` 是 IMAP part 編號（例如 `2`、`1.2`），與 Envelope Index `attachments` 表一致；未下載到本機的附件匯出時會報錯
+- 轉寄附上的整封信（`message/rfc822` 且有檔名或 attachment disposition）算一個附件，匯出成 `.eml`，不再拆開裡面的 part。沒有檔名的 inline `message/rfc822`（例如退信報告）照舊依 IMAP 編號展開
 - 正文未下載到本機時，`get` 的 `content` 為 null，`content_error` 說明需在 Mail.app 開啟該信
+- 正文優先用 `text/plain`。所有純文字 part 去掉空白後都是空的，就改用 HTML part 轉出的文字
 - `trash` 執行前會先比對每封信的 Message-ID，已在垃圾桶或找不到的信直接拒絕；`dry_run=true` 也會向 Mail.app 確認每封信可定位
+- `trash` 找來源信箱與垃圾桶時，先用完整路徑（例如 `[Gmail]/Trash`）查，找不到再沿 `/` 逐層往下找。兩種寫法都還沒在主機上對巢狀 IMAP 信箱驗證過。任一信箱找不到就回報問題，不移動任何信。`dry_run=true` 也會檢查垃圾桶信箱
 - inbox 未讀數以資料庫為準，可能和 Mail.app 的 `unreadCount` 不同
 - `trash` 只接受 `message_ref` / `message_refs`，不接受 `query`；預設 `dry_run=true`
 - `trash(dry_run=false)` 單次最多 20 封，只移到 Trash，不做永久刪除

@@ -424,7 +424,7 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
         }
 
     def _note_matches_query(self, note: StoredNote, needle: str) -> bool:
-        """Match title and database plain text, then cached Markdown and summary.
+        """Match title and database plain text, then cached Markdown and summaries.
 
         The cache adds text the database lacks, such as vision summaries of
         embedded images, for notes that were rendered before.
@@ -432,9 +432,19 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
         if needle in (note.meta["title"] or "").lower() or needle in (note.text or "").lower():
             return True
         cached = self._read_fresh_note_cache(note)
-        return bool(cached) and (
+        if cached and (
             needle in (cached.get("search_summary") or "").lower()
             or needle in (cached.get("content_markdown") or "").lower()
+        ):
+            return True
+        # Plain-text summaries carry their own stamp and never set
+        # modified_stamp; they are fresh under the same rule search uses to
+        # reuse them, and without a timestamp nothing is fresh.
+        if note.modified is None:
+            return False
+        entry = self._read_note_cache(note_id=note.meta["id"]) or {}
+        return entry.get("plain_summary_stamp") == note.modified.isoformat() and (
+            needle in (entry.get("plain_summary") or "").lower()
         )
 
     def notes_search(
@@ -483,11 +493,20 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
             and ("modified_after" not in bounds or (note.modified is not None and note.modified >= bounds["modified_after"]))
             and ("modified_before" not in bounds or (note.modified is not None and note.modified <= bounds["modified_before"]))
         ]
-        matched = (
-            [note for note in candidates if self._note_matches_query(note, needle)]
-            if needle
-            else candidates
-        )
+        matched = []
+        body_unavailable = 0
+        for note in candidates:
+            if not needle or self._note_matches_query(note, needle):
+                matched.append(note)
+            # A body that is not downloaded or not decodable was never
+            # searched, so the note may match. Locked notes are never
+            # searchable by body, and a fresh rich cache already covered it.
+            elif (
+                note.text is None
+                and not note.meta["password_protected"]
+                and self._read_fresh_note_cache(note) is None
+            ):
+                body_unavailable += 1
         sort_key, reverse = {
             "modified_asc": (lambda note: note.modified, False),
             "created_desc": (lambda note: note.created, True),
@@ -540,15 +559,24 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
             safe_offset,
             safe_limit,
         )
-        return {
+        result = {
             "ok": True,
             "results": results,
             "count": len(results),
             "total_matches": len(matched),
+            "total_matches_exact": body_unavailable == 0,
             "offset": safe_offset,
             "limit": safe_limit,
             "has_more": safe_offset + safe_limit < len(matched),
+            "warning": (
+                f"could not search the body of {body_unavailable} note(s) not downloaded or not readable; "
+                "total_matches may miss them"
+                if body_unavailable else None
+            ),
         }
+        if needle:
+            result["body_unavailable_count"] = body_unavailable
+        return result
 
     def _load_note(self, note_id: str) -> StoredNote | dict[str, Any]:
         """Look up one note in the database, or return the tool error payload."""

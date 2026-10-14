@@ -134,11 +134,35 @@ MAIL_TOOL_DEFINITION = ToolDefinition(
 _MAIL_TRASH_JXA = """
 const app = Application("Mail");
 const payload = readPayload();
-const mailboxOf = (target, path) => (target.local ? app : app.accounts.byId(target.account)).mailboxes.byName(path);
+// The full-path form is tried first because neither form has been verified
+// against nested IMAP folders on the host; Mail may expose a nested mailbox
+// only through its parents. Returns null when neither form resolves.
+const mailboxOf = (target, path) => {
+  const root = target.local ? app : app.accounts.byId(target.account);
+  const direct = root.mailboxes.byName(path);
+  if (safe(() => direct.exists(), false)) {
+    return direct;
+  }
+  let box = root;
+  for (const name of path.split("/")) {
+    box = box.mailboxes.byName(name);
+    if (!safe(() => box.exists(), false)) {
+      return null;
+    }
+  }
+  return box;
+};
 const resolved = [];
 const problems = [];
 for (const target of payload.targets) {
-  const message = mailboxOf(target, target.mailbox_path).messages.byId(target.id);
+  const source = mailboxOf(target, target.mailbox_path);
+  const trash = mailboxOf(target, target.trash_path);
+  if (source === null || trash === null) {
+    const path = source === null ? target.mailbox_path : target.trash_path;
+    problems.push(`${target.message_ref}: Mail.app mailbox not found: ${path}`);
+    continue;
+  }
+  const message = source.messages.byId(target.id);
   const matches = target.message_id === null
     ? safe(() => message.exists(), false)
     : safe(() => message.messageId(), null) === target.message_id;
@@ -146,14 +170,14 @@ for (const target of payload.targets) {
     problems.push(`${target.message_ref}: Mail.app message does not match the index; search again`);
     continue;
   }
-  resolved.push({ target, message });
+  resolved.push({ target, message, trash });
 }
 if (problems.length > 0) {
   return { ok: false, error: problems.join("; ") };
 }
 if (!payload.dry_run) {
-  for (const { target, message } of resolved) {
-    app.move(message, { to: mailboxOf(target, target.trash_path) });
+  for (const { message, trash } of resolved) {
+    app.move(message, { to: trash });
   }
 }
 return { ok: true, verified_count: resolved.length };

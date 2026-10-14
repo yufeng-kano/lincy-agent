@@ -334,6 +334,24 @@ def test_uncached_search_summarizes_plain_text_without_notes_app(store_path: Pat
     assert len(summarizer.inputs) == 2
 
 
+def test_search_query_matches_plain_summary_while_note_is_unchanged(store_path: Path, tmp_path: Path):
+    bridge = _bridge(tmp_path, notes_summarizer=_FakeSummarizer())
+    _forbid_notes_app(bridge)
+    first = _search(bridge, folder_path="iCloud/Reading")
+    summarized = next(item["id"] for item in first["results"] if item["summary"] == "summary 1")
+
+    assert [item["id"] for item in _search(bridge, query="SUMMARY 1")["results"]] == [summarized]
+
+    con = sqlite3.connect(store_path)
+    con.execute(
+        "UPDATE ZICCLOUDSYNCINGOBJECT SET ZMODIFICATIONDATE1 = ? WHERE Z_PK = ?",
+        (_ts("2026-05-01T00:00:00+00:00"), int(summarized.rsplit("/p", 1)[1])),
+    )
+    con.commit()
+    con.close()
+    assert _search(bridge, query="summary 1")["total_matches"] == 0
+
+
 def test_get_after_plain_text_search_fetches_body_and_upgrades_cache(store_path: Path, tmp_path: Path):
     summarizer = _FakeSummarizer()
     bridge = _bridge(tmp_path, notes_summarizer=summarizer)
@@ -511,6 +529,18 @@ def test_unsynced_or_undecodable_note_degrades_alone(store_path: Path, tmp_path:
     dated = _search(bridge, modified_after="2026-01-01T00:00", limit=10)
     assert dated["total_matches"] == 6
     assert _note_id(106) not in [item["id"] for item in dated["results"]]
+
+    # Bodies of 106-108 were never searched, so a miss is not exact; the
+    # locked note 103 has no searchable body at all and is not counted.
+    missed = _search(bridge, query="nothing like this")
+    assert (missed["total_matches"], missed["total_matches_exact"], missed["body_unavailable_count"]) == (0, False, 3)
+    assert "body of 3 note(s)" in missed["warning"]
+    by_title = _search(bridge, query="garbled")
+    assert (by_title["total_matches"], by_title["body_unavailable_count"]) == (1, 2)
+    unfiltered = _search(bridge, folder_path="iCloud/Notes")
+    assert unfiltered["total_matches_exact"] is True
+    assert unfiltered["warning"] is None
+    assert "body_unavailable_count" not in unfiltered
 
     bridge._notes_fetch_body = lambda *, note_id: "<div>shared body</div>"
     note = bridge.notes_get(note_id=_note_id(106))["note"]

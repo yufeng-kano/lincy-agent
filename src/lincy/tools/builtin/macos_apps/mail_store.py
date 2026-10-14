@@ -121,12 +121,27 @@ def _decoded_text(part: EmailMessage) -> str:
         return payload.decode("utf-8", "replace")
 
 
+def _is_attached_message(part: EmailMessage) -> bool:
+    return part.get_content_type() == "message/rfc822" and (
+        part.get_filename() is not None or part.get_content_disposition() == "attachment"
+    )
+
+
+def _part_bytes(part: EmailMessage) -> bytes:
+    # A message/rfc822 payload parses into a message object, which
+    # get_payload(decode=True) does not serialize.
+    if part.get_content_type() == "message/rfc822":
+        return part.get_payload(0).as_bytes()
+    return part.get_payload(decode=True) or b""
+
+
 def _leaf_parts(message: EmailMessage) -> list[tuple[str, EmailMessage]]:
     """Return non-multipart parts keyed by IMAP part number ('1', '1.2', ...).
 
     Mail names attachment folders and Envelope Index attachment ids by these
-    numbers. A message/rfc822 part P is opened up like IMAP does: its body
-    parts are numbered P.1, P.2, ...
+    numbers. An inline message/rfc822 part P is opened up like IMAP does: its
+    body parts are numbered P.1, P.2, ... An attached message stays one leaf
+    so it can be exported whole as .eml.
     """
     leaves: list[tuple[str, EmailMessage]] = []
 
@@ -138,7 +153,7 @@ def _leaf_parts(message: EmailMessage) -> list[tuple[str, EmailMessage]]:
             part_id = f"{prefix}{index}"
             if child.get_content_maintype() == "multipart":
                 walk(child, f"{part_id}.")
-            elif child.get_content_type() == "message/rfc822":
+            elif child.get_content_type() == "message/rfc822" and not _is_attached_message(child):
                 walk(child.get_payload(0), f"{part_id}.")
             else:
                 leaves.append((part_id, child))
@@ -163,7 +178,8 @@ def _is_attachment(part: EmailMessage) -> bool:
     # Matches the Envelope Index attachments table, checked against a real
     # mailbox: alternative text bodies (text/x-amp-html, ...) and message/*
     # reports are not attachments, but inline text/calendar invites are.
-    if part.get_content_type() == "text/calendar":
+    # A forwarded message with a filename or attachment disposition is one.
+    if part.get_content_type() == "text/calendar" or _is_attached_message(part):
         return True
     return not (
         _is_body_text(part)
@@ -298,7 +314,8 @@ class MailStore:
                 plain.append(_decoded_text(part))
             elif part.get_content_subtype() == "html":
                 html.append(_html_text(_decoded_text(part)))
-        texts = plain or html
+        # Some senders put an empty text/plain next to the real HTML body.
+        texts = plain if any(text.strip() for text in plain) else html
         if not texts and missing:
             return None
         return "\n\n".join(texts).strip()
@@ -320,7 +337,7 @@ class MailStore:
             elif _not_downloaded(part):
                 size = int(part["X-Apple-Content-Length"])
             else:
-                size = len(part.get_payload(decode=True) or b"")
+                size = len(_part_bytes(part))
             rows.append({
                 "id": part_id,
                 "name": name,
@@ -536,7 +553,7 @@ class MailStore:
             if item["_stored"] is not None:
                 shutil.copyfile(item["_stored"], target)
             else:
-                target.write_bytes(item["_part"].get_payload(decode=True) or b"")
+                target.write_bytes(_part_bytes(item["_part"]))
             exported.append(public_fields(item))
             files.append(str(target))
         return exported, files

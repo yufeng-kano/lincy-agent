@@ -439,7 +439,12 @@ def _change_photos(library, recorded):
 
         return SimpleNamespace(addAssets_=add_assets)
 
+    def fetch_by_ids(ids, options):
+        recorded["fetch_options"] = options
+        return FakeFetch([FakeAsset(i) for i in ids if i.startswith("KNOWN")])
+
     return _fake_photos(
+        PHFetchOptions=SimpleNamespace(alloc=FakeOptions),
         PHPhotoLibrary=SimpleNamespace(sharedPhotoLibrary=lambda: library),
         PHAssetCollectionChangeRequest=SimpleNamespace(
             creationRequestForAssetCollectionWithTitle_=create_album,
@@ -448,9 +453,7 @@ def _change_photos(library, recorded):
         PHCollectionListChangeRequest=SimpleNamespace(changeRequestForCollectionList_=change_folder),
         PHAsset=SimpleNamespace(
             fetchAssetsInAssetCollection_options_=lambda album, options: FakeFetch(album.assets),
-            fetchAssetsWithLocalIdentifiers_options_=lambda ids, options: FakeFetch(
-                [FakeAsset(i) for i in ids if i.startswith("KNOWN")]
-            ),
+            fetchAssetsWithLocalIdentifiers_options_=fetch_by_ids,
         ),
     )
 
@@ -531,6 +534,8 @@ def test_add_to_album_adds_assets_and_returns_fresh_count(granted, monkeypatch, 
     )
 
     assert recorded["added"] == ("AL/L0/040", ["KNOWN-1/L0/001"])
+    # Shared and synced assets that search returned must be found here too.
+    assert recorded["fetch_options"].source_types == ALL_SOURCES
     assert result["ok"] is True
     assert result["album"]["count"] == 1
 

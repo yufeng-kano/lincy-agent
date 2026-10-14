@@ -9,7 +9,7 @@ import sqlite3
 import pytest
 
 from lincy.tools.builtin.macos_apps import MacOSAppBridge, create_mail_tool
-from lincy.tools.builtin.macos_apps.mail_store import mail_permission_problems, parse_message_ref
+from lincy.tools.builtin.macos_apps.mail_store import MailStore, mail_permission_problems, parse_message_ref
 
 ACCOUNT = "ACCT-UUID"
 LOCAL = "LOCAL-UUID"
@@ -355,6 +355,82 @@ def test_export_errors_on_unknown_or_undownloaded_attachments(bridge: MacOSAppBr
         bridge.mail_export_attachment(message_ref="mailmsg:2001", attachment_ids=None, destination_dir=str(tmp_path))
 
 
+_FORWARDED = """From: Dan <dan@example.com>
+Subject: Fwd: Inner
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b4"
+
+--b4
+Content-Type: text/plain; charset=utf-8
+
+see forwarded
+--b4
+Content-Type: message/rfc822
+Content-Disposition: attachment; filename="Inner.eml"
+
+From: Eve <eve@example.com>
+Subject: Inner
+Content-Type: text/plain; charset=utf-8
+
+inner body
+--b4
+Content-Type: message/rfc822
+
+From: Postmaster <postmaster@example.com>
+Subject: Delivery report
+Content-Type: text/plain; charset=utf-8
+
+report text
+--b4--
+"""
+
+_EMPTY_PLAIN_ALTERNATIVE = """From: Fay <fay@example.com>
+Subject: Newsletter
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b5"
+
+--b5
+Content-Type: text/plain; charset=utf-8
+
+\x20\x20
+--b5
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Real body</p></body></html>
+--b5--
+"""
+
+
+def test_attached_message_is_one_exportable_eml(tmp_path: Path):
+    path = tmp_path / "Messages" / "1.emlx"
+    path.parent.mkdir()
+    path.write_bytes(_emlx(_FORWARDED))
+    store = MailStore(tmp_path)
+    store.message_file = lambda url, rowid: path  # type: ignore[method-assign]
+
+    attachments = store.attachments(store.read_emlx(path), path, 1)
+    # The inline report (part 3) is still opened up and is not an attachment.
+    assert [(item["id"], item["name"], item["mime_type"]) for item in attachments] == [
+        ("2", "Inner.eml", "message/rfc822")
+    ]
+    assert attachments[0]["file_size"] > 0
+
+    exported, files = store.export_attachments(
+        {"_url": "", "id": 1, "message_ref": "mailmsg:1"}, ["2"], tmp_path / "out"
+    )
+    assert [Path(f).name for f in files] == ["Inner.eml"]
+    inner = MailStore.read_emlx(path).get_payload(1).get_payload(0)
+    assert Path(files[0]).read_bytes() == inner.as_bytes()
+    assert "Subject: Inner" in Path(files[0]).read_text()
+
+
+def test_body_text_falls_back_to_html_when_plain_alternative_is_blank(tmp_path: Path):
+    path = tmp_path / "1.emlx"
+    path.write_bytes(_emlx(_EMPTY_PLAIN_ALTERNATIVE))
+
+    assert MailStore.body_text(MailStore.read_emlx(path)) == "Real body"
+
+
 def test_trash_addresses_message_directly_and_verifies_message_id(bridge: MacOSAppBridge):
     captured = {}
 
@@ -382,6 +458,24 @@ def test_trash_addresses_message_directly_and_verifies_message_id(bridge: MacOSA
     assert "app.move(" in captured["body"]
     assert result["dry_run"] is True
     assert result["messages"][0]["message_ref"] == "mailmsg:1001"
+
+
+def test_trash_reports_unresolved_mailbox_from_mail(bridge: MacOSAppBridge):
+    captured = {}
+    problem = {"ok": False, "error": "mailmsg:1001: Mail.app mailbox not found: [Gmail]/Trash"}
+
+    def fake_run_jxa_json(body: str, *, payload=None, **kwargs):
+        captured["body"] = body
+        return problem
+
+    bridge._run_jxa_json = fake_run_jxa_json  # type: ignore[method-assign]
+
+    assert bridge.mail_trash(message_refs=["mailmsg:1001"], dry_run=False) == problem
+    # Full path first, then a walk through the parents; both mailboxes are
+    # resolved before anything moves.
+    assert "safe(() => direct.exists(), false)" in captured["body"]
+    assert 'path.split("/")' in captured["body"]
+    assert "mailboxOf(target, target.trash_path)" in captured["body"]
 
 
 def test_trash_rejects_missing_and_already_trashed_before_mail_runs(bridge: MacOSAppBridge):

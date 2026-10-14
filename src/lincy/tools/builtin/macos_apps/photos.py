@@ -600,7 +600,9 @@ class MacOSAppBridge:
         if found is None:
             return {"ok": False, "error": f"album not found: {album_id or album_path or album_name}"}
         album = found[1]
-        assets = _fetched(Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(media_ids, None))
+        assets = _fetched(
+            Photos.PHAsset.fetchAssetsWithLocalIdentifiers_options_(media_ids, _all_sources_fetch_options())
+        )
         found_ids = {asset.localIdentifier() for asset in assets}
         missing = [media_id for media_id in media_ids if media_id not in found_ids]
         if missing:
