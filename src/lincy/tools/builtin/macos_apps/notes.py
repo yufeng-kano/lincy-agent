@@ -191,8 +191,11 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
 
         modified_at is truncated to whole seconds like Notes scripting, so a
         create followed by an update within one second would look unchanged;
-        the full-precision database timestamp tells them apart.
+        the full-precision database timestamp tells them apart. Without a
+        timestamp freshness cannot be proven, so nothing is fresh.
         """
+        if note.modified is None:
+            return None
         cached = self._read_note_cache(note_id=note.meta["id"])
         if (
             cached
@@ -347,7 +350,7 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
         source_url = _extract_source_url(body_html)
         payload = {
             **note.meta,
-            "modified_stamp": note.modified.isoformat(),
+            "modified_stamp": note.modified.isoformat() if note.modified else None,
             "content_markdown": content_markdown,
             "content_chars": len(content_markdown),
             "has_images": has_images,
@@ -379,12 +382,25 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
         if locked or self._read_fresh_note_cache(note) is not None:
             view = self._build_note_view(note, include_summary=True)
             return {**view, "summary_source": "none" if locked else "cache"}
-        stamp = note.modified.isoformat()
-        text = _normalize_markdown((note.text or "").replace("\ufffc", ""))
+        if note.text is None:
+            # The body is not downloaded yet or not decodable, so there is
+            # nothing to summarize; say so instead of reporting an empty note.
+            return {
+                **note.meta,
+                "search_summary": "",
+                "summary_source": "none",
+                "content_chars": 0,
+                "has_images": note.image_count > 0,
+                "image_count": note.image_count,
+                "source_url": note.link_url,
+                "content_kind": "unavailable_note",
+            }
+        stamp = note.modified.isoformat() if note.modified else None
+        text = _normalize_markdown(note.text.replace("\ufffc", ""))
         # Plain-text summaries live in their own keys so they never make the
         # rich content_markdown look fresh; a later get upgrades the entry.
         entry = self._read_note_cache(note_id=note.meta["id"]) or {}
-        if entry.get("plain_summary_stamp") != stamp:
+        if stamp is None or entry.get("plain_summary_stamp") != stamp:
             entry["plain_summary"] = self._summarize_note_content(
                 title=note.meta["title"],
                 content_markdown=text,
@@ -456,15 +472,16 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
                     return {"ok": False, "error": "notes folder not found"}
             notes = store.notes()
 
+        # A note without a timestamp cannot satisfy a bound on that date.
         candidates = [
             note
             for note in notes
             if (not account or note.meta["account"] == account)
             and (folder is None or note.meta["folder_id"] == folder["id"])
-            and ("created_after" not in bounds or note.created >= bounds["created_after"])
-            and ("created_before" not in bounds or note.created <= bounds["created_before"])
-            and ("modified_after" not in bounds or note.modified >= bounds["modified_after"])
-            and ("modified_before" not in bounds or note.modified <= bounds["modified_before"])
+            and ("created_after" not in bounds or (note.created is not None and note.created >= bounds["created_after"]))
+            and ("created_before" not in bounds or (note.created is not None and note.created <= bounds["created_before"]))
+            and ("modified_after" not in bounds or (note.modified is not None and note.modified >= bounds["modified_after"]))
+            and ("modified_before" not in bounds or (note.modified is not None and note.modified <= bounds["modified_before"]))
         ]
         matched = (
             [note for note in candidates if self._note_matches_query(note, needle)]
@@ -476,7 +493,10 @@ return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payloa
             "created_desc": (lambda note: note.created, True),
             "created_asc": (lambda note: note.created, False),
         }.get(sort_by or "", (lambda note: note.modified, True))
-        matched.sort(key=sort_key, reverse=reverse)
+        # Notes without the sort date go last in both directions.
+        matched = sorted((note for note in matched if sort_key(note) is not None), key=sort_key, reverse=reverse) + [
+            note for note in matched if sort_key(note) is None
+        ]
 
         safe_offset = max(0, offset or 0)
         safe_limit = max(

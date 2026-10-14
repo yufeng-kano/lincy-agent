@@ -12,6 +12,7 @@ import EventKit
 from ....llm.schema import ToolDefinition, ToolParameter
 from .eventkit import (
     components_to_iso,
+    components_to_nsdate,
     datetime_to_components,
     open_store,
     save_error,
@@ -166,10 +167,23 @@ def _find_reminder(store: Any, reminder_id: str) -> Any:
 
 
 def _set_due(reminder: Any, due: datetime) -> None:
-    reminder.setDueDateComponents_(datetime_to_components(due))
+    old_due = reminder.dueDateComponents()
+    old_date = components_to_nsdate(old_due) if old_due is not None else None
+    components = datetime_to_components(due)
+    reminder.setDueDateComponents_(components)
     # A JXA dueDate write also produced one absolute alarm at the due time; that
-    # alarm is what makes Reminders notify, so keep writing it.
-    reminder.setAlarms_([EventKit.EKAlarm.alarmWithAbsoluteDate_(to_nsdate(due))])
+    # alarm is what makes Reminders notify, so move it along with the due date.
+    # Other alarms (relative "1 day early", location, custom times) are the
+    # user's and stay.
+    alarms = [
+        alarm
+        for alarm in reminder.alarms() or []
+        if old_date is None or alarm.absoluteDate() is None or not alarm.absoluteDate().isEqualToDate_(old_date)
+    ]
+    # Derive the alarm from the stored components so the next update finds it
+    # by exact date even when due carried sub-second precision.
+    alarms.append(EventKit.EKAlarm.alarmWithAbsoluteDate_(components_to_nsdate(components)))
+    reminder.setAlarms_(alarms)
 
 
 _SET_FLAGGED_JXA = """
@@ -194,25 +208,45 @@ class MacOSAppBridge:
             operation="reminders set flagged",
         )
 
+    def _flag_saved_reminder(self, reminder: Any, flagged: bool) -> dict[str, Any]:
+        """Write the flag of a reminder already saved through EventKit.
+
+        The save is committed, so a failed flag write must not report the call
+        as failed: the agent would retry a create and duplicate the reminder.
+        """
+        identifier = reminder.calendarItemIdentifier()
+        try:
+            self._set_reminder_flagged(identifier, flagged)
+        except RuntimeError as exc:
+            # _run_jxa_json has already logged the failure.
+            return {
+                "ok": True,
+                "reminder": _reminder_row(reminder, read_flags().get(identifier)),
+                "warning": f"reminder saved, but flagged={flagged} was not applied: {exc}",
+            }
+        # Report the value just written rather than re-reading the database,
+        # which can trail the Reminders.app write.
+        return {"ok": True, "reminder": _reminder_row(reminder, flagged)}
+
     def reminders_catalog(self) -> dict[str, Any]:
         """List reminder accounts and lists."""
-        store = open_store(EventKit.EKEntityTypeReminder)
         accounts: dict[str, dict[str, Any]] = {}
-        calendars = store.calendarsForEntityType_(EventKit.EKEntityTypeReminder)
-        for calendar in calendars:
-            source = calendar.source()
-            account = accounts.setdefault(
-                source.sourceIdentifier(),
-                {"id": source.sourceIdentifier(), "name": source.title(), "lists": []},
-            )
-            account["lists"].append(
-                {
-                    "id": calendar.calendarIdentifier(),
-                    "name": calendar.title(),
-                    "account": source.title(),
-                    "path": _list_path(calendar),
-                }
-            )
+        with open_store(EventKit.EKEntityTypeReminder) as store:
+            calendars = store.calendarsForEntityType_(EventKit.EKEntityTypeReminder)
+            for calendar in calendars:
+                source = calendar.source()
+                account = accounts.setdefault(
+                    source.sourceIdentifier(),
+                    {"id": source.sourceIdentifier(), "name": source.title(), "lists": []},
+                )
+                account["lists"].append(
+                    {
+                        "id": calendar.calendarIdentifier(),
+                        "name": calendar.title(),
+                        "account": source.title(),
+                        "path": _list_path(calendar),
+                    }
+                )
         return {"ok": True, "accounts": list(accounts.values()), "count": len(calendars)}
 
     def reminders_search(
@@ -234,55 +268,55 @@ class MacOSAppBridge:
         """Search reminders."""
         start = _datetime_in_app_tz(_parse_local_datetime(due_start, field_name="due_start")) if due_start else None
         end = _datetime_in_app_tz(_parse_local_datetime(due_end, field_name="due_end")) if due_end else None
-        store = open_store(EventKit.EKEntityTypeReminder)
-        calendars = None
-        if list_id or list_name or list_path:
-            calendars = [_find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)]
-        if completed is False:
-            # Bounds are widened by a day because EventKit does not document how it
-            # places floating (date-only) due dates; exact bounds are applied below.
-            predicate = store.predicateForIncompleteRemindersWithDueDateStarting_ending_calendars_(
-                to_nsdate(start - timedelta(days=1)) if start else None,
-                to_nsdate(end + timedelta(days=1)) if end else None,
-                calendars,
-            )
-        elif completed is True:
-            predicate = store.predicateForCompletedRemindersWithCompletionDateStarting_ending_calendars_(
-                None, None, calendars
-            )
-        else:
-            predicate = store.predicateForRemindersInCalendars_(calendars)
+        with open_store(EventKit.EKEntityTypeReminder) as store:
+            calendars = None
+            if list_id or list_name or list_path:
+                calendars = [_find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)]
+            if completed is False:
+                # Bounds are widened by a day because EventKit does not document how it
+                # places floating (date-only) due dates; exact bounds are applied below.
+                predicate = store.predicateForIncompleteRemindersWithDueDateStarting_ending_calendars_(
+                    to_nsdate(start - timedelta(days=1)) if start else None,
+                    to_nsdate(end + timedelta(days=1)) if end else None,
+                    calendars,
+                )
+            elif completed is True:
+                predicate = store.predicateForCompletedRemindersWithCompletionDateStarting_ending_calendars_(
+                    None, None, calendars
+                )
+            else:
+                predicate = store.predicateForRemindersInCalendars_(calendars)
 
-        fetched: list[Any] = []
-        done = threading.Event()
+            fetched: list[Any] = []
+            done = threading.Event()
 
-        def on_fetched(reminders: Any) -> None:
-            fetched.extend(reminders or [])
-            done.set()
+            def on_fetched(reminders: Any) -> None:
+                fetched.extend(reminders or [])
+                done.set()
 
-        store.fetchRemindersMatchingPredicate_completion_(predicate, on_fetched)
-        if not done.wait(self._timeout_seconds):
-            raise RuntimeError(f"reminders search timed out after {self._timeout_seconds:.1f} seconds")
+            store.fetchRemindersMatchingPredicate_completion_(predicate, on_fetched)
+            if not done.wait(self._timeout_seconds):
+                raise RuntimeError(f"reminders search timed out after {self._timeout_seconds:.1f} seconds")
 
-        flags = read_flags()
-        needle = (query or "").lower()
-        results = []
-        for reminder in fetched:
-            row = _reminder_row(reminder, flags.get(reminder.calendarItemIdentifier()))
-            due = datetime.fromisoformat(row["due"]) if row["due"] else None
-            if flagged is not None and row["flagged"] != flagged:
-                continue
-            if priority_min is not None and row["priority"] < priority_min:
-                continue
-            if priority_max is not None and row["priority"] > priority_max:
-                continue
-            if start and (due is None or due < start):
-                continue
-            if end and (due is None or due > end):
-                continue
-            if needle and needle not in f"{row['title'] or ''}\n{row['notes'] or ''}".lower():
-                continue
-            results.append((due, row))
+            flags = read_flags()
+            needle = (query or "").lower()
+            results = []
+            for reminder in fetched:
+                row = _reminder_row(reminder, flags.get(reminder.calendarItemIdentifier()))
+                due = datetime.fromisoformat(row["due"]) if row["due"] else None
+                if flagged is not None and row["flagged"] != flagged:
+                    continue
+                if priority_min is not None and row["priority"] < priority_min:
+                    continue
+                if priority_max is not None and row["priority"] > priority_max:
+                    continue
+                if start and (due is None or due < start):
+                    continue
+                if end and (due is None or due > end):
+                    continue
+                if needle and needle not in f"{row['title'] or ''}\n{row['notes'] or ''}".lower():
+                    continue
+                results.append((due, row))
 
         if sort_by == "title_asc":
             results.sort(key=lambda item: item[1]["title"] or "")
@@ -304,10 +338,11 @@ class MacOSAppBridge:
 
     def reminders_get(self, *, reminder_id: str) -> dict[str, Any]:
         """Fetch one reminder by id."""
-        reminder = _find_reminder(open_store(EventKit.EKEntityTypeReminder), reminder_id)
-        if reminder is None:
-            return {"ok": False, "error": f"reminder not found: {reminder_id}"}
-        return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(reminder.calendarItemIdentifier()))}
+        with open_store(EventKit.EKEntityTypeReminder) as store:
+            reminder = _find_reminder(store, reminder_id)
+            if reminder is None:
+                return {"ok": False, "error": f"reminder not found: {reminder_id}"}
+            return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(reminder.calendarItemIdentifier()))}
 
     def reminders_create(
         self,
@@ -322,26 +357,26 @@ class MacOSAppBridge:
         flagged: bool | None,
     ) -> dict[str, Any]:
         """Create a reminder."""
-        store = open_store(EventKit.EKEntityTypeReminder)
-        if list_id or list_name or list_path:
-            calendar = _find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)
-        else:
-            calendar = store.defaultCalendarForNewReminders()
-        reminder = EventKit.EKReminder.reminderWithEventStore_(store)
-        reminder.setCalendar_(calendar)
-        reminder.setTitle_(title)
-        if notes:
-            reminder.setNotes_(notes)
-        if priority is not None:
-            reminder.setPriority_(priority)
-        if due is not None:
-            _set_due(reminder, due)
-        saved, error = store.saveReminder_commit_error_(reminder, True, None)
-        if not saved:
-            return save_error(error)
-        if flagged:
-            self._set_reminder_flagged(reminder.calendarItemIdentifier(), True)
-        return {"ok": True, "reminder": _reminder_row(reminder, bool(flagged))}
+        with open_store(EventKit.EKEntityTypeReminder) as store:
+            if list_id or list_name or list_path:
+                calendar = _find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)
+            else:
+                calendar = store.defaultCalendarForNewReminders()
+            reminder = EventKit.EKReminder.reminderWithEventStore_(store)
+            reminder.setCalendar_(calendar)
+            reminder.setTitle_(title)
+            if notes:
+                reminder.setNotes_(notes)
+            if priority is not None:
+                reminder.setPriority_(priority)
+            if due is not None:
+                _set_due(reminder, due)
+            saved, error = store.saveReminder_commit_error_(reminder, True, None)
+            if not saved:
+                return save_error(error)
+            if flagged:
+                return self._flag_saved_reminder(reminder, True)
+            return {"ok": True, "reminder": _reminder_row(reminder, False)}
 
     def reminders_update(
         self,
@@ -355,30 +390,26 @@ class MacOSAppBridge:
         completed: bool | None,
     ) -> dict[str, Any]:
         """Update a reminder."""
-        store = open_store(EventKit.EKEntityTypeReminder)
-        reminder = _find_reminder(store, reminder_id)
-        if reminder is None:
-            return {"ok": False, "error": f"reminder not found: {reminder_id}"}
-        if title is not None:
-            reminder.setTitle_(title)
-        if notes is not None:
-            reminder.setNotes_(notes)
-        if priority is not None:
-            reminder.setPriority_(priority)
-        if completed is not None:
-            reminder.setCompleted_(completed)
-        if due is not None:
-            _set_due(reminder, due)
-        saved, error = store.saveReminder_commit_error_(reminder, True, None)
-        if not saved:
-            return save_error(error)
-        identifier = reminder.calendarItemIdentifier()
-        if flagged is None:
-            return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(identifier))}
-        self._set_reminder_flagged(identifier, flagged)
-        # Report the value just written rather than re-reading the database,
-        # which can trail the Reminders.app write.
-        return {"ok": True, "reminder": _reminder_row(reminder, flagged)}
+        with open_store(EventKit.EKEntityTypeReminder) as store:
+            reminder = _find_reminder(store, reminder_id)
+            if reminder is None:
+                return {"ok": False, "error": f"reminder not found: {reminder_id}"}
+            if title is not None:
+                reminder.setTitle_(title)
+            if notes is not None:
+                reminder.setNotes_(notes)
+            if priority is not None:
+                reminder.setPriority_(priority)
+            if completed is not None:
+                reminder.setCompleted_(completed)
+            if due is not None:
+                _set_due(reminder, due)
+            saved, error = store.saveReminder_commit_error_(reminder, True, None)
+            if not saved:
+                return save_error(error)
+            if flagged is None:
+                return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(reminder.calendarItemIdentifier()))}
+            return self._flag_saved_reminder(reminder, flagged)
 
 
 def create_reminders_tool(bridge: MacOSAppBridge) -> Callable[..., str]:

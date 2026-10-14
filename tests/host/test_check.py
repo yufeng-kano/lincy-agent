@@ -34,7 +34,10 @@ def built_repo(tmp_path):
     dist = tmp_path / "src" / "web_ui" / "dist"
     dist.mkdir(parents=True)
     (dist / "index.html").write_text("<html></html>")
-    ok = lambda cmd, cwd, env: subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def ok(cmd, cwd, env):
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
     build_web_ui(tmp_path / "src" / "web_ui", {}, ok)
     return tmp_path
 

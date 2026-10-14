@@ -21,7 +21,8 @@ from .runtime import (
     _parse_local_datetime,
 )
 
-# EventKit silently truncates event predicates to the first four years.
+# EventKit silently truncates event predicates to the first four years, so
+# longer searches are split into windows of at most this span.
 _MAX_SEARCH_SPAN = timedelta(days=4 * 365)
 
 CALENDAR_TOOL_DEFINITION = ToolDefinition(
@@ -185,20 +186,20 @@ class MacOSAppBridge:
 
     def calendar_catalog(self) -> dict[str, Any]:
         """List calendars."""
-        store = open_store(EventKit.EKEntityTypeEvent)
-        calendars = [
-            {
-                "id": calendar.calendarIdentifier(),
-                "name": calendar.title(),
-                "path": _calendar_path(calendar),
-                "source": calendar.source().title(),
-                "writable": bool(calendar.allowsContentModifications()),
-                # EventKit does not expose the calendar description.
-                "description": None,
-                "color": _color_rgb(calendar),
-            }
-            for calendar in store.calendarsForEntityType_(EventKit.EKEntityTypeEvent)
-        ]
+        with open_store(EventKit.EKEntityTypeEvent) as store:
+            calendars = [
+                {
+                    "id": calendar.calendarIdentifier(),
+                    "name": calendar.title(),
+                    "path": _calendar_path(calendar),
+                    "source": calendar.source().title(),
+                    "writable": bool(calendar.allowsContentModifications()),
+                    # EventKit does not expose the calendar description.
+                    "description": None,
+                    "color": _color_rgb(calendar),
+                }
+                for calendar in store.calendarsForEntityType_(EventKit.EKEntityTypeEvent)
+            ]
         return {"ok": True, "calendars": calendars, "count": len(calendars)}
 
     def calendar_search(
@@ -225,19 +226,32 @@ class MacOSAppBridge:
             start_dt = end_dt - _MAX_SEARCH_SPAN
         elif end_dt is None:
             end_dt = start_dt + _MAX_SEARCH_SPAN
-        store = open_store(EventKit.EKEntityTypeEvent)
-        predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
-            to_nsdate(start_dt), to_nsdate(end_dt), _selected_calendars(store, calendar, calendars)
-        )
         needle = (query or "").lower()
         results = []
-        for event in _sorted_events(store.eventsMatchingPredicate_(predicate), descending=sort_by == "start_desc"):
-            if all_day is not None and bool(event.isAllDay()) != all_day:
-                continue
-            row = _event_row(event)
-            if needle and needle not in f"{row['title'] or ''}\n{row['location'] or ''}\n{row['notes'] or ''}".lower():
-                continue
-            results.append(row)
+        with open_store(EventKit.EKEntityTypeEvent) as store:
+            selected = _selected_calendars(store, calendar, calendars)
+            # An event that crosses a window boundary is returned by both
+            # windows; the item id plus start names one occurrence.
+            events: dict[tuple[str, float], Any] = {}
+            window_start = start_dt
+            while True:
+                window_end = min(window_start + _MAX_SEARCH_SPAN, end_dt)
+                predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
+                    to_nsdate(window_start), to_nsdate(window_end), selected
+                )
+                for event in store.eventsMatchingPredicate_(predicate) or []:
+                    key = (event.calendarItemIdentifier(), event.startDate().timeIntervalSince1970())
+                    events.setdefault(key, event)
+                if window_end >= end_dt:
+                    break
+                window_start = window_end
+            for event in _sorted_events(events.values(), descending=sort_by == "start_desc"):
+                if all_day is not None and bool(event.isAllDay()) != all_day:
+                    continue
+                row = _event_row(event)
+                if needle and needle not in f"{row['title'] or ''}\n{row['location'] or ''}\n{row['notes'] or ''}".lower():
+                    continue
+                results.append(row)
         limit = max(1, min(limit or self._max_search_results, self._max_search_results))
         truncated = len(results) > limit
         results = results[:limit]
@@ -265,26 +279,26 @@ class MacOSAppBridge:
         """Find calendar events overlapping a candidate time range."""
         start_dt = _parse_local_datetime(start, field_name="start")
         end_dt = _parse_local_datetime(end, field_name="end")
-        store = open_store(EventKit.EKEntityTypeEvent)
         start_ns = to_nsdate(start_dt)
         end_ns = to_nsdate(end_dt)
-        predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
-            start_ns, end_ns, _selected_calendars(store, calendar, calendars)
-        )
         limit = max(1, min(limit or self._max_search_results, self._max_search_results))
         results = []
-        for event in _sorted_events(store.eventsMatchingPredicate_(predicate)):
-            # Strict overlap: back-to-back events that only touch the range are
-            # not conflicts.
-            if event.endDate().compare_(start_ns) != 1 or event.startDate().compare_(end_ns) != -1:
-                continue
-            if exclude_event_uid and event.calendarItemIdentifier() == exclude_event_uid:
-                continue
-            if all_day is not None and bool(event.isAllDay()) != all_day:
-                continue
-            results.append(_event_row(event))
-            if len(results) >= limit:
-                break
+        with open_store(EventKit.EKEntityTypeEvent) as store:
+            predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
+                start_ns, end_ns, _selected_calendars(store, calendar, calendars)
+            )
+            for event in _sorted_events(store.eventsMatchingPredicate_(predicate)):
+                # Strict overlap: back-to-back events that only touch the range are
+                # not conflicts.
+                if event.endDate().compare_(start_ns) != 1 or event.startDate().compare_(end_ns) != -1:
+                    continue
+                if exclude_event_uid and event.calendarItemIdentifier() == exclude_event_uid:
+                    continue
+                if all_day is not None and bool(event.isAllDay()) != all_day:
+                    continue
+                results.append(_event_row(event))
+                if len(results) >= limit:
+                    break
         return {
             "ok": True,
             "requested_range": {"start": _datetime_to_app_iso(start_dt), "end": _datetime_to_app_iso(end_dt)},
@@ -299,10 +313,11 @@ class MacOSAppBridge:
         calendar: str | None = None,
     ) -> dict[str, Any]:
         """Fetch one calendar event by uid."""
-        event = _find_event(open_store(EventKit.EKEntityTypeEvent), event_uid, calendar)
-        if event is None:
-            return {"ok": False, "error": f"event not found: {event_uid}"}
-        return {"ok": True, "event": _event_row(event)}
+        with open_store(EventKit.EKEntityTypeEvent) as store:
+            event = _find_event(store, event_uid, calendar)
+            if event is None:
+                return {"ok": False, "error": f"event not found: {event_uid}"}
+            return {"ok": True, "event": _event_row(event)}
 
     def calendar_create(
         self,
@@ -317,31 +332,31 @@ class MacOSAppBridge:
         all_day: bool | None,
     ) -> dict[str, Any]:
         """Create a calendar event."""
-        store = open_store(EventKit.EKEntityTypeEvent)
-        matches = _matching_calendars(store, calendar)
-        writable = [match for match in matches if match.allowsContentModifications()]
-        if len(writable) != 1:
-            # Several accounts can share a calendar name (e.g. iCloud and Google
-            # both have one); writing into a guessed one is worse than asking.
-            paths = ", ".join(_calendar_path(match) for match in matches)
-            reason = "is ambiguous" if writable else "is not writable"
-            return {"ok": False, "error": f"calendar {calendar!r} {reason}: {paths}; pass one writable path from catalog"}
-        event = EventKit.EKEvent.eventWithEventStore_(store)
-        event.setCalendar_(writable[0])
-        event.setTitle_(title)
-        event.setAllDay_(bool(all_day))
-        event.setStartDate_(to_nsdate(start))
-        event.setEndDate_(to_nsdate(_all_day_end(start, end) if all_day else end))
-        if notes:
-            event.setNotes_(notes)
-        if location:
-            event.setLocation_(location)
-        if url:
-            event.setURL_(NSURL.URLWithString_(url))
-        saved, error = store.saveEvent_span_commit_error_(event, EventKit.EKSpanThisEvent, True, None)
-        if not saved:
-            return save_error(error)
-        return {"ok": True, "event": _event_row(event)}
+        with open_store(EventKit.EKEntityTypeEvent) as store:
+            matches = _matching_calendars(store, calendar)
+            writable = [match for match in matches if match.allowsContentModifications()]
+            if len(writable) != 1:
+                # Several accounts can share a calendar name (e.g. iCloud and Google
+                # both have one); writing into a guessed one is worse than asking.
+                paths = ", ".join(_calendar_path(match) for match in matches)
+                reason = "is ambiguous" if writable else "is not writable"
+                return {"ok": False, "error": f"calendar {calendar!r} {reason}: {paths}; pass one writable path from catalog"}
+            event = EventKit.EKEvent.eventWithEventStore_(store)
+            event.setCalendar_(writable[0])
+            event.setTitle_(title)
+            event.setAllDay_(bool(all_day))
+            event.setStartDate_(to_nsdate(start))
+            event.setEndDate_(to_nsdate(_all_day_end(start, end) if all_day else end))
+            if notes:
+                event.setNotes_(notes)
+            if location:
+                event.setLocation_(location)
+            if url:
+                event.setURL_(NSURL.URLWithString_(url))
+            saved, error = store.saveEvent_span_commit_error_(event, EventKit.EKSpanThisEvent, True, None)
+            if not saved:
+                return save_error(error)
+            return {"ok": True, "event": _event_row(event)}
 
     def calendar_update(
         self,
@@ -357,43 +372,43 @@ class MacOSAppBridge:
         all_day: bool | None,
     ) -> dict[str, Any]:
         """Update a calendar event; for a recurring event this edits the whole series."""
-        store = open_store(EventKit.EKEntityTypeEvent)
-        event = _find_event(store, event_uid, calendar)
-        if event is None:
-            return {"ok": False, "error": f"event not found: {event_uid}"}
-        if event.hasRecurrenceRules() and (start is not None or end is not None or all_day is not None):
-            # The uid names the series, not an occurrence; moving the series
-            # master would silently shift or drop every occurrence.
-            return {
-                "ok": False,
-                "error": (
-                    f"event {event_uid} is recurring; changing its time would move the whole series. "
-                    "Only title/notes/location/url can be updated; ask the user to reschedule it in Calendar.app"
-                ),
-            }
-        if title is not None:
-            event.setTitle_(title)
-        if notes is not None:
-            event.setNotes_(notes)
-        if location is not None:
-            event.setLocation_(location)
-        if url is not None:
-            event.setURL_(NSURL.URLWithString_(url) if url else None)
-        if all_day is not None:
-            event.setAllDay_(all_day)
-        if start is not None:
-            event.setStartDate_(to_nsdate(start))
-        if end is not None:
-            if event.isAllDay():
-                current_start = datetime.fromtimestamp(event.startDate().timeIntervalSince1970(), timezone.utc)
-                end = _all_day_end(current_start, end)
-            event.setEndDate_(to_nsdate(end))
-        # The uid stands for the whole series (as with JXA), so text edits apply
-        # to every future occurrence from the series start.
-        saved, error = store.saveEvent_span_commit_error_(event, EventKit.EKSpanFutureEvents, True, None)
-        if not saved:
-            return save_error(error)
-        return {"ok": True, "event": _event_row(event)}
+        with open_store(EventKit.EKEntityTypeEvent) as store:
+            event = _find_event(store, event_uid, calendar)
+            if event is None:
+                return {"ok": False, "error": f"event not found: {event_uid}"}
+            if event.hasRecurrenceRules() and (start is not None or end is not None or all_day is not None):
+                # The uid names the series, not an occurrence; moving the series
+                # master would silently shift or drop every occurrence.
+                return {
+                    "ok": False,
+                    "error": (
+                        f"event {event_uid} is recurring; changing its time would move the whole series. "
+                        "Only title/notes/location/url can be updated; ask the user to reschedule it in Calendar.app"
+                    ),
+                }
+            if title is not None:
+                event.setTitle_(title)
+            if notes is not None:
+                event.setNotes_(notes)
+            if location is not None:
+                event.setLocation_(location)
+            if url is not None:
+                event.setURL_(NSURL.URLWithString_(url) if url else None)
+            if all_day is not None:
+                event.setAllDay_(all_day)
+            if start is not None:
+                event.setStartDate_(to_nsdate(start))
+            if end is not None:
+                if event.isAllDay():
+                    current_start = datetime.fromtimestamp(event.startDate().timeIntervalSince1970(), timezone.utc)
+                    end = _all_day_end(current_start, end)
+                event.setEndDate_(to_nsdate(end))
+            # The uid stands for the whole series (as with JXA), so text edits apply
+            # to every future occurrence from the series start.
+            saved, error = store.saveEvent_span_commit_error_(event, EventKit.EKSpanFutureEvents, True, None)
+            if not saved:
+                return save_error(error)
+            return {"ok": True, "event": _event_row(event)}
 
 
 def create_calendar_tool(bridge: MacOSAppBridge) -> Callable[..., str]:

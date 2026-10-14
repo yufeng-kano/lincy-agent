@@ -59,8 +59,12 @@ def mail_permission_problems(root: Path = MAIL_ROOT) -> list[str]:
 
 
 def parse_message_ref(message_ref: str) -> int | None:
-    """Return the Envelope Index ROWID behind a 'mailmsg:<id>' ref."""
-    match = re.fullmatch(r"mailmsg:(\d+)", message_ref.strip())
+    """Return the Envelope Index ROWID behind a 'mailmsg:<id>' ref.
+
+    A bare numeric id is accepted too, as the old JXA backend did, so ids the
+    agent stored from earlier output keep working.
+    """
+    match = re.fullmatch(r"(?:mailmsg:)?(\d+)", message_ref.strip())
     return int(match.group(1)) if match else None
 
 

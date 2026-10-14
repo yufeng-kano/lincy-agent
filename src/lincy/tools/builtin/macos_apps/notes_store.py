@@ -11,11 +11,15 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import gzip
+import logging
 import math
 from pathlib import Path
 import re
 import sqlite3
 from typing import Any
+import zlib
+
+logger = logging.getLogger(__name__)
 
 NOTE_STORE_PATH = (
     Path.home() / "Library" / "Group Containers" / "group.com.apple.notes" / "NoteStore.sqlite"
@@ -60,9 +64,11 @@ class StoredNote:
     """One note row: tool-facing metadata plus values used for filtering."""
 
     meta: dict[str, Any]
-    created: datetime
-    modified: datetime
-    # Decoded plain text; None for password-protected (encrypted) notes.
+    # None when the row has no timestamp yet (e.g. a note still syncing).
+    created: datetime | None
+    modified: datetime | None
+    # Decoded plain text; None for password-protected (encrypted) notes and for
+    # notes whose body is not downloaded or cannot be decoded.
     text: str | None
     # Image attachments and the first link-card URL, for search results that
     # are built without the HTML body.
@@ -318,22 +324,30 @@ class NoteStore:
             folder = folders.get(folder_pk)
             if folder is None:
                 continue
+            # ZDATA is NULL until the body syncs (e.g. a shared note not yet
+            # downloaded); one such or undecodable note must not fail a search.
+            text = None
+            if not locked and zdata is not None:
+                try:
+                    text = note_plain_text(zdata)
+                except (OSError, EOFError, zlib.error, ValueError, IndexError) as exc:
+                    logger.warning("apple-notes cannot decode note body pk=%s: %s", pk, exc)
             notes.append(
                 StoredNote(
                     meta={
                         "id": self._object_id("ICNote", pk),
                         "title": title,
-                        "created_at": core_data_to_iso(created),
-                        "modified_at": core_data_to_iso(modified),
+                        "created_at": core_data_to_iso(created) if created is not None else None,
+                        "modified_at": core_data_to_iso(modified) if modified is not None else None,
                         "shared": bool(shared),
                         "password_protected": bool(locked),
                         "account": folder["account"],
                         "folder_id": folder["id"],
                         "folder_path": folder["path"],
                     },
-                    created=_CORE_DATA_EPOCH + timedelta(seconds=created),
-                    modified=_CORE_DATA_EPOCH + timedelta(seconds=modified),
-                    text=None if locked else note_plain_text(zdata),
+                    created=_CORE_DATA_EPOCH + timedelta(seconds=created) if created is not None else None,
+                    modified=_CORE_DATA_EPOCH + timedelta(seconds=modified) if modified is not None else None,
+                    text=text,
                     image_count=images,
                     link_url=link,
                 )

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import threading
 from typing import Any
 
 import EventKit
@@ -74,26 +77,42 @@ def eventkit_permission_problems() -> list[str]:
 
 
 _stores: dict[int, Any] = {}
+# The host runs brain and worker agents in threads of one process, so a reset
+# from one call would invalidate the objects another call is still editing.
+# Reentrant so a nested open_store within one operation does not deadlock.
+_locks = {
+    EventKit.EKEntityTypeEvent: threading.RLock(),
+    EventKit.EKEntityTypeReminder: threading.RLock(),
+}
+_depths = dict.fromkeys(_locks, 0)
 
 
-def open_store(entity_type: int) -> Any:
-    """Return the process-wide EKEventStore for entity_type after checking full access.
+@contextmanager
+def open_store(entity_type: int) -> Iterator[Any]:
+    """Hold the process-wide EKEventStore for entity_type for one whole operation.
 
     Measured on macOS 26.7.1: a fresh store per call breaks after ~9 predicate
     queries in one process (calendarItemWithIdentifier_ on new stores returns
     None), and a long-lived store without a run loop keeps serving stale copies
     of items edited by other processes. One store per entity type, reset before
-    every use (~2ms), avoids both.
+    every operation (~2ms), avoids both. The store is locked until the block
+    exits; a nested open_store skips the reset so the outer block's objects
+    stay valid.
     """
     problem = _permission_problem(entity_type)
     if problem:
         raise PermissionError(problem)
-    store = _stores.get(entity_type)
-    if store is None:
-        store = _stores[entity_type] = EventKit.EKEventStore.alloc().init()
-    else:
-        store.reset()
-    return store
+    with _locks[entity_type]:
+        store = _stores.get(entity_type)
+        if store is None:
+            store = _stores[entity_type] = EventKit.EKEventStore.alloc().init()
+        elif _depths[entity_type] == 0:
+            store.reset()
+        _depths[entity_type] += 1
+        try:
+            yield store
+        finally:
+            _depths[entity_type] -= 1
 
 
 def save_error(error: Any) -> dict[str, Any]:
@@ -139,5 +158,9 @@ def components_to_iso(components: Any) -> str | None:
     """
     if components is None:
         return None
-    calendar = _gregorian(components.timeZone() or NSTimeZone.localTimeZone())
-    return nsdate_to_iso(calendar.dateFromComponents_(components))
+    return nsdate_to_iso(components_to_nsdate(components))
+
+
+def components_to_nsdate(components: Any) -> Any:
+    """Resolve due date components to NSDate; floating components use the local zone."""
+    return _gregorian(components.timeZone() or NSTimeZone.localTimeZone()).dateFromComponents_(components)

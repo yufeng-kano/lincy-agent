@@ -474,3 +474,45 @@ def test_cache_refreshes_after_same_second_modification(store_path: Path, tmp_pa
     note = bridge.notes_get(note_id=_note_id(100))["note"]
     assert note["modified_at"] == "2026-04-11T12:00:00.000Z"
     assert note["content_markdown"] == "second"
+
+
+def test_unsynced_or_undecodable_note_degrades_alone(store_path: Path, tmp_path: Path):
+    con = sqlite3.connect(store_path)
+    # 106: body row without ZDATA and no timestamps (shared note not downloaded).
+    # 107: ZDATA that is not gzip. 108: no ZICNOTEDATA row at all.
+    con.execute("INSERT INTO ZICNOTEDATA VALUES (1106, 19, 106, NULL)")
+    con.execute("INSERT INTO ZICNOTEDATA VALUES (1107, 19, 107, ?)", (b"not gzip",))
+    con.executemany(
+        "INSERT INTO ZICCLOUDSYNCINGOBJECT"
+        " (Z_PK, Z_ENT, ZMARKEDFORDELETION, ZISPASSWORDPROTECTED, ZTITLE1, ZFOLDER, ZNOTEDATA,"
+        " ZCREATIONDATE3, ZMODIFICATIONDATE1) VALUES (?, ?, 0, 0, ?, 2, ?, ?, ?)",
+        [
+            (106, ENT_NOTE, "Shared", 1106, None, None),
+            (107, ENT_NOTE, "Garbled", 1107, _ts("2026-03-05T00:00:00+00:00"), _ts("2026-03-06T00:00:00+00:00")),
+            (108, ENT_NOTE, "No data", None, _ts("2026-03-03T00:00:00+00:00"), _ts("2026-03-04T00:00:00+00:00")),
+        ],
+    )
+    con.commit()
+    con.close()
+    bridge = _bridge(tmp_path, notes_summarizer=_FakeSummarizer())
+    _forbid_notes_app(bridge)
+
+    payload = _search(bridge, folder_path="iCloud/Notes")
+
+    results = {item["id"]: item for item in payload["results"]}
+    # Undated notes sort last; the readable notes in other folders are unaffected.
+    assert [item["id"] for item in payload["results"]] == [_note_id(107), _note_id(108), _note_id(103), _note_id(106)]
+    for pk in (106, 107, 108):
+        assert results[_note_id(pk)]["content_kind"] == "unavailable_note"
+        assert results[_note_id(pk)]["summary_source"] == "none"
+    assert results[_note_id(106)]["created_at"] is None
+    assert results[_note_id(106)]["modified_at"] is None
+    assert _search(bridge, query="talk")["total_matches"] == 2
+    dated = _search(bridge, modified_after="2026-01-01T00:00", limit=10)
+    assert dated["total_matches"] == 6
+    assert _note_id(106) not in [item["id"] for item in dated["results"]]
+
+    bridge._notes_fetch_body = lambda *, note_id: "<div>shared body</div>"
+    note = bridge.notes_get(note_id=_note_id(106))["note"]
+    assert note["content_markdown"] == "shared body"
+    assert note["modified_at"] is None

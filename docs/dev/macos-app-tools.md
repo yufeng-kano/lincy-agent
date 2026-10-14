@@ -122,7 +122,7 @@ actions：
 - `calendar` / `calendars` 可用名稱或 `source/title` 路徑；同名 calendar（例如 iCloud 與 Google 都有「工作」）在 search 會一起比對，`create` 會報錯並列出可用路徑
 - `uid` 是 EventKit `calendarItemIdentifier`，與舊 JXA 的 `uid` 相同，先前存下的 uid 仍可用
 - search / conflicts 回傳週期事件的各個 occurrence（帶 `recurring`）；`get` 回 series master。`update` 改標題、備註、地點、URL 會套用到整個 series；改 start / end / all_day 會被拒絕，避免拿某一次 occurrence 的時間把整個 series 搬走
-- search 未帶 start / end 時查 EventKit 上限的 4 年區間
+- search 未帶 start / end 時查 EventKit 上限的 4 年區間；明確給的區間超過 4 年時，切成不超過 4 年的連續視窗逐段查詢再合併（以 uid + 開始時間去重），避免 EventKit 靜默截斷
 - `conflicts` 用嚴格重疊判斷，頭尾相接不算撞期
 - Calendar.app 的虛擬日曆「已排程的提醒事項」與「Siri 建議」不在 EventKit 內，`catalog` 不會出現；提醒事項一律用 `reminders_tool`
 
@@ -170,8 +170,9 @@ actions：
 - 讀回的 `due` 會以 app timezone 輸出並帶 offset，例如 `2026-04-20T09:00:00+08:00`，與 Calendar 行為一致
 - `id` / `reminder_id` 是 EventKit `calendarItemIdentifier`（裸 UUID）；輸入帶 `x-apple-reminder://` 前綴也接受
 - `list_path` 格式是 `<帳號>/<清單>`，例如 `iCloud/提醒事項`，與舊版相同
-- 寫入 `due` 時同時寫一個絕對時間的 alarm，與 Reminders.app 透過 JXA 寫 `dueDate` 的結果一致
+- 寫入 `due` 時同時寫一個絕對時間的 alarm，與 Reminders.app 透過 JXA 寫 `dueDate` 的結果一致；改 `due` 只取代時間等於舊到期時間的那個絕對 alarm，相對 alarm（例如提前一天）、地點 alarm 與其他自訂時間的 alarm 都保留
 - EventKit 沒有 `flagged`：讀取與 `flagged` 篩選改從 Reminders 資料庫（`~/Library/Group Containers/group.com.apple.reminders/Container_v1/Stores/Data-*.sqlite`，表 `ZREMCDREMINDER`，`ZIDENTIFIER` 對 `calendarItemIdentifier`、`ZFLAGGED`）唯讀讀取；寫入 `flagged` 用一次 JXA `reminders.byId(...)`，約 1.2 秒
+- create / update 先由 EventKit 存檔再寫 `flagged`；JXA 寫 `flagged` 失敗時仍回 `ok: true` 與已存檔的 reminder，另帶 `warning` 說明旗標未套用與原因，避免 agent 重試造成重複建立
 - search 回傳 `limit`、`truncated`、`warning`；指定不存在的清單會報錯
 
 ### `notes_tool`
@@ -255,6 +256,7 @@ actions：
 - `get` 用一次 JXA `notes.byId(id).body()` 取完整 HTML 並更新快取，之後的 search 會變成 `summary_source: "cache"`
 - Notes.app 偶爾會在單次 `body()` 卡住 8 到 85 秒，這是 search 不呼叫 Notes.app 的原因
 - 「最近刪除」資料夾與其中筆記一律排除；上鎖筆記回 `password_protected: true`、`content_kind: "locked_note"`，不讀內容
+- 本文尚未同步（`ZDATA` 為 NULL，例如未下載的共享筆記）或無法解碼的筆記只影響自己：search 回 `content_kind: "unavailable_note"`、`summary_source: "none"`；缺少建立或修改時間的筆記回 `created_at` / `modified_at` 為 null，日期篩選不會命中、排序排在最後，也不使用快取；`get` 照常向 Notes.app 取 body
 - `catalog` 回傳真實巢狀路徑與 `note_count`；存在 NoteStore.sqlite 之外的舊 IMAP 帳號（例如空的 `Google/Notes`）不會出現
 - `search` 指定不存在的 folder 會報錯
 
@@ -308,6 +310,7 @@ actions：
 - id 是 PhotoKit `localIdentifier`（例如 `<UUID>/L0/001`），與舊 JXA id 相同
 - `album_path` / `folder_path` 格式不變：`資料夾/子資料夾/相簿`，頂層相簿只有名稱；album 列另有 `path`、`parent_folder_id`、`parent_folder_name`
 - `export` 回傳 `failed: [{id, error}]`；全部失敗或 id 不存在會報錯；iCloud 最佳化儲存的原檔會下載
+- PhotoKit 已回傳但 Photos.sqlite 還沒有對應列的 asset（例如匯入或同步中），`title`、`filename`、`description`、`size` 回 null、`keywords` 回空陣列
 
 ### `mail_tool`
 
@@ -350,7 +353,7 @@ actions：
 - `limit` 只控制回傳幾筆結果，不控制 Mail.app 實際掃描量
 - `date_after` / `date_before` 以本地時間解析；日期格式 `YYYY-MM-DD` 會被視為本地整天，避免 UTC 造成日期少抓或多抓
 - `query` 預設只查寄件者與主旨；若要查正文才設 `search_body=true`
-- `search` 回傳 `message_ref`（格式 `mailmsg:<ROWID>`，ROWID 即 Envelope Index `messages.ROWID`，也等於 Mail AppleScript 的 message `id`），後續 `get`、`export_attachment`、`trash` 都用它，不讓 agent 自行拼 Mail.app 內部位置
+- `search` 回傳 `message_ref`（格式 `mailmsg:<ROWID>`，輸入也接受裸數字 ROWID，與舊 JXA 相容；ROWID 即 Envelope Index `messages.ROWID`，也等於 Mail AppleScript 的 message `id`），後續 `get`、`export_attachment`、`trash` 都用它，不讓 agent 自行拼 Mail.app 內部位置
 - `attachment_ids` 是 IMAP part 編號（例如 `2`、`1.2`），與 Envelope Index `attachments` 表一致；未下載到本機的附件匯出時會報錯
 - 正文未下載到本機時，`get` 的 `content` 為 null，`content_error` 說明需在 Mail.app 開啟該信
 - `trash` 執行前會先比對每封信的 Message-ID，已在垃圾桶或找不到的信直接拒絕；`dry_run=true` 也會向 Mail.app 確認每封信可定位
@@ -476,6 +479,7 @@ actions：
 ### EventKit
 
 - 每個 entity type 一個 process-wide `EKEventStore`，每次使用前 `reset()`（約 2ms）。實測每次新建 store 在同一 process 內約 9 次查詢後 `calendarItemWithIdentifier_` 會回 None；長壽 store 又看不到其他 process 的修改，`refreshSourcesIfNecessary()` 也無效，只有 `reset()` 有效（`macos_apps/eventkit.py`）
+- host 是單一 process，brain 與 worker 會從不同 thread 同時呼叫工具，所以 `open_store` 是 context manager：每個 entity type 一把 `RLock`，從 `reset()` 到最後一次 EventKit 存取或存檔都持有，避免另一個呼叫的 `reset()` 讓手上的物件失效；同一操作內巢狀呼叫不會 deadlock，也不會再 `reset()`
 - Reminders fetch 是非同步 API，用 `threading.Event` 等，上限 `timeout_seconds`
 - 不在工具內呼叫 requestAccess；授權交給 `permissions-warmup` 與 validate 階段
 

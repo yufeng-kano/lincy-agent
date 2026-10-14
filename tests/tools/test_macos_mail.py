@@ -9,7 +9,7 @@ import sqlite3
 import pytest
 
 from lincy.tools.builtin.macos_apps import MacOSAppBridge, create_mail_tool
-from lincy.tools.builtin.macos_apps.mail_store import mail_permission_problems
+from lincy.tools.builtin.macos_apps.mail_store import mail_permission_problems, parse_message_ref
 
 ACCOUNT = "ACCT-UUID"
 LOCAL = "LOCAL-UUID"
@@ -325,7 +325,7 @@ def test_get_reports_missing_body_and_scope_mismatch(bridge: MacOSAppBridge):
     assert bridge.mail_get(message_ref="mailmsg:1001", scope="sent") == {
         "ok": False, "error": "message not found: mailmsg:1001",
     }
-    assert bridge.mail_get(message_ref="1001", scope=None)["ok"] is False
+    assert bridge.mail_get(message_ref="msg:1001", scope=None)["ok"] is False
 
 
 def test_export_decodes_inline_and_copies_stored_attachments(bridge: MacOSAppBridge, tmp_path: Path):
@@ -418,3 +418,11 @@ def test_tool_output_is_json(bridge: MacOSAppBridge):
     payload = json.loads(create_mail_tool(bridge)(action="search", scope="inbox", limit=1))
     assert payload["count"] == 1
     assert payload["result_truncated"] is True
+
+
+def test_parse_message_ref_accepts_bare_numeric_id(bridge: MacOSAppBridge):
+    assert bridge.mail_get(message_ref="1001", scope=None)["message"]["message_ref"] == "mailmsg:1001"
+    assert parse_message_ref("mailmsg:1001") == 1001
+    assert parse_message_ref(" 1001 ") == 1001
+    assert parse_message_ref("mailmsg:abc") is None
+    assert parse_message_ref("msg:1001") is None

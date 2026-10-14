@@ -504,3 +504,28 @@ def test_tool_output_is_json(granted, monkeypatch, tmp_path: Path):
     payload = json.loads(create_photos_tool(_make_bridge(tmp_path))(action="catalog"))
 
     assert payload == {"ok": True, "folders": [], "albums": []}
+
+
+def test_get_media_without_library_row_returns_empty_text_metadata(granted, monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        photos_module,
+        "Photos",
+        _fake_photos(
+            PHAsset=SimpleNamespace(
+                fetchAssetsWithLocalIdentifiers_options_=lambda ids, options: FakeFetch(FakeAsset(i) for i in ids)
+            )
+        ),
+    )
+    # Photos.sqlite has a row for A only; B is still importing.
+    monkeypatch.setattr(
+        photos_module,
+        "asset_text_metadata",
+        lambda uuids: {"A": {"title": "t", "filename": "a.jpg", "description": None, "keywords": ["k"], "size": 1}},
+    )
+
+    result = _make_bridge(tmp_path).photos_get_media(media_ids=["A/L0/001", "B/L0/001"])
+
+    assert [row["filename"] for row in result["results"]] == ["a.jpg", None]
+    missing = result["results"][1]
+    assert (missing["title"], missing["description"], missing["keywords"], missing["size"]) == (None, None, [], None)
+    assert missing["width"] == 10

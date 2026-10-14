@@ -247,10 +247,15 @@ def _asset_rows(assets: list[Any]) -> list[dict[str, Any]]:
     for asset in assets:
         created = asset.creationDate()
         location = asset.location()
+        # Photos.sqlite can lack a row PhotoKit already returns (an asset
+        # still importing or syncing); its text metadata is then just unknown.
+        metadata = text.get(_asset_uuid(asset)) or {
+            "title": None, "filename": None, "description": None, "keywords": [], "size": None,
+        }
         rows.append(
             {
                 "id": asset.localIdentifier(),
-                **text[_asset_uuid(asset)],
+                **metadata,
                 "date": (
                     _datetime_to_app_iso(
                         datetime.fromtimestamp(created.timeIntervalSince1970(), tz=timezone.utc)

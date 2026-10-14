@@ -1,6 +1,8 @@
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
+import threading
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -195,7 +197,8 @@ def test_open_store_refuses_without_full_access(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(reminders_db, "STORES_DIR", Path("/nonexistent"))
 
     with pytest.raises(PermissionError, match=r"Reminders full access is not granted \(status: write-only\)"):
-        eventkit.open_store(EventKit.EKEntityTypeReminder)
+        with eventkit.open_store(EventKit.EKEntityTypeReminder):
+            pass
     problems = eventkit.eventkit_permission_problems()
     assert len(problems) == 3
     assert "Privacy & Security > Calendars" in problems[0]
@@ -245,7 +248,7 @@ def test_reminder_row_shape():
 )
 def test_reminders_search_picks_predicate_by_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, completed, kind):
     store = FakeReminderStore([])
-    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: store)
+    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: nullcontext(store))
 
     _search(_bridge(tmp_path), completed=completed, list_path="iCloud/Work")
 
@@ -255,7 +258,7 @@ def test_reminders_search_picks_predicate_by_completion(tmp_path: Path, monkeypa
 
 def test_reminders_search_widens_incomplete_due_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store = FakeReminderStore([])
-    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: store)
+    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: nullcontext(store))
 
     _search(_bridge(tmp_path), completed=False, due_start="2026-04-20T00:00", due_end="2026-04-21T00:00")
 
@@ -266,7 +269,7 @@ def test_reminders_search_widens_incomplete_due_bounds(tmp_path: Path, monkeypat
 
 
 def test_reminders_search_unknown_list_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: FakeReminderStore([]))
+    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: nullcontext(FakeReminderStore([])))
 
     with pytest.raises(ValueError, match="reminders list not found: Nope"):
         _search(_bridge(tmp_path), list_name="Nope")
@@ -277,7 +280,7 @@ def test_reminders_search_filters_sorts_and_truncates(tmp_path: Path, monkeypatc
     reminders = [FakeReminder(f"r{i}", f"task {i}", due=base + timedelta(days=i), priority=i % 3) for i in range(12)]
     reminders.append(FakeReminder("nodue", "task nodue"))
     reminders.append(FakeReminder("other", "unrelated", due=base))
-    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: FakeReminderStore(reminders))
+    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: nullcontext(FakeReminderStore(reminders)))
     monkeypatch.setattr(reminders_module, "read_flags", lambda: {"r3": True, "r4": False})
     bridge = _bridge(tmp_path)
 
@@ -302,7 +305,7 @@ def test_reminders_search_filters_sorts_and_truncates(tmp_path: Path, monkeypatc
 
 
 def test_reminders_search_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: FakeReminderStore([], deliver=False))
+    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: nullcontext(FakeReminderStore([], deliver=False)))
 
     with pytest.raises(RuntimeError, match="reminders search timed out after 0.1 seconds"):
         _search(_bridge(tmp_path, timeout_seconds=0.1))
@@ -400,7 +403,7 @@ def test_calendar_conflicts_uses_strict_overlap_and_exclusion(tmp_path: Path, mo
         FakeEvent("after", "After", day.replace(hour=15), day.replace(hour=16)),
     ]
     store = FakeEventStore(events)
-    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: store)
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(store))
 
     result = _bridge(tmp_path).calendar_conflicts(
         calendar=None, calendars=None, start="2026-04-20T14:00", end="2026-04-20T15:00",
@@ -416,7 +419,7 @@ def test_calendar_search_fills_missing_bound_and_truncates(tmp_path: Path, monke
     day = datetime(2026, 4, 20, 9)
     events = [FakeEvent(f"e{i}", f"Meeting {i}", day + timedelta(hours=i), day + timedelta(hours=i, minutes=30)) for i in range(12)]
     store = FakeEventStore(list(reversed(events)), calendars=[FakeCalendar("Work"), FakeCalendar("Home")])
-    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: store)
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(store))
 
     result = _bridge(tmp_path).calendar_search(
         calendar="iCloud/Work", calendars=None, query="meeting", start="2026-04-20T00:00", end=None,
@@ -430,7 +433,7 @@ def test_calendar_search_fills_missing_bound_and_truncates(tmp_path: Path, monke
 
 
 def test_calendar_unknown_name_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: FakeEventStore([]))
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(FakeEventStore([])))
 
     with pytest.raises(ValueError, match="calendar not found: Nope"):
         _bridge(tmp_path).calendar_search(
@@ -441,7 +444,7 @@ def test_calendar_unknown_name_raises(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_calendar_create_rejects_ambiguous_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calendars = [FakeCalendar("Work", source="iCloud"), FakeCalendar("Work", source="Google")]
-    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: FakeEventStore([], calendars))
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(FakeEventStore([], calendars)))
 
     result = _bridge(tmp_path).calendar_create(
         calendar="Work", title="t", start=datetime(2026, 4, 20, 9), end=datetime(2026, 4, 20, 10),
@@ -460,7 +463,7 @@ def test_calendar_update_refuses_to_move_recurring_series(tmp_path: Path, monkey
         )
     )
     store = SimpleNamespace(calendarItemWithIdentifier_=lambda uid: event)
-    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: store)
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(store))
 
     result = _bridge(tmp_path).calendar_update(
         event_uid="series", calendar=None, title=None, start=datetime(2026, 4, 20, 9), end=None,
@@ -496,8 +499,10 @@ def test_open_store_reuses_one_store_and_resets_it(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(eventkit, "EventKit", fake_eventkit)
     monkeypatch.setattr(eventkit, "_stores", {})
 
-    first = eventkit.open_store(EventKit.EKEntityTypeEvent)
-    second = eventkit.open_store(EventKit.EKEntityTypeEvent)
+    with eventkit.open_store(EventKit.EKEntityTypeEvent) as first:
+        pass
+    with eventkit.open_store(EventKit.EKEntityTypeEvent) as second:
+        pass
 
     assert first is second
     assert len(created) == 1
@@ -512,3 +517,153 @@ def test_reminders_tool_flagged_only_update_reaches_bridge():
     tool(action="update", reminder_id="r1", flagged=True)
 
     assert bridge.reminders_update.call_args.kwargs["flagged"] is True
+
+
+def test_open_store_holds_the_store_for_the_whole_operation(monkeypatch: pytest.MonkeyPatch):
+    store = MagicMock()
+    monkeypatch.setattr(eventkit, "_permission_problem", lambda entity_type: None)
+    monkeypatch.setattr(eventkit, "_stores", {EventKit.EKEntityTypeReminder: store})
+    order: list[str] = []
+
+    def other_operation():
+        with eventkit.open_store(EventKit.EKEntityTypeReminder):
+            order.append("other")
+
+    other = threading.Thread(target=other_operation)
+    with eventkit.open_store(EventKit.EKEntityTypeReminder) as outer:
+        # A nested call in the same operation neither deadlocks nor resets.
+        with eventkit.open_store(EventKit.EKEntityTypeReminder) as inner:
+            assert inner is outer
+        assert store.reset.call_count == 1
+        other.start()
+        other.join(0.2)
+        assert other.is_alive()
+        order.append("outer")
+    other.join(5)
+
+    assert order == ["outer", "other"]
+    assert store.reset.call_count == 2
+
+
+def _alarm_dates(reminder) -> list[str]:
+    # EventKit keeps alarms in its own order.
+    return sorted(
+        eventkit.nsdate_to_iso(alarm.absoluteDate()) if alarm.absoluteDate() else f"offset {alarm.relativeOffset():g}"
+        for alarm in reminder.alarms() or []
+    )
+
+
+def test_set_due_moves_only_the_alarm_at_the_old_due():
+    reminder = EventKit.EKReminder.reminderWithEventStore_(EventKit.EKEventStore.alloc().init())
+    reminder.setDueDateComponents_(eventkit.datetime_to_components(datetime(2026, 4, 20, 9, 0)))
+    reminder.setAlarms_(
+        [
+            EventKit.EKAlarm.alarmWithAbsoluteDate_(eventkit.to_nsdate(datetime(2026, 4, 20, 9, 0))),
+            EventKit.EKAlarm.alarmWithRelativeOffset_(-86400),
+            EventKit.EKAlarm.alarmWithAbsoluteDate_(eventkit.to_nsdate(datetime(2026, 4, 19, 20, 0))),
+        ]
+    )
+
+    reminders_module._set_due(reminder, datetime(2026, 4, 21, 10, 0, 0, 500000))
+    reminders_module._set_due(reminder, datetime(2026, 4, 22, 11, 0))
+
+    assert eventkit.components_to_iso(reminder.dueDateComponents()) == "2026-04-22T11:00:00+08:00"
+    assert _alarm_dates(reminder) == ["2026-04-19T20:00:00+08:00", "2026-04-22T11:00:00+08:00", "offset -86400"]
+
+
+def test_set_due_on_new_reminder_adds_one_absolute_alarm():
+    reminder = EventKit.EKReminder.reminderWithEventStore_(EventKit.EKEventStore.alloc().init())
+
+    reminders_module._set_due(reminder, datetime(2026, 4, 20, 9, 0))
+
+    assert _alarm_dates(reminder) == ["2026-04-20T09:00:00+08:00"]
+
+
+def test_reminders_create_succeeds_with_warning_when_flag_write_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    reminder = FakeReminder("r1", "Pay")
+    reminder.setCalendar_ = lambda calendar: None
+    reminder.setTitle_ = lambda title: None
+    saved: list[FakeReminder] = []
+    store = SimpleNamespace(
+        defaultCalendarForNewReminders=lambda: None,
+        saveReminder_commit_error_=lambda item, commit, error: saved.append(item) or (True, None),
+    )
+    monkeypatch.setattr(reminders_module, "open_store", lambda entity_type: nullcontext(store))
+    monkeypatch.setattr(
+        reminders_module,
+        "EventKit",
+        SimpleNamespace(
+            EKEntityTypeReminder=EventKit.EKEntityTypeReminder,
+            EKReminder=SimpleNamespace(reminderWithEventStore_=lambda store: reminder),
+        ),
+    )
+    bridge = _bridge(tmp_path)
+
+    def jxa_fails(body, **kwargs):
+        raise RuntimeError("reminders set flagged timed out after 5.0 seconds")
+
+    bridge._run_jxa_json = jxa_fails
+
+    result = bridge.reminders_create(
+        list_id=None, list_name=None, list_path=None, title="Pay", notes=None, due=None, priority=None, flagged=True,
+    )
+
+    assert saved == [reminder]
+    assert result["ok"] is True
+    assert result["reminder"]["id"] == "r1"
+    assert result["reminder"]["flagged"] is None
+    assert result["warning"] == (
+        "reminder saved, but flagged=True was not applied: reminders set flagged timed out after 5.0 seconds"
+    )
+
+
+class WindowedEventStore(FakeEventStore):
+    """Return only events overlapping the predicate range, like EventKit."""
+
+    def __init__(self, events):
+        super().__init__(events)
+        self.ranges: list[tuple] = []
+
+    def predicateForEventsWithStartDate_endDate_calendars_(self, start, end, calendars):
+        self.ranges.append((start, end))
+        return start, end
+
+    def eventsMatchingPredicate_(self, predicate):
+        start, end = predicate
+        return [
+            event for event in self.events
+            if event.startDate().compare_(end) == -1 and event.endDate().compare_(start) == 1
+        ]
+
+
+def test_calendar_search_splits_long_range_into_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    events = [
+        FakeEvent("late", "Late", datetime(2029, 6, 1, 9), datetime(2029, 6, 1, 10)),
+        # Spans the first window boundary (2023-12-31), so two windows return it.
+        FakeEvent("boundary", "Trip", datetime(2023, 12, 30), datetime(2024, 1, 2), all_day=True),
+        FakeEvent("early", "Early", datetime(2020, 6, 1, 9), datetime(2020, 6, 1, 10)),
+    ]
+    store = WindowedEventStore(events)
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(store))
+    bridge = _bridge(tmp_path)
+
+    def search(**overrides):
+        params = dict(calendar=None, calendars=None, query=None, start="2020-01-01T00:00", end="2030-01-01T00:00",
+                      all_day=None, sort_by=None, limit=None)
+        params.update(overrides)
+        return bridge.calendar_search(**params)
+
+    result = search()
+
+    assert [(eventkit.nsdate_to_iso(start), eventkit.nsdate_to_iso(end)) for start, end in store.ranges] == [
+        ("2020-01-01T00:00:00+08:00", "2023-12-31T00:00:00+08:00"),
+        ("2023-12-31T00:00:00+08:00", "2027-12-30T00:00:00+08:00"),
+        ("2027-12-30T00:00:00+08:00", "2030-01-01T00:00:00+08:00"),
+    ]
+    assert [row["uid"] for row in result["results"]] == ["early", "boundary", "late"]
+    assert result["searched_range"] == {"start": "2020-01-01T00:00:00+08:00", "end": "2030-01-01T00:00:00+08:00"}
+    assert result["truncated"] is False
+
+    limited = search(sort_by="start_desc", limit=2)
+    assert [row["uid"] for row in limited["results"]] == ["late", "boundary"]
+    assert limited["truncated"] is True
