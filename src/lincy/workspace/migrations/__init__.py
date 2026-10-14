@@ -191,6 +191,7 @@ from .m0178_worker_notes import M0178WorkerNotes
 from .m0179_native_gui_backend import M0179NativeGuiBackend
 from .m0180_worker_control_and_preempt import M0180WorkerControlAndPreempt
 from .m0181_audio_agent import M0181AudioAgent
+from .m0182_native_apple_app_tools import M0182NativeAppleAppTools
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -372,4 +373,5 @@ ALL_MIGRATIONS = [
     M0179NativeGuiBackend(),
     M0180WorkerControlAndPreempt(),
     M0181AudioAgent(),
+    M0182NativeAppleAppTools(),
 ]

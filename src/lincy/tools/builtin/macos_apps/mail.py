@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import closing
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from ....llm.schema import ToolDefinition, ToolParameter
@@ -14,10 +17,10 @@ from .runtime import (
     _APPLE_MAIL_TRASH_MAX_MESSAGES,
     _error,
     _json_output,
-    _localize_mail_datetime_fields,
     _parse_mail_range_datetime,
     _parse_tool_iso_datetime,
 )
+from .mail_store import MAIL_ROOT, SCOPE_ORDER, MailStore, parse_message_ref, public_fields
 
 MAIL_TOOL_DEFINITION = ToolDefinition(
     name="mail_tool",
@@ -100,7 +103,7 @@ MAIL_TOOL_DEFINITION = ToolDefinition(
         "scan_limit": ToolParameter(
             type="integer",
             description=(
-                "Maximum messages to inspect before stopping. "
+                "Maximum messages to inspect, newest first, within the scope and date range. "
                 f"Defaults to {_APPLE_MAIL_DEFAULT_SCAN_LIMIT}; max {_APPLE_MAIL_MAX_SCAN_LIMIT}."
             ),
         ),
@@ -124,163 +127,69 @@ MAIL_TOOL_DEFINITION = ToolDefinition(
     required=["action"],
 )
 
-MAIL_JXA_HELPERS = """\
-    function mailboxForScope(app, scope) {
-      switch (scope) {
-    case "inbox":
-      return app.inbox;
-    case "sent":
-      return app.sentMailbox;
-    case "drafts":
-      return app.draftsMailbox;
-    case "trash":
-      return app.trashMailbox;
-    case "junk":
-      return app.junkMailbox;
-    case "outbox":
-      return app.outbox;
-    default:
-      return null;
-      }
-    }
-    function resolveScopeNames(scope) {
-      if (!scope || scope === "inbox") {
-    return ["inbox"];
-      }
-      if (scope === "all") {
-    return ["inbox", "sent", "drafts", "junk", "trash", "outbox"];
-      }
-      return [scope];
-    }
-    function messageDates(message, scope) {
-      const dateReceived = safe(() => message.dateReceived(), null);
-      const dateSent = safe(() => message.dateSent(), null);
-      if (scope === "sent" || scope === "drafts" || scope === "outbox") {
-    return { date: dateSent || dateReceived, kind: dateSent ? "sent" : "received" };
-      }
-      return { date: dateReceived || dateSent, kind: dateReceived ? "received" : "sent" };
-    }
-    function attachmentRows(message) {
-      const attachments = safe(() => message.mailAttachments(), []) || [];
-      return attachments.map((attachment) => ({
-    id: String(safe(() => attachment.id(), "")),
-    name: safe(() => attachment.name(), null),
-    mime_type: safe(() => attachment.mimeType(), null),
-    file_size: safe(() => attachment.fileSize(), null),
-    downloaded: safe(() => attachment.downloaded(), null),
-      }));
-    }
-    function mailRow(message, scope, includeContent, contentMaxChars) {
-      const id = safe(() => message.id(), null);
-      const dates = messageDates(message, scope);
-      const attachments = attachmentRows(message);
-      let content = null;
-      let contentChars = null;
-      let contentTruncated = false;
-      if (includeContent) {
-    content = safe(() => message.content(), "") || "";
-    contentChars = content.length;
-    if (content.length > contentMaxChars) {
-      content = content.slice(0, contentMaxChars);
-      contentTruncated = true;
-    }
-      }
-      return {
-    message_ref: id === null ? null : `mailmsg:${id}`,
-    id,
-    scope,
-    subject: safe(() => message.subject(), null),
-    sender: safe(() => message.sender(), null),
-    reply_to: safe(() => message.replyTo(), null),
-    message_id: safe(() => message.messageId(), null),
-    date: iso(dates.date),
-    date_kind: dates.kind,
-    date_received: iso(safe(() => message.dateReceived(), null)),
-    date_sent: iso(safe(() => message.dateSent(), null)),
-    read: !!safe(() => message.readStatus(), false),
-    flagged: !!safe(() => message.flaggedStatus(), false),
-    junk: !!safe(() => message.junkMailStatus(), false),
-    deleted: !!safe(() => message.deletedStatus(), false),
-    message_size: safe(() => message.messageSize(), null),
-    attachment_count: attachments.length,
-    attachments,
-    content,
-    content_chars: contentChars,
-    content_truncated: contentTruncated,
-      };
-    }
-    function mailSearchRow(message, scope, attachmentCount) {
-      const id = safe(() => message.id(), null);
-      const dates = messageDates(message, scope);
-      return {
-    message_ref: id === null ? null : `mailmsg:${id}`,
-    id,
-    scope,
-    subject: safe(() => message.subject(), null),
-    sender: safe(() => message.sender(), null),
-    message_id: safe(() => message.messageId(), null),
-    date: iso(dates.date),
-    date_kind: dates.kind,
-    date_received: iso(safe(() => message.dateReceived(), null)),
-    date_sent: iso(safe(() => message.dateSent(), null)),
-    read: !!safe(() => message.readStatus(), false),
-    flagged: !!safe(() => message.flaggedStatus(), false),
-    attachment_count: attachmentCount,
-      };
-    }
-    function parseMessageRef(messageRef) {
-      const text = String(messageRef || "");
-      const match = text.match(/^mailmsg:(\\d+)$/) || text.match(/^(\\d+)$/);
-      return match ? Number(match[1]) : null;
-    }
-    function findMessageByRef(app, messageRef, scopeNames) {
-      const id = parseMessageRef(messageRef);
-      if (id === null) {
-    return null;
-      }
-      for (const scope of scopeNames) {
-    const mailbox = mailboxForScope(app, scope);
-    if (!mailbox || !safe(() => mailbox.exists(), false)) {
-      continue;
-    }
-    const message = mailbox.messages.byId(id);
-    if (safe(() => message.exists(), false)) {
-      return { message, scope };
-    }
-      }
-      return null;
-    }
-"""
-
-class MacOSAppBridge:
-
-    def _run_mail_jxa_json(self, body: str, **kwargs: Any) -> dict[str, Any]:
-        """Run Mail JXA with its app-specific helper prelude."""
-        return self._run_jxa_json(body, helpers=MAIL_JXA_HELPERS, **kwargs)
-
-    def mail_catalog(self) -> dict[str, Any]:
-        """Summarize unified Mail.app scopes."""
-        return self._run_mail_jxa_json(
-            """
+# Trash stays in Mail.app so the move syncs to the server. Each target is
+# addressed directly (account / mailbox path / message id, where the AppleScript
+# message id is the Envelope Index ROWID) and its Message-ID is checked against
+# the index before anything moves, so a stale ref cannot trash another message.
+_MAIL_TRASH_JXA = """
 const app = Application("Mail");
-const scopeNames = ["inbox", "sent", "drafts", "junk", "trash", "outbox"];
-const scopes = [];
-for (const scope of scopeNames) {
-  const mailbox = mailboxForScope(app, scope);
-  if (!mailbox || !safe(() => mailbox.exists(), false)) {
+const payload = readPayload();
+// The full-path form is tried first because neither form has been verified
+// against nested IMAP folders on the host; Mail may expose a nested mailbox
+// only through its parents. Returns null when neither form resolves.
+const mailboxOf = (target, path) => {
+  const root = target.local ? app : app.accounts.byId(target.account);
+  const direct = root.mailboxes.byName(path);
+  if (safe(() => direct.exists(), false)) {
+    return direct;
+  }
+  let box = root;
+  for (const name of path.split("/")) {
+    box = box.mailboxes.byName(name);
+    if (!safe(() => box.exists(), false)) {
+      return null;
+    }
+  }
+  return box;
+};
+const resolved = [];
+const problems = [];
+for (const target of payload.targets) {
+  const source = mailboxOf(target, target.mailbox_path);
+  const trash = mailboxOf(target, target.trash_path);
+  if (source === null || trash === null) {
+    const path = source === null ? target.mailbox_path : target.trash_path;
+    problems.push(`${target.message_ref}: Mail.app mailbox not found: ${path}`);
     continue;
   }
-  scopes.push({
-    scope,
-    name: safe(() => mailbox.name(), scope),
-    message_count: safe(() => mailbox.messages.length, 0),
-    unread_count: safe(() => mailbox.unreadCount(), null),
-  });
+  const message = source.messages.byId(target.id);
+  const matches = target.message_id === null
+    ? safe(() => message.exists(), false)
+    : safe(() => message.messageId(), null) === target.message_id;
+  if (!matches) {
+    problems.push(`${target.message_ref}: Mail.app message does not match the index; search again`);
+    continue;
+  }
+  resolved.push({ target, message, trash });
 }
-return { ok: true, scopes, count: scopes.length };
-""",
-            operation="mail_catalog",
-        )
+if (problems.length > 0) {
+  return { ok: false, error: problems.join("; ") };
+}
+if (!payload.dry_run) {
+  for (const { message, trash } of resolved) {
+    app.move(message, { to: trash });
+  }
+}
+return { ok: true, verified_count: resolved.length };
+"""
+
+
+class MacOSAppBridge:
+    _mail_root: Path = MAIL_ROOT
+
+    def mail_catalog(self) -> dict[str, Any]:
+        """Summarize unified Mail.app scopes from the Envelope Index."""
+        return MailStore(self._mail_root).catalog()
 
     def mail_search(
         self,
@@ -297,140 +206,73 @@ return { ok: true, scopes, count: scopes.length };
         limit: int | None,
         offset: int | None,
     ) -> dict[str, Any]:
-        """Search a bounded window of unified Mail.app messages."""
-        date_after = _parse_mail_range_datetime(date_after, field_name="date_after")
-        date_before = _parse_mail_range_datetime(date_before, field_name="date_before")
-        result = self._run_mail_jxa_json(
-            """
-const app = Application("Mail");
-const payload = readPayload();
-const scopeList = resolveScopeNames(payload.scope);
-const query = lower(payload.query || "");
-const searchBody = !!payload.search_body;
-const limit = clampLimit(payload.limit, payload.max_result_limit);
-const offset = Math.max(0, Number(payload.offset || 0));
-const scanLimit = clampScanLimit(payload.scan_limit, payload.default_scan_limit, payload.max_scan_limit);
-const dateAfter = payload.date_after ? new Date(payload.date_after) : null;
-const dateBefore = payload.date_before ? new Date(payload.date_before) : null;
-const hasFilters = !!query
-  || !!dateAfter
-  || !!dateBefore
-  || payload.unread !== null && payload.unread !== undefined
-  || payload.flagged !== null && payload.flagged !== undefined
-  || payload.has_attachments !== null && payload.has_attachments !== undefined;
-let inspected = 0;
-let scanTruncated = false;
-let resultWindowFilled = false;
-const matches = [];
-scopeLoop:
-for (const scopeName of scopeList) {
-  const mailbox = mailboxForScope(app, scopeName);
-  if (!mailbox || !safe(() => mailbox.exists(), false)) {
-    continue;
-  }
-  const messages = mailbox.messages;
-  const total = safe(() => messages.length, 0);
-  for (let index = 0; index < total; index += 1) {
-    if (inspected >= scanLimit) {
-      scanTruncated = true;
-      break scopeLoop;
-    }
-    const message = messages.at(index);
-    inspected += 1;
-    const dates = messageDates(message, scopeName);
-    if (dateAfter && (!dates.date || dates.date < dateAfter)) {
-      continue;
-    }
-    if (dateBefore && (!dates.date || dates.date > dateBefore)) {
-      continue;
-    }
-    const isRead = !!safe(() => message.readStatus(), false);
-    if (payload.unread !== null && payload.unread !== undefined && isRead === payload.unread) {
-      continue;
-    }
-    const isFlagged = !!safe(() => message.flaggedStatus(), false);
-    if (payload.flagged !== null && payload.flagged !== undefined && isFlagged !== payload.flagged) {
-      continue;
-    }
-    const attachmentCount = payload.has_attachments !== null && payload.has_attachments !== undefined
-      ? safe(() => message.mailAttachments().length, 0)
-      : null;
-    if (
-      payload.has_attachments !== null
-      && payload.has_attachments !== undefined
-      && (attachmentCount > 0) !== payload.has_attachments
-    ) {
-      continue;
-    }
-    const sender = safe(() => message.sender(), "") || "";
-    const subject = safe(() => message.subject(), "") || "";
-    const quickHaystack = lower(`${sender}\\n${subject}`);
-    if (query && !quickHaystack.includes(query)) {
-      if (!searchBody) {
-        continue;
-      }
-      const body = safe(() => message.content(), "") || "";
-      if (!lower(body).includes(query)) {
-        continue;
-      }
-    }
-    matches.push(mailSearchRow(message, scopeName, attachmentCount));
-    if (!hasFilters && matches.length >= offset + limit) {
-      resultWindowFilled = true;
-      break scopeLoop;
-    }
-  }
-}
-matches.sort((a, b) => compareIsoDesc(a.date, b.date));
-const page = matches.slice(offset, offset + limit);
-return {
-  ok: true,
-  scope: payload.scope || "inbox",
-  scanned_scopes: scopeList,
-  scanned_count: inspected,
-  scan_limit: scanLimit,
-  scan_truncated: scanTruncated,
-  matched_count: matches.length,
-  matched_count_exact: !resultWindowFilled,
-  offset,
-  limit,
-  result_truncated: resultWindowFilled || matches.length > offset + limit,
-  results: page,
-  count: page.length,
-  warning: scanTruncated
-    ? `scan_limit ${scanLimit} reached; narrow the date range or increase scan_limit`
-    : null,
-};
-""",
-            payload={
-                "scope": scope,
-                "query": query,
-                "search_body": search_body,
-                "date_after": date_after,
-                "date_before": date_before,
-                "unread": unread,
-                "flagged": flagged,
-                "has_attachments": has_attachments,
-                "scan_limit": scan_limit,
-                "default_scan_limit": _APPLE_MAIL_DEFAULT_SCAN_LIMIT,
-                "max_scan_limit": _APPLE_MAIL_MAX_SCAN_LIMIT,
-                "max_result_limit": self._max_search_results,
-                "content_max_chars": _APPLE_MAIL_GET_CONTENT_MAX_CHARS,
-                "limit": limit,
-                "offset": offset,
-            },
-            operation="mail_search",
-            log_details={
-                "scope": scope,
-                "query": query,
-                "search_body": search_body,
-                "date_after": date_after,
-                "date_before": date_before,
-                "scan_limit": scan_limit,
-                "limit": limit,
-            },
-        )
-        return _localize_mail_datetime_fields(result)
+        """Search the newest scan_limit messages of a scope within the date range."""
+        after = _parse_mail_range_datetime(date_after, field_name="date_after")
+        before = _parse_mail_range_datetime(date_before, field_name="date_before")
+        scope = scope or "inbox"
+        scopes = list(SCOPE_ORDER) if scope == "all" else [scope]
+        limit = max(1, min(limit or self._max_search_results, self._max_search_results))
+        offset = max(0, offset or 0)
+        scan_limit = max(1, min(scan_limit or _APPLE_MAIL_DEFAULT_SCAN_LIMIT, _APPLE_MAIL_MAX_SCAN_LIMIT))
+        needle = (query or "").lower()
+        store = MailStore(self._mail_root)
+        with closing(store.connect()) as connection:
+            window, scan_truncated = store.search_window(
+                connection,
+                scopes,
+                after=datetime.fromisoformat(after).timestamp() if after else None,
+                before=datetime.fromisoformat(before).timestamp() if before else None,
+                scan_limit=scan_limit,
+            )
+        matches = []
+        body_unavailable = 0
+        for row in window:
+            if unread is not None and row["read"] == unread:
+                continue
+            if flagged is not None and row["flagged"] != flagged:
+                continue
+            if has_attachments is not None and (row["attachment_count"] > 0) != has_attachments:
+                continue
+            if needle and needle not in f"{row['sender'] or ''}\n{row['subject'] or ''}".lower():
+                if not search_body:
+                    continue
+                path = store.message_file(row["_url"], row["id"])
+                text = store.body_text(store.read_emlx(path)) if path else None
+                if text is None:
+                    body_unavailable += 1
+                    continue
+                if needle not in text.lower():
+                    continue
+            matches.append(public_fields(row))
+        page = matches[offset:offset + limit]
+        warnings = []
+        if scan_truncated:
+            warnings.append(f"scan_limit {scan_limit} reached; narrow the date range or increase scan_limit")
+        if body_unavailable:
+            warnings.append(
+                f"could not search the body of {body_unavailable} message(s) not downloaded locally; "
+                "matched_count may miss them"
+            )
+        result = {
+            "ok": True,
+            "scope": scope,
+            "scanned_scopes": scopes,
+            "scanned_count": len(window),
+            "scan_limit": scan_limit,
+            "scan_truncated": scan_truncated,
+            "matched_count": len(matches),
+            # A skipped undownloaded body may have matched.
+            "matched_count_exact": body_unavailable == 0,
+            "offset": offset,
+            "limit": limit,
+            "result_truncated": len(matches) > offset + limit,
+            "results": page,
+            "count": len(page),
+            "warning": "; ".join(warnings) or None,
+        }
+        if search_body:
+            result["body_unavailable_count"] = body_unavailable
+        return result
 
     def mail_get(
         self,
@@ -438,29 +280,19 @@ return {
         message_ref: str,
         scope: str | None,
     ) -> dict[str, Any]:
-        """Fetch one Mail.app message by opaque ref."""
-        result = self._run_mail_jxa_json(
-            """
-const app = Application("Mail");
-const payload = readPayload();
-const found = findMessageByRef(app, payload.message_ref, resolveScopeNames(payload.scope || "all"));
-if (!found) {
-  return { ok: false, error: `message not found: ${payload.message_ref}` };
-}
-return {
-  ok: true,
-  message: mailRow(found.message, found.scope, true, payload.content_max_chars),
-};
-""",
-            payload={
-                "message_ref": message_ref,
-                "scope": scope,
-                "content_max_chars": _APPLE_MAIL_GET_CONTENT_MAX_CHARS,
-            },
-            operation="mail_get",
-            log_details={"message_ref": message_ref, "scope": scope},
-        )
-        return _localize_mail_datetime_fields(result)
+        """Fetch one message by ref, with body text from its .emlx file."""
+        store = MailStore(self._mail_root)
+        rowid = parse_message_ref(message_ref)
+        with closing(store.connect()) as connection:
+            row = store.message(connection, rowid) if rowid is not None else None
+        if row is None or (scope not in (None, "all") and scope not in row["scopes"]):
+            return {"ok": False, "error": f"message not found: {message_ref}"}
+        return {
+            "ok": True,
+            "message": store.message_details(
+                row, include_content=True, max_chars=_APPLE_MAIL_GET_CONTENT_MAX_CHARS
+            ),
+        }
 
     def mail_export_attachment(
         self,
@@ -469,61 +301,27 @@ return {
         attachment_ids: list[str] | None,
         destination_dir: str | None,
     ) -> dict[str, Any]:
-        """Export Mail.app attachments to files."""
+        """Copy a message's attachments out of Mail's store."""
         export_dir = self._prepare_mail_export_dir(destination_dir)
-        before = {path.name for path in export_dir.iterdir()} if export_dir.exists() else set()
-        export_dir.mkdir(parents=True, exist_ok=True)
-        result = self._run_mail_jxa_json(
-            """
-const app = Application("Mail");
-const payload = readPayload();
-const found = findMessageByRef(app, payload.message_ref, resolveScopeNames("all"));
-if (!found) {
-  return { ok: false, error: `message not found: ${payload.message_ref}` };
-}
-const destination = Path(payload.destination_dir);
-const selectedIds = new Set((payload.attachment_ids || []).map((id) => String(id)));
-const exported = [];
-for (const attachment of attachmentRows(found.message, true)) {
-  if (selectedIds.size > 0 && !selectedIds.has(String(attachment.id))) {
-    continue;
-  }
-  const target = found.message.mailAttachments.byId(attachment.id);
-  app.save(target, { in: destination });
-  exported.push(attachment);
-}
-return {
-  ok: true,
-  message: mailRow(found.message, found.scope, false, payload.content_max_chars),
-  attachments: exported,
-  requested_attachment_count: selectedIds.size,
-  exported_count: exported.length,
-};
-""",
-            payload={
-                "message_ref": message_ref,
-                "attachment_ids": attachment_ids or [],
-                "destination_dir": str(export_dir),
-                "content_max_chars": _APPLE_MAIL_GET_CONTENT_MAX_CHARS,
-            },
-            operation="mail_export_attachment",
-            log_details={
-                "message_ref": message_ref,
-                "attachment_ids": attachment_ids or [],
-                "destination_dir": str(export_dir),
-            },
-        )
-        if not result.get("ok"):
-            return result
-        files = sorted(
-            str(path)
-            for path in export_dir.iterdir()
-            if path.is_file() and path.name not in before
-        )
-        result["destination_dir"] = str(export_dir)
-        result["files"] = files
-        result["count"] = len(files)
-        return _localize_mail_datetime_fields(result)
+        store = MailStore(self._mail_root)
+        rowid = parse_message_ref(message_ref)
+        with closing(store.connect()) as connection:
+            row = store.message(connection, rowid) if rowid is not None else None
+        if row is None:
+            return {"ok": False, "error": f"message not found: {message_ref}"}
+        exported, files = store.export_attachments(row, attachment_ids or [], export_dir)
+        return {
+            "ok": True,
+            "message": store.message_details(
+                row, include_content=False, max_chars=_APPLE_MAIL_GET_CONTENT_MAX_CHARS
+            ),
+            "attachments": exported,
+            "requested_attachment_count": len(attachment_ids or []),
+            "exported_count": len(exported),
+            "destination_dir": str(export_dir),
+            "files": files,
+            "count": len(files),
+        }
 
     def mail_trash(
         self,
@@ -531,45 +329,61 @@ return {
         message_refs: list[str],
         dry_run: bool,
     ) -> dict[str, Any]:
-        """Move explicit Mail.app message refs to Trash."""
-        result = self._run_mail_jxa_json(
-            """
-const app = Application("Mail");
-const payload = readPayload();
-const trash = app.trashMailbox;
-const messages = [];
-const missing = [];
-for (const messageRef of payload.message_refs || []) {
-  const found = findMessageByRef(app, messageRef, resolveScopeNames("all"));
-  if (!found) {
-    missing.push(messageRef);
-    continue;
-  }
-  const row = mailRow(found.message, found.scope, false, payload.content_max_chars);
-  messages.push(row);
-  if (!payload.dry_run) {
-    found.message.mailbox.set(trash);
-  }
-}
-return {
-  ok: missing.length === 0,
-  dry_run: !!payload.dry_run,
-  messages,
-  count: messages.length,
-  missing,
-  error: missing.length > 0 ? `messages not found: ${missing.join(", ")}` : null,
-};
-""",
+        """Move explicit message refs to their account's Trash in Mail.app."""
+        store = MailStore(self._mail_root)
+        rows = []
+        missing = []
+        problems = []
+        with closing(store.connect()) as connection:
+            for message_ref in message_refs:
+                rowid = parse_message_ref(message_ref)
+                row = store.message(connection, rowid) if rowid is not None else None
+                if row is None:
+                    missing.append(message_ref)
+                elif "trash" in row["scopes"]:
+                    problems.append(f"{message_ref}: already in Trash")
+                elif row["_trash_mailbox"] is None:
+                    problems.append(f"{message_ref}: no Trash mailbox found for its account")
+                else:
+                    rows.append(row)
+        if missing:
+            return {"ok": False, "error": f"messages not found: {', '.join(missing)}"}
+        if problems:
+            return {"ok": False, "error": "; ".join(problems)}
+        result = self._run_jxa_json(
+            _MAIL_TRASH_JXA,
             payload={
-                "message_refs": message_refs,
                 "dry_run": dry_run,
-                "content_max_chars": _APPLE_MAIL_GET_CONTENT_MAX_CHARS,
+                "targets": [
+                    {
+                        "message_ref": row["message_ref"],
+                        "id": row["id"],
+                        "local": row["_local"],
+                        "account": row["_account"],
+                        "mailbox_path": row["_mailbox_path"],
+                        "trash_path": row["_trash_mailbox"],
+                        "message_id": row["message_id"],
+                    }
+                    for row in rows
+                ],
             },
             operation="mail_trash",
             log_details={"message_refs": message_refs, "dry_run": dry_run},
         )
-        return _localize_mail_datetime_fields(result)
-
+        if not result.get("ok"):
+            return result
+        messages = [
+            store.message_details(row, include_content=False, max_chars=_APPLE_MAIL_GET_CONTENT_MAX_CHARS)
+            for row in rows
+        ]
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "messages": messages,
+            "count": len(messages),
+            "missing": [],
+            "error": None,
+        }
 
 
 def create_mail_tool(bridge: MacOSAppBridge) -> Callable[..., str]:

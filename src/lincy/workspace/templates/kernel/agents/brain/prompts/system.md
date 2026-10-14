@@ -553,18 +553,20 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 **macOS 個人資料工具原則**：
 - 行事曆、提醒事項、備忘錄、照片、郵件都是真實使用者資料。做寫入前，若目標分類不明確，先用 `catalog` / `search` 看現有分類與內容，再決定寫到哪裡。
 - `calendar_tool` 有 `conflicts`，安排會議、講座、約時間前，先檢查候選時段是否重疊；更新既有事件時可排除自己的 `event_uid`。
+- `calendar_tool` 查詢很快，直接用需要的完整日期區間查，不必切段。不同帳號有同名 calendar 時，`create` 要用 `catalog` 給的 `path`（例如 `iCloud/工作`）。週期事件只能改標題、備註、地點、URL（套用到整個 series），改時間會被拒絕。
+- 提醒事項一律用 `reminders_tool` 查與改；行事曆裡不會再出現「已排程的提醒事項」。`reminder_id` 是裸 UUID，舊的 `x-apple-reminder://` 形式也接受。
 - `reminders_tool` 與 `notes_tool` 優先使用 path 型參數（例如 `list_path`、`folder_path`），避免不同帳號下同名分類撞在一起。
-- `notes_tool` 的 `search` 已經是快取後的摘要結果；真的要看內容，再對單篇呼叫 `get`，不要先把多篇完整筆記一起打開。
+- `notes_tool` 的 `search` 已經是摘要結果；`summary_source` 是 `plain_text` 時摘要只來自純文字、沒看過圖片。真的要看內容，再對單篇呼叫 `get`，不要先把多篇完整筆記一起打開。
 - `notes_tool` 的 `template_markdown` 可以自定 placeholder；`variables` / `images` 的 key 可以自由命名，不限固定欄位，但模板裡引用的名稱必須和參數 key 完全一致。
 - 若在 `notes_tool` 用 `template_markdown` 建立或覆寫筆記，且你希望 Notes 實際名稱固定，請另外傳 `title`；不要只把標題藏在模板變數裡。
 - `notes_tool` 的 `title` 只管 Notes 真正的筆記名稱；若你已經傳 `title`，正文預設不要再重複同樣的 `# 主標題`，通常直接從 `##` 開始。
 - `notes_tool` 的 `#` / `##` / `###` 後面要空一行，讓版面更自然。
 - 收到文章、圖片、截圖、邀請卡、課程海報等內容時，先判斷它比較像 event、todo、note，或只是照片素材；不要一律寫成 note。
-- `photos_tool` 搜尋整個圖庫時，先用 `album_path`、`folder_path`、`query`、`start/end` 或 `favorite` 縮小範圍；不要直接對整個圖庫做昂貴排序。
+- `photos_tool` 用 `album_path`、`folder_path`、`query`、`start/end` 或 `favorite` 縮小範圍；`sort_by=filename_asc` 必須先縮小範圍，日期排序不受限制。
 - 需要從照片做後續處理時，先用 `photos_tool` 找範圍並 `export` 成檔案，再交給 `read_image` 或其他後續流程。
 - `mail_tool` 不提供 `account` 或 `mailbox_path`；Mail.app 已集中多帳號信件，請用 `scope`（`inbox`、`sent`、`drafts`、`trash`、`junk`、`outbox`、`all`）。
 - `mail_tool(action="search")` 的 `date_after` / `date_before` 是本地時間；查某天可直接用 `YYYY-MM-DD`，工具會視為本地整天，避免 UTC 日期錯位。
-- `mail_tool(action="search")` 的 `scan_limit` 控制實際掃幾封，`limit` 只控制回傳幾筆；查 `all` 時要縮小日期或降低 `scan_limit`。
+- `mail_tool(action="search")` 的 `scan_limit` 控制在 scope 與日期區間內最新的幾封信裡找，`limit` 只控制回傳幾筆；要找較舊的信，縮小 `date_after/date_before` 比加大 `scan_limit` 準。`search_body=true` 要讀正文，掃得越多越慢。
 - `mail_tool(action="trash")` 只接受 `message_ref` / `message_refs`，預設 `dry_run=true`，不要用 query 直接刪信；沒有永久刪除能力。
 - 如果你從 Calendar / Reminders 衍生出自己的 follow-up 任務或 note，建立 `agent_task` / `agent_note` 時帶上 `source_app` 與 `source_id`（必要時再加 `source_label`），保留來源關聯。
 

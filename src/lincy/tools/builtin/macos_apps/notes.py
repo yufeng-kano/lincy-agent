@@ -26,6 +26,7 @@ from .notes_template import (
     _render_note_template_html,
     _write_json_file,
 )
+from .notes_store import NoteStore, StoredNote
 from .runtime import (
     _APPLE_NOTES_CACHE_VERSION,
     _APPLE_NOTES_DEFAULT_SEARCH_LIMIT,
@@ -34,8 +35,10 @@ from .runtime import (
     _APPLE_NOTES_SUMMARY_MAX_INPUT_CHARS,
     _APPLE_NOTES_SUMMARY_SYSTEM_PROMPT,
     _DATA_IMAGE_RE,
+    _datetime_in_app_tz,
     _error,
     _json_output,
+    _parse_local_datetime,
     logger,
 )
 
@@ -160,234 +163,47 @@ NOTES_TOOL_DEFINITION = ToolDefinition(
 class MacOSAppBridge:
 
     def notes_catalog(self) -> dict[str, Any]:
-        """List Notes accounts and folders."""
-        script = """
-const app = Application("Notes");
-function walkFolder(folder, accountName) {
-  const path = `${accountName}/${folder.name()}`;
-  return {
-    id: folder.id(),
-    name: folder.name(),
-    account: accountName,
-    path,
-    children: folder.folders().map((child) => walkChildFolder(child, path, accountName)),
-  };
-}
-function walkChildFolder(folder, parentPath, accountName) {
-  const path = `${parentPath}/${folder.name()}`;
-  return {
-    id: folder.id(),
-    name: folder.name(),
-    account: accountName,
-    path,
-    children: folder.folders().map((child) => walkChildFolder(child, path, accountName)),
-  };
-}
-const accounts = app.accounts().map((account) => ({
-  id: account.id(),
-  name: account.name(),
-  folders: account.folders().map((folder) => walkFolder(folder, account.name())),
-}));
-return { ok: true, accounts };
-"""
-        return self._run_jxa_json(
-            script,
-            operation="notes.catalog",
-        )
+        """List Notes accounts and the folder tree from the Notes database."""
+        with NoteStore.open() as store:
+            return {"ok": True, "accounts": store.catalog()}
 
-    def _notes_list_candidates(
-        self,
-        *,
-        account: str | None,
-        folder_id: str | None,
-        folder_path: str | None,
-        created_after: str | None,
-        created_before: str | None,
-        modified_after: str | None,
-        modified_before: str | None,
-        sort_by: str | None,
-    ) -> dict[str, Any]:
-        """List note metadata without loading large note bodies."""
-        script = f"""
-const app = Application("Notes");
-const payload = readPayload();
-const scanLimit = clampLimit(payload.scan_limit, {self._max_search_results});
-const createdAfter = payload.created_after ? new Date(payload.created_after) : null;
-const createdBefore = payload.created_before ? new Date(payload.created_before) : null;
-const modifiedAfter = payload.modified_after ? new Date(payload.modified_after) : null;
-const modifiedBefore = payload.modified_before ? new Date(payload.modified_before) : null;
-function flattenFolders(folder, accountName, parentPath) {{
-  const path = parentPath ? `${{parentPath}}/${{folder.name()}}` : `${{accountName}}/${{folder.name()}}`;
-  const entry = {{ id: folder.id(), name: folder.name(), account: accountName, path, notes: folder.notes() }};
-  let rows = [entry];
-  for (const child of folder.folders()) {{
-    rows = rows.concat(flattenFolders(child, accountName, path));
-  }}
-  return rows;
-}}
-let folders = [];
-for (const accountRow of app.accounts()) {{
-  if (payload.account && accountRow.name() !== payload.account) {{
-    continue;
-  }}
-  for (const folder of accountRow.folders()) {{
-    folders = folders.concat(flattenFolders(folder, accountRow.name(), ""));
-  }}
-}}
-if (payload.folder_id) {{
-  folders = folders.filter((row) => row.id === payload.folder_id);
-}}
-if (payload.folder_path) {{
-  folders = folders.filter((row) => row.path === payload.folder_path);
-}}
-const results = [];
-for (const row of folders) {{
-  for (const note of row.notes) {{
-    const item = {{
-      id: note.id(),
-      title: note.name(),
-      created_at: iso(note.creationDate()),
-      modified_at: iso(note.modificationDate()),
-      shared: !!note.shared(),
-      password_protected: !!note.passwordProtected(),
-      account: row.account,
-      folder_id: row.id,
-      folder_path: row.path,
-    }};
-    if (createdAfter && (!item.created_at || new Date(item.created_at) < createdAfter)) {{
-      continue;
-    }}
-    if (createdBefore && (!item.created_at || new Date(item.created_at) > createdBefore)) {{
-      continue;
-    }}
-    if (modifiedAfter && (!item.modified_at || new Date(item.modified_at) < modifiedAfter)) {{
-      continue;
-    }}
-    if (modifiedBefore && (!item.modified_at || new Date(item.modified_at) > modifiedBefore)) {{
-      continue;
-    }}
-    results.push(item);
-    if (results.length >= scanLimit) {{
-      break;
-    }}
-  }}
-  if (results.length >= scanLimit) {{
-    break;
-  }}
-}}
-if (payload.sort_by === "modified_asc") {{
-  results.sort((a, b) => compareIsoAsc(a.modified_at, b.modified_at));
-}} else if (payload.sort_by === "created_desc") {{
-  results.sort((a, b) => compareIsoDesc(a.created_at, b.created_at));
-}} else if (payload.sort_by === "created_asc") {{
-  results.sort((a, b) => compareIsoAsc(a.created_at, b.created_at));
-}} else {{
-  results.sort((a, b) => compareIsoDesc(a.modified_at, b.modified_at));
-}}
-return {{ ok: true, results, count: results.length }};
-        """
-        return self._run_jxa_json(
-            script,
-            payload={
-                "account": account,
-                "folder_id": folder_id,
-                "folder_path": folder_path,
-                "created_after": created_after,
-                "created_before": created_before,
-                "modified_after": modified_after,
-                "modified_before": modified_before,
-                "sort_by": sort_by,
-                "scan_limit": self._max_search_results,
-            },
-            operation="notes.list_candidates",
-            log_details={
-                "account": account,
-                "folder_id": folder_id,
-                "folder_path": folder_path,
-                "created_after": created_after,
-                "created_before": created_before,
-                "modified_after": modified_after,
-                "modified_before": modified_before,
-                "sort_by": sort_by,
-                "scan_limit": self._max_search_results,
-            },
-        )
-
-    def _notes_get_raw(self, *, note_id: str) -> dict[str, Any]:
-        """Fetch one note by id with raw HTML/plaintext."""
-        return self._run_jxa_json(
+    def _notes_fetch_body(self, *, note_id: str) -> str:
+        """Fetch one note's HTML body through a direct id reference (one Apple Event)."""
+        result = self._run_jxa_json(
             """
-const app = Application("Notes");
 const payload = readPayload();
-function buildFolderPath(folder) {
-  const parts = [folder.name()];
-  let container = null;
-  try {
-    container = folder.container();
-  } catch (error) {
-    container = null;
-  }
-  while (container) {
-    try {
-      parts.unshift(container.name());
-      container = container.container();
-    } catch (error) {
-      break;
-    }
-  }
-  return parts.join("/");
-}
-function resolveAccountName(folder) {
-  let container = null;
-  let accountName = null;
-  try {
-    container = folder.container();
-  } catch (error) {
-    container = null;
-  }
-  while (container) {
-    try {
-      accountName = container.name();
-      container = container.container();
-    } catch (error) {
-      break;
-    }
-  }
-  return accountName;
-}
-const matches = app.notes.whose({ id: payload.note_id })();
-if (matches.length === 0) {
-  return { ok: false, error: `note not found: ${payload.note_id}` };
-}
-const note = matches[0];
-const folder = note.container();
-return {
-  ok: true,
-  note: {
-    id: note.id(),
-    title: note.name(),
-    body_html: valueOrNull(note.body()),
-    plaintext: valueOrNull(note.plaintext()),
-    created_at: iso(note.creationDate()),
-    modified_at: iso(note.modificationDate()),
-    shared: !!note.shared(),
-    password_protected: !!note.passwordProtected(),
-    account: resolveAccountName(folder),
-    folder_id: folder.id(),
-    folder_path: buildFolderPath(folder),
-  },
-};
+return { ok: true, body_html: valueOrNull(Application("Notes").notes.byId(payload.note_id).body()) };
 """,
             payload={"note_id": note_id},
-            operation="notes.get_raw",
+            operation="notes.get_body",
             log_details={"note_id": note_id},
         )
+        return result.get("body_html") or ""
 
     def _read_note_cache(self, *, note_id: str) -> dict[str, Any] | None:
         """Load the derived cache entry for one note."""
         return _load_json_file(
             self._apple_notes_cache_dir / _apple_notes_cache_filename(note_id)
         )
+
+    def _read_fresh_note_cache(self, note: StoredNote) -> dict[str, Any] | None:
+        """Load the cache entry only when it matches the note's current version.
+
+        modified_at is truncated to whole seconds like Notes scripting, so a
+        create followed by an update within one second would look unchanged;
+        the full-precision database timestamp tells them apart. Without a
+        timestamp freshness cannot be proven, so nothing is fresh.
+        """
+        if note.modified is None:
+            return None
+        cached = self._read_note_cache(note_id=note.meta["id"])
+        if (
+            cached
+            and cached.get("cache_version") == _APPLE_NOTES_CACHE_VERSION
+            and cached.get("modified_stamp") == note.modified.isoformat()
+        ):
+            return cached
+        return None
 
     def _write_note_cache(self, *, note_id: str, payload: dict[str, Any]) -> None:
         """Persist the derived cache entry for one note."""
@@ -494,45 +310,47 @@ return {
         normalized = _normalize_markdown(summary or "")
         return normalized or fallback
 
-    def _build_note_view(
-        self,
-        raw_note: dict[str, Any],
-        *,
-        include_summary: bool,
-    ) -> dict[str, Any]:
-        """Build the LLM-facing note payload, using cache when possible."""
-        note_id = raw_note["id"]
-        modified_at = raw_note.get("modified_at")
-        cached = self._read_note_cache(note_id=note_id)
-        if (
-            cached
-            and cached.get("cache_version") == _APPLE_NOTES_CACHE_VERSION
-            and cached.get("modified_at") == modified_at
-        ):
+    def _build_note_view(self, note: StoredNote, *, include_summary: bool) -> dict[str, Any]:
+        """Build the LLM-facing note payload, using cache when possible.
+
+        Metadata always comes from the database so a cached entry never
+        reports a stale folder after a move.
+        """
+        note_id = note.meta["id"]
+        if note.meta["password_protected"]:
+            # Locked notes are encrypted at rest and Notes scripting returns an
+            # empty body, so only metadata is available.
+            return {
+                **note.meta,
+                "content_markdown": "",
+                "content_chars": 0,
+                "has_images": False,
+                "image_count": 0,
+                "image_hashes": [],
+                "source_url": None,
+                "content_kind": "locked_note",
+                "search_summary": "",
+            }
+        cached = self._read_fresh_note_cache(note)
+        if cached:
             if include_summary and not cached.get("search_summary"):
                 cached["search_summary"] = self._summarize_note_content(
-                    title=cached.get("title"),
+                    title=note.meta["title"],
                     content_markdown=cached.get("content_markdown", ""),
                 )
                 self._write_note_cache(note_id=note_id, payload=cached)
-            return cached
+            return {**cached, **note.meta}
 
+        body_html = self._notes_fetch_body(note_id=note_id)
         content_markdown, image_hashes, has_images = self._render_note_markdown(
             note_id=note_id,
-            body_html=raw_note.get("body_html") or "",
-            plaintext=raw_note.get("plaintext") or "",
+            body_html=body_html,
+            plaintext=note.text or "",
         )
-        source_url = _extract_source_url(raw_note.get("body_html") or "")
+        source_url = _extract_source_url(body_html)
         payload = {
-            "id": note_id,
-            "title": raw_note.get("title"),
-            "created_at": raw_note.get("created_at"),
-            "modified_at": modified_at,
-            "shared": raw_note.get("shared", False),
-            "password_protected": raw_note.get("password_protected", False),
-            "account": raw_note.get("account"),
-            "folder_id": raw_note.get("folder_id"),
-            "folder_path": raw_note.get("folder_path"),
+            **note.meta,
+            "modified_stamp": note.modified.isoformat() if note.modified else None,
             "content_markdown": content_markdown,
             "content_chars": len(content_markdown),
             "has_images": has_images,
@@ -553,12 +371,81 @@ return {
         self._write_note_cache(note_id=note_id, payload=payload)
         return payload
 
-    def _build_note_search_entry(self, candidate: dict[str, Any]) -> dict[str, Any]:
-        """Render one note candidate into a cached search entry."""
-        raw_result = self._notes_get_raw(note_id=candidate["id"])
-        if not raw_result.get("ok"):
-            raise RuntimeError(raw_result.get("error") or "failed to fetch note")
-        return self._build_note_view(raw_result["note"], include_summary=True)
+    def _note_search_entry(self, note: StoredNote) -> dict[str, Any]:
+        """Build one search result without calling Notes.app.
+
+        A fresh rich cache entry (written by get) is used as is; otherwise the
+        summary comes from the database plain text, because body() can stall
+        Notes.app for tens of seconds.
+        """
+        locked = note.meta["password_protected"]
+        if locked or self._read_fresh_note_cache(note) is not None:
+            view = self._build_note_view(note, include_summary=True)
+            return {**view, "summary_source": "none" if locked else "cache"}
+        if note.text is None:
+            # The body is not downloaded yet or not decodable, so there is
+            # nothing to summarize; say so instead of reporting an empty note.
+            return {
+                **note.meta,
+                "search_summary": "",
+                "summary_source": "none",
+                "content_chars": 0,
+                "has_images": note.image_count > 0,
+                "image_count": note.image_count,
+                "source_url": note.link_url,
+                "content_kind": "unavailable_note",
+            }
+        stamp = note.modified.isoformat() if note.modified else None
+        text = _normalize_markdown(note.text.replace("\ufffc", ""))
+        # Plain-text summaries live in their own keys so they never make the
+        # rich content_markdown look fresh; a later get upgrades the entry.
+        entry = self._read_note_cache(note_id=note.meta["id"]) or {}
+        if stamp is None or entry.get("plain_summary_stamp") != stamp:
+            entry["plain_summary"] = self._summarize_note_content(
+                title=note.meta["title"],
+                content_markdown=text,
+            )
+            entry["plain_summary_stamp"] = stamp
+            self._write_note_cache(note_id=note.meta["id"], payload=entry)
+        source_url = _extract_source_url(text) or note.link_url
+        has_images = note.image_count > 0
+        return {
+            **note.meta,
+            "search_summary": entry["plain_summary"],
+            "summary_source": "plain_text",
+            "content_chars": len(text),
+            "has_images": has_images,
+            "image_count": note.image_count,
+            "source_url": source_url,
+            "content_kind": _coerce_note_content_kind(
+                source_url=source_url,
+                has_images=has_images,
+            ),
+        }
+
+    def _note_matches_query(self, note: StoredNote, needle: str) -> bool:
+        """Match title and database plain text, then cached Markdown and summaries.
+
+        The cache adds text the database lacks, such as vision summaries of
+        embedded images, for notes that were rendered before.
+        """
+        if needle in (note.meta["title"] or "").lower() or needle in (note.text or "").lower():
+            return True
+        cached = self._read_fresh_note_cache(note)
+        if cached and (
+            needle in (cached.get("search_summary") or "").lower()
+            or needle in (cached.get("content_markdown") or "").lower()
+        ):
+            return True
+        # Plain-text summaries carry their own stamp and never set
+        # modified_stamp; they are fresh under the same rule search uses to
+        # reuse them, and without a timestamp nothing is fresh.
+        if note.modified is None:
+            return False
+        entry = self._read_note_cache(note_id=note.meta["id"]) or {}
+        return entry.get("plain_summary_stamp") == note.modified.isoformat() and (
+            needle in (entry.get("plain_summary") or "").lower()
+        )
 
     def notes_search(
         self,
@@ -575,73 +462,85 @@ return {
         limit: int | None,
         offset: int | None,
     ) -> dict[str, Any]:
-        """Search notes using rendered Markdown and cached summaries."""
-        metadata = self._notes_list_candidates(
-            account=account,
-            folder_id=folder_id,
-            folder_path=folder_path,
-            created_after=created_after,
-            created_before=created_before,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            sort_by=sort_by,
-        )
-        if not metadata.get("ok"):
-            return metadata
-        candidates = metadata.get("results", [])
-        if not candidates:
-            return {
-                "ok": True,
-                "results": [],
-                "count": 0,
-                "total_matches": 0,
-                "offset": max(0, offset or 0),
-                "limit": max(1, min(limit or _APPLE_NOTES_DEFAULT_SEARCH_LIMIT, self._max_search_results)),
-                "has_more": False,
-            }
-
-        workers = min(_APPLE_NOTES_MAX_NOTE_WORKERS, len(candidates))
-        if workers <= 1:
-            rendered = [self._build_note_search_entry(candidate) for candidate in candidates]
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                rendered = list(executor.map(self._build_note_search_entry, candidates))
-
+        """Search notes from the Notes database; only the returned page is rendered."""
+        bounds = {
+            name: _datetime_in_app_tz(_parse_local_datetime(value, field_name=name))
+            for name, value in (
+                ("created_after", created_after),
+                ("created_before", created_before),
+                ("modified_after", modified_after),
+                ("modified_before", modified_before),
+            )
+            if value
+        }
         needle = (query or "").strip().lower()
-        if needle:
-            rendered = [
-                note
-                for note in rendered
-                if needle in (note.get("title") or "").lower()
-                or needle in (note.get("search_summary") or "").lower()
-                or needle in (note.get("content_markdown") or "").lower()
-            ]
+        with NoteStore.open() as store:
+            folder = None
+            if folder_id or folder_path:
+                folder = store.find_folder(folder_id=folder_id, folder_path=folder_path)
+                if folder is None:
+                    return {"ok": False, "error": "notes folder not found"}
+            notes = store.notes()
 
-        if sort_by == "modified_asc":
-            rendered.sort(key=lambda item: item.get("modified_at") or "")
-        elif sort_by == "created_desc":
-            rendered.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-        elif sort_by == "created_asc":
-            rendered.sort(key=lambda item: item.get("created_at") or "")
-        else:
-            rendered.sort(key=lambda item: item.get("modified_at") or "", reverse=True)
+        # A note without a timestamp cannot satisfy a bound on that date.
+        candidates = [
+            note
+            for note in notes
+            if (not account or note.meta["account"] == account)
+            and (folder is None or note.meta["folder_id"] == folder["id"])
+            and ("created_after" not in bounds or (note.created is not None and note.created >= bounds["created_after"]))
+            and ("created_before" not in bounds or (note.created is not None and note.created <= bounds["created_before"]))
+            and ("modified_after" not in bounds or (note.modified is not None and note.modified >= bounds["modified_after"]))
+            and ("modified_before" not in bounds or (note.modified is not None and note.modified <= bounds["modified_before"]))
+        ]
+        matched = []
+        body_unavailable = 0
+        for note in candidates:
+            if not needle or self._note_matches_query(note, needle):
+                matched.append(note)
+            # A body that is not downloaded or not decodable was never
+            # searched, so the note may match. Locked notes are never
+            # searchable by body, and a fresh rich cache already covered it.
+            elif (
+                note.text is None
+                and not note.meta["password_protected"]
+                and self._read_fresh_note_cache(note) is None
+            ):
+                body_unavailable += 1
+        sort_key, reverse = {
+            "modified_asc": (lambda note: note.modified, False),
+            "created_desc": (lambda note: note.created, True),
+            "created_asc": (lambda note: note.created, False),
+        }.get(sort_by or "", (lambda note: note.modified, True))
+        # Notes without the sort date go last in both directions.
+        matched = sorted((note for note in matched if sort_key(note) is not None), key=sort_key, reverse=reverse) + [
+            note for note in matched if sort_key(note) is None
+        ]
 
         safe_offset = max(0, offset or 0)
         safe_limit = max(
             1,
             min(limit or _APPLE_NOTES_DEFAULT_SEARCH_LIMIT, self._max_search_results),
         )
-        page = rendered[safe_offset : safe_offset + safe_limit]
+        page_notes = matched[safe_offset : safe_offset + safe_limit]
+        workers = min(_APPLE_NOTES_MAX_NOTE_WORKERS, len(page_notes))
+        if workers <= 1:
+            page = [self._note_search_entry(note) for note in page_notes]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                page = list(executor.map(self._note_search_entry, page_notes))
         results = [
             {
                 "id": note["id"],
                 "title": note.get("title"),
                 "summary": note.get("search_summary") or "",
+                "summary_source": note["summary_source"],
                 "created_at": note.get("created_at"),
                 "modified_at": note.get("modified_at"),
                 "account": note.get("account"),
                 "folder_id": note.get("folder_id"),
                 "folder_path": note.get("folder_path"),
+                "password_protected": note.get("password_protected", False),
                 "content_kind": note.get("content_kind"),
                 "has_images": note.get("has_images", False),
                 "image_count": note.get("image_count", 0),
@@ -655,45 +554,62 @@ return {
             folder_path or folder_id or account or "*",
             len(query or ""),
             len(candidates),
-            len(rendered),
+            len(matched),
             len(results),
             safe_offset,
             safe_limit,
         )
-        return {
+        result = {
             "ok": True,
             "results": results,
             "count": len(results),
-            "total_matches": len(rendered),
+            "total_matches": len(matched),
+            "total_matches_exact": body_unavailable == 0,
             "offset": safe_offset,
             "limit": safe_limit,
-            "has_more": safe_offset + safe_limit < len(rendered),
+            "has_more": safe_offset + safe_limit < len(matched),
+            "warning": (
+                f"could not search the body of {body_unavailable} note(s) not downloaded or not readable; "
+                "total_matches may miss them"
+                if body_unavailable else None
+            ),
         }
+        if needle:
+            result["body_unavailable_count"] = body_unavailable
+        return result
+
+    def _load_note(self, note_id: str) -> StoredNote | dict[str, Any]:
+        """Look up one note in the database, or return the tool error payload."""
+        with NoteStore.open() as store:
+            note = store.note(note_id)
+        if note is None:
+            return {"ok": False, "error": f"note not found: {note_id}"}
+        return note
 
     def notes_get(self, *, note_id: str) -> dict[str, Any]:
         """Fetch one note by id and return rendered Markdown content."""
-        raw_result = self._notes_get_raw(note_id=note_id)
-        if not raw_result.get("ok"):
-            return raw_result
-        note = self._build_note_view(raw_result["note"], include_summary=False)
+        note = self._load_note(note_id)
+        if isinstance(note, dict):
+            return note
+        view = self._build_note_view(note, include_summary=False)
         return {
             "ok": True,
             "note": {
-                "id": note["id"],
-                "title": note.get("title"),
-                "created_at": note.get("created_at"),
-                "modified_at": note.get("modified_at"),
-                "shared": note.get("shared", False),
-                "password_protected": note.get("password_protected", False),
-                "account": note.get("account"),
-                "folder_id": note.get("folder_id"),
-                "folder_path": note.get("folder_path"),
-                "content_markdown": note.get("content_markdown", ""),
-                "content_chars": note.get("content_chars", 0),
-                "content_kind": note.get("content_kind"),
-                "has_images": note.get("has_images", False),
-                "image_count": note.get("image_count", 0),
-                "source_url": note.get("source_url"),
+                "id": view["id"],
+                "title": view.get("title"),
+                "created_at": view.get("created_at"),
+                "modified_at": view.get("modified_at"),
+                "shared": view.get("shared", False),
+                "password_protected": view.get("password_protected", False),
+                "account": view.get("account"),
+                "folder_id": view.get("folder_id"),
+                "folder_path": view.get("folder_path"),
+                "content_markdown": view.get("content_markdown", ""),
+                "content_chars": view.get("content_chars", 0),
+                "content_kind": view.get("content_kind"),
+                "has_images": view.get("has_images", False),
+                "image_count": view.get("image_count", 0),
+                "source_url": view.get("source_url"),
             },
         }
 
@@ -731,11 +647,8 @@ return {
 set folderId to system attribute "FOLDER_ID"
 set noteBody to {_applescript_utf8_file_read("NOTE_BODY")}
 tell application "Notes"
-  set targetFolder to first folder whose id is folderId
-  tell targetFolder
-    set newNote to make new note with properties {{body:noteBody}}
-    return id of newNote
-  end tell
+  set newNote to make new note at folder id folderId with properties {{body:noteBody}}
+  return id of newNote
 end tell
 """
         note_id = self._run_applescript(
@@ -767,9 +680,11 @@ end tell
         append: bool,
     ) -> dict[str, Any]:
         """Update a note."""
-        current = self._notes_get_raw(note_id=note_id)
-        if not current.get("ok"):
+        current = self._load_note(note_id)
+        if isinstance(current, dict):
             return current
+        if current.meta["password_protected"]:
+            return {"ok": False, "error": f"note is password-protected: {note_id}"}
         variables = dict(variables or {})
         if title is not None and "title" not in variables:
             variables["title"] = title
@@ -785,16 +700,15 @@ end tell
                 payload = _ensure_note_title_html(payload, title)
         else:
             payload = _build_note_html(title, body or "")
-        body_html = current["note"]["body_html"] or ""
-        if append:
-            payload = body_html + payload
+        # Appending inside AppleScript reads and writes the body in one call.
+        new_body = "(body of targetNote) & noteBody" if append else "noteBody"
         env = {"NOTE_ID": note_id}
         script = f"""
 set noteId to system attribute "NOTE_ID"
 set noteBody to {_applescript_utf8_file_read("NOTE_BODY")}
 tell application "Notes"
-  set targetNote to first note whose id is noteId
-  set body of targetNote to noteBody
+  set targetNote to note id noteId
+  set body of targetNote to {new_body}
   return id of targetNote
 end tell
 """
@@ -823,6 +737,9 @@ end tell
         target_folder_path: str | None,
     ) -> dict[str, Any]:
         """Move a note to another folder."""
+        current = self._load_note(note_id)
+        if isinstance(current, dict):
+            return current
         target = self._resolve_note_folder(
             folder_id=target_folder_id,
             folder_path=target_folder_path,
@@ -837,9 +754,8 @@ end tell
 set noteId to system attribute "NOTE_ID"
 set targetFolderId to system attribute "TARGET_FOLDER_ID"
 tell application "Notes"
-  set targetNote to first note whose id is noteId
-  set targetFolder to first folder whose id is targetFolderId
-  move targetNote to targetFolder
+  set targetNote to note id noteId
+  move targetNote to folder id targetFolderId
   return id of targetNote
 end tell
 """
@@ -861,40 +777,18 @@ end tell
         folder_id: str | None,
         folder_path: str | None,
     ) -> dict[str, Any]:
-        """Resolve a Notes folder."""
-        return self._run_jxa_json(
-            """
-const app = Application("Notes");
-const payload = readPayload();
-function flattenFolders(folder, accountName, parentPath) {
-  const path = parentPath ? `${parentPath}/${folder.name()}` : `${accountName}/${folder.name()}`;
-  let rows = [{ id: folder.id(), name: folder.name(), account: accountName, path }];
-  for (const child of folder.folders()) {
-    rows = rows.concat(flattenFolders(child, accountName, path));
-  }
-  return rows;
-}
-let folders = [];
-for (const account of app.accounts()) {
-  for (const folder of account.folders()) {
-    folders = folders.concat(flattenFolders(folder, account.name(), ""));
-  }
-}
-let target = null;
-if (payload.folder_id) {
-  target = folders.find((row) => row.id === payload.folder_id) || null;
-} else if (payload.folder_path) {
-  target = folders.find((row) => row.path === payload.folder_path) || null;
-}
-if (!target) {
-  return { ok: false, error: "notes folder not found" };
-}
-return { ok: true, folder_id: target.id, folder_path: target.path, account: target.account, folder_name: target.name };
-""",
-            payload={"folder_id": folder_id, "folder_path": folder_path},
-            operation="notes.resolve_folder",
-            log_details={"folder_id": folder_id, "folder_path": folder_path},
-        )
+        """Resolve a Notes folder from the Notes database."""
+        with NoteStore.open() as store:
+            folder = store.find_folder(folder_id=folder_id, folder_path=folder_path)
+        if folder is None:
+            return {"ok": False, "error": "notes folder not found"}
+        return {
+            "ok": True,
+            "folder_id": folder["id"],
+            "folder_path": folder["path"],
+            "account": folder["account"],
+            "folder_name": folder["name"],
+        }
 
 
 def create_notes_tool(bridge: MacOSAppBridge) -> Callable[..., str]:
