@@ -1,20 +1,28 @@
-"""macOS app tool implementation."""
+"""macOS Reminders tool backed by EventKit."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
+import threading
 from typing import Any
 
+import EventKit
+
 from ....llm.schema import ToolDefinition, ToolParameter
+from .eventkit import (
+    components_to_iso,
+    datetime_to_components,
+    open_store,
+    save_error,
+    to_nsdate,
+)
+from .reminders_db import read_flags
 from .runtime import (
-    _datetime_to_app_iso,
+    _datetime_in_app_tz,
     _error,
     _json_output,
-    _localize_reminder_datetime_fields,
-    _parse_calendar_payload_datetime,
     _parse_local_datetime,
-    build_partial_update_payload,
 )
 
 REMINDERS_TOOL_DEFINITION = ToolDefinition(
@@ -107,24 +115,105 @@ REMINDERS_TOOL_DEFINITION = ToolDefinition(
     required=["action"],
 )
 
+_REMINDER_URL_PREFIX = "x-apple-reminder://"
+
+
+def _list_path(calendar: Any) -> str:
+    return f"{calendar.source().title()}/{calendar.title()}"
+
+
+def _reminder_row(reminder: Any, flagged: bool | None) -> dict[str, Any]:
+    calendar = reminder.calendar()
+    return {
+        "id": reminder.calendarItemIdentifier(),
+        "title": reminder.title(),
+        "notes": reminder.notes(),
+        "completed": bool(reminder.isCompleted()),
+        "due": components_to_iso(reminder.dueDateComponents()),
+        "priority": int(reminder.priority()),
+        # EventKit has no API for the flag; callers read it from the Reminders database.
+        "flagged": flagged,
+        "list_id": calendar.calendarIdentifier(),
+        "list_name": calendar.title(),
+        "list_path": _list_path(calendar),
+    }
+
+
+def _find_list(
+    store: Any,
+    *,
+    list_id: str | None,
+    list_name: str | None,
+    list_path: str | None,
+) -> Any:
+    """Return the reminder list named by id, path, or name (in that priority)."""
+    for calendar in store.calendarsForEntityType_(EventKit.EKEntityTypeReminder):
+        if list_id:
+            if calendar.calendarIdentifier() == list_id:
+                return calendar
+        elif list_path:
+            if _list_path(calendar) == list_path:
+                return calendar
+        elif calendar.title() == list_name:
+            return calendar
+    raise ValueError(f"reminders list not found: {list_id or list_path or list_name}")
+
+
+def _find_reminder(store: Any, reminder_id: str) -> Any:
+    # Older tool output and the agent's memory carry the JXA form of the id.
+    item = store.calendarItemWithIdentifier_(reminder_id.removeprefix(_REMINDER_URL_PREFIX))
+    return item if isinstance(item, EventKit.EKReminder) else None
+
+
+def _set_due(reminder: Any, due: datetime) -> None:
+    reminder.setDueDateComponents_(datetime_to_components(due))
+    # A JXA dueDate write also produced one absolute alarm at the due time; that
+    # alarm is what makes Reminders notify, so keep writing it.
+    reminder.setAlarms_([EventKit.EKAlarm.alarmWithAbsoluteDate_(to_nsdate(due))])
+
+
+_SET_FLAGGED_JXA = """
+const app = Application("Reminders");
+const payload = readPayload();
+app.reminders.byId(`x-apple-reminder://${payload.reminder_id}`).flagged.set(payload.flagged);
+return { ok: true };
+"""
+
+
 class MacOSAppBridge:
+
+    def _set_reminder_flagged(self, reminder_id: str, flagged: bool) -> None:
+        """Write the flag through Reminders.app; EventKit cannot.
+
+        A single by-id reference is one Apple Event, unlike the whose() scans
+        that made the old JXA backend time out.
+        """
+        self._run_jxa_json(
+            _SET_FLAGGED_JXA,
+            payload={"reminder_id": reminder_id, "flagged": flagged},
+            operation="reminders set flagged",
+        )
 
     def reminders_catalog(self) -> dict[str, Any]:
         """List reminder accounts and lists."""
-        script = """
-const app = Application("Reminders");
-const accounts = app.accounts().map((account) => ({
-  id: account.id(),
-  name: account.name(),
-  lists: account.lists().map((list) => ({
-    id: list.id(),
-    name: list.name(),
-    account: account.name(),
-  })),
-}));
-return { ok: true, accounts, count: accounts.reduce((n, account) => n + account.lists.length, 0) };
-"""
-        return self._run_jxa_json(script)
+        store = open_store(EventKit.EKEntityTypeReminder)
+        accounts: dict[str, dict[str, Any]] = {}
+        calendars = store.calendarsForEntityType_(EventKit.EKEntityTypeReminder)
+        for calendar in calendars:
+            source = calendar.source()
+            account = accounts.setdefault(
+                source.sourceIdentifier(),
+                {"id": source.sourceIdentifier(), "name": source.title(), "lists": []},
+            )
+            account["lists"].append(
+                {
+                    "id": calendar.calendarIdentifier(),
+                    "name": calendar.title(),
+                    "account": source.title(),
+                    "path": _list_path(calendar),
+                }
+            )
+        return {"ok": True, "accounts": list(accounts.values()), "count": len(calendars)}
 
     def reminders_search(
         self,
@@ -143,144 +232,82 @@ return { ok: true, accounts, count: accounts.reduce((n, account) => n + account.
         limit: int | None,
     ) -> dict[str, Any]:
         """Search reminders."""
-        due_start = _parse_calendar_payload_datetime(due_start, field_name="due_start")
-        due_end = _parse_calendar_payload_datetime(due_end, field_name="due_end")
-        script = f"""
-const app = Application("Reminders");
-const payload = readPayload();
-const limit = clampLimit(payload.limit, {self._max_search_results});
-const query = lower(payload.query || "");
-const dueStart = payload.due_start ? new Date(payload.due_start) : null;
-const dueEnd = payload.due_end ? new Date(payload.due_end) : null;
-let lists = [];
-if (payload.list_id) {{
-  lists = app.lists.whose({{ id: payload.list_id }})();
-}} else if (payload.list_path) {{
-  for (const account of app.accounts()) {{
-    for (const list of account.lists()) {{
-      const path = `${{account.name()}}/${{list.name()}}`;
-      if (path === payload.list_path) {{
-        lists = [list];
-        break;
-      }}
-    }}
-    if (lists.length > 0) {{
-      break;
-    }}
-  }}
-}} else if (payload.list_name) {{
-  lists = [app.lists.byName(payload.list_name)];
-}} else {{
-  lists = app.lists();
-}}
-const results = [];
-for (const list of lists) {{
-  if (!list.exists()) {{
-    continue;
-  }}
-  for (const reminder of list.reminders()) {{
-    const row = {{
-      id: reminder.id(),
-      title: reminder.name(),
-      notes: valueOrNull(reminder.body()),
-      completed: !!reminder.completed(),
-      due: iso(reminder.dueDate()),
-      priority: reminder.priority(),
-      flagged: !!reminder.flagged(),
-      list_id: list.id(),
-      list_name: list.name(),
-      list_path: `${{list.container().name()}}/${{list.name()}}`,
-    }};
-    if (payload.completed !== null && payload.completed !== undefined && row.completed !== payload.completed) {{
-      continue;
-    }}
-    if (payload.flagged !== null && payload.flagged !== undefined && row.flagged !== payload.flagged) {{
-      continue;
-    }}
-    if (payload.priority_min !== null && payload.priority_min !== undefined && row.priority < payload.priority_min) {{
-      continue;
-    }}
-    if (payload.priority_max !== null && payload.priority_max !== undefined && row.priority > payload.priority_max) {{
-      continue;
-    }}
-    if (dueStart && (!row.due || new Date(row.due) < dueStart)) {{
-      continue;
-    }}
-    if (dueEnd && (!row.due || new Date(row.due) > dueEnd)) {{
-      continue;
-    }}
-    const haystack = lower(`${{row.title || ""}}\\n${{row.notes || ""}}`);
-    if (query && !haystack.includes(query)) {{
-      continue;
-    }}
-    results.push(row);
-    if (results.length >= limit) {{
-      break;
-    }}
-  }}
-  if (results.length >= limit) {{
-    break;
-  }}
-}}
-if (payload.sort_by === "due_desc") {{
-  results.sort((a, b) => compareIsoDesc(a.due, b.due));
-}} else if (payload.sort_by === "title_asc") {{
-  results.sort((a, b) => compareTextAsc(a.title, b.title));
-}} else {{
-  results.sort((a, b) => compareIsoAsc(a.due, b.due));
-}}
-return {{ ok: true, results, count: results.length }};
-"""
-        result = self._run_jxa_json(
-            script,
-            payload={
-                "list_id": list_id,
-                "list_name": list_name,
-                "list_path": list_path,
-                "query": query,
-                "due_start": due_start,
-                "due_end": due_end,
-                "completed": completed,
-                "flagged": flagged,
-                "priority_min": priority_min,
-                "priority_max": priority_max,
-                "sort_by": sort_by,
-                "limit": limit,
-            },
-        )
-        return _localize_reminder_datetime_fields(result)
+        start = _datetime_in_app_tz(_parse_local_datetime(due_start, field_name="due_start")) if due_start else None
+        end = _datetime_in_app_tz(_parse_local_datetime(due_end, field_name="due_end")) if due_end else None
+        store = open_store(EventKit.EKEntityTypeReminder)
+        calendars = None
+        if list_id or list_name or list_path:
+            calendars = [_find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)]
+        if completed is False:
+            # Bounds are widened by a day because EventKit does not document how it
+            # places floating (date-only) due dates; exact bounds are applied below.
+            predicate = store.predicateForIncompleteRemindersWithDueDateStarting_ending_calendars_(
+                to_nsdate(start - timedelta(days=1)) if start else None,
+                to_nsdate(end + timedelta(days=1)) if end else None,
+                calendars,
+            )
+        elif completed is True:
+            predicate = store.predicateForCompletedRemindersWithCompletionDateStarting_ending_calendars_(
+                None, None, calendars
+            )
+        else:
+            predicate = store.predicateForRemindersInCalendars_(calendars)
+
+        fetched: list[Any] = []
+        done = threading.Event()
+
+        def on_fetched(reminders: Any) -> None:
+            fetched.extend(reminders or [])
+            done.set()
+
+        store.fetchRemindersMatchingPredicate_completion_(predicate, on_fetched)
+        if not done.wait(self._timeout_seconds):
+            raise RuntimeError(f"reminders search timed out after {self._timeout_seconds:.1f} seconds")
+
+        flags = read_flags()
+        needle = (query or "").lower()
+        results = []
+        for reminder in fetched:
+            row = _reminder_row(reminder, flags.get(reminder.calendarItemIdentifier()))
+            due = datetime.fromisoformat(row["due"]) if row["due"] else None
+            if flagged is not None and row["flagged"] != flagged:
+                continue
+            if priority_min is not None and row["priority"] < priority_min:
+                continue
+            if priority_max is not None and row["priority"] > priority_max:
+                continue
+            if start and (due is None or due < start):
+                continue
+            if end and (due is None or due > end):
+                continue
+            if needle and needle not in f"{row['title'] or ''}\n{row['notes'] or ''}".lower():
+                continue
+            results.append((due, row))
+
+        if sort_by == "title_asc":
+            results.sort(key=lambda item: item[1]["title"] or "")
+        else:
+            # Reminders without a due date go last in both directions.
+            dated = sorted((item for item in results if item[0]), key=lambda item: item[0], reverse=sort_by == "due_desc")
+            results = dated + [item for item in results if not item[0]]
+        limit = max(1, min(limit or self._max_search_results, self._max_search_results))
+        truncated = len(results) > limit
+        rows = [row for _, row in results[:limit]]
+        return {
+            "ok": True,
+            "results": rows,
+            "count": len(rows),
+            "limit": limit,
+            "truncated": truncated,
+            "warning": f"results hit limit {limit}; narrow the filters or increase limit" if truncated else None,
+        }
 
     def reminders_get(self, *, reminder_id: str) -> dict[str, Any]:
         """Fetch one reminder by id."""
-        result = self._run_jxa_json(
-            """
-const app = Application("Reminders");
-const payload = readPayload();
-const matches = app.reminders.whose({ id: payload.reminder_id })();
-if (matches.length === 0) {
-  return { ok: false, error: `reminder not found: ${payload.reminder_id}` };
-}
-const reminder = matches[0];
-const list = reminder.container();
-return {
-  ok: true,
-  reminder: {
-    id: reminder.id(),
-    title: reminder.name(),
-    notes: valueOrNull(reminder.body()),
-    completed: !!reminder.completed(),
-    due: iso(reminder.dueDate()),
-    priority: reminder.priority(),
-      flagged: !!reminder.flagged(),
-      list_id: list.id(),
-      list_name: list.name(),
-      list_path: `${list.container().name()}/${list.name()}`,
-    },
-};
-""",
-            payload={"reminder_id": reminder_id},
-        )
-        return _localize_reminder_datetime_fields(result)
+        reminder = _find_reminder(open_store(EventKit.EKEntityTypeReminder), reminder_id)
+        if reminder is None:
+            return {"ok": False, "error": f"reminder not found: {reminder_id}"}
+        return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(reminder.calendarItemIdentifier()))}
 
     def reminders_create(
         self,
@@ -295,57 +322,26 @@ return {
         flagged: bool | None,
     ) -> dict[str, Any]:
         """Create a reminder."""
-        resolved = self._resolve_list_spec(
-            list_id=list_id,
-            list_name=list_name,
-            list_path=list_path,
-        )
-        if not resolved.get("ok"):
-            return resolved
-        result = self._run_jxa_json(
-            """
-const app = Application("Reminders");
-const payload = readPayload();
-const matches = app.lists.whose({ id: payload.list_id })();
-if (matches.length === 0) {
-  return { ok: false, error: `reminders list not found: ${payload.list_id}` };
-}
-const list = matches[0];
-const properties = { name: payload.title };
-if (payload.notes) {
-  properties.body = payload.notes;
-}
-if (payload.has_priority) {
-  properties.priority = payload.priority;
-}
-if (payload.has_flagged) {
-  properties.flagged = !!payload.flagged;
-}
-if (payload.due) {
-  const dueDate = new Date(payload.due);
-  if (Number.isNaN(dueDate.getTime())) {
-    return { ok: false, error: `invalid due: ${payload.due}` };
-  }
-  properties.dueDate = dueDate;
-}
-const newReminder = app.Reminder(properties);
-list.reminders.push(newReminder);
-return { ok: true, reminder_id: newReminder.id() };
-""",
-            payload={
-                "list_id": resolved["list_id"],
-                "title": title,
-                "notes": notes,
-                "has_priority": priority is not None,
-                "priority": priority or 0,
-                "has_flagged": flagged is not None,
-                "flagged": bool(flagged),
-                "due": _datetime_to_app_iso(due) if due is not None else None,
-            },
-        )
-        if not result.get("ok"):
-            return result
-        return self.reminders_get(reminder_id=result["reminder_id"])
+        store = open_store(EventKit.EKEntityTypeReminder)
+        if list_id or list_name or list_path:
+            calendar = _find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)
+        else:
+            calendar = store.defaultCalendarForNewReminders()
+        reminder = EventKit.EKReminder.reminderWithEventStore_(store)
+        reminder.setCalendar_(calendar)
+        reminder.setTitle_(title)
+        if notes:
+            reminder.setNotes_(notes)
+        if priority is not None:
+            reminder.setPriority_(priority)
+        if due is not None:
+            _set_due(reminder, due)
+        saved, error = store.saveReminder_commit_error_(reminder, True, None)
+        if not saved:
+            return save_error(error)
+        if flagged:
+            self._set_reminder_flagged(reminder.calendarItemIdentifier(), True)
+        return {"ok": True, "reminder": _reminder_row(reminder, bool(flagged))}
 
     def reminders_update(
         self,
@@ -359,113 +355,30 @@ return { ok: true, reminder_id: newReminder.id() };
         completed: bool | None,
     ) -> dict[str, Any]:
         """Update a reminder."""
-        result = self._run_jxa_json(
-            """
-const app = Application("Reminders");
-const payload = readPayload();
-const matches = app.reminders.whose({ id: payload.reminder_id })();
-if (matches.length === 0) {
-  return { ok: false, error: `reminder not found: ${payload.reminder_id}` };
-}
-const reminder = matches[0];
-if (payload.due) {
-  const dueDate = new Date(payload.due);
-  if (Number.isNaN(dueDate.getTime())) {
-    return { ok: false, error: `invalid due: ${payload.due}` };
-  }
-  reminder.dueDate.set(dueDate);
-}
-if (payload.has_title) {
-  reminder.name.set(payload.title || "");
-}
-if (payload.has_notes) {
-  reminder.body.set(payload.notes || "");
-}
-if (payload.has_priority) {
-  reminder.priority.set(payload.priority);
-}
-if (payload.has_flagged) {
-  reminder.flagged.set(!!payload.flagged);
-}
-if (payload.has_completed) {
-  reminder.completed.set(!!payload.completed);
-}
-return { ok: true, reminder_id: reminder.id() };
-""",
-            payload={
-                "reminder_id": reminder_id,
-                **build_partial_update_payload(
-                    {
-                        "title": title,
-                        "notes": notes,
-                        "priority": priority,
-                        "flagged": flagged,
-                        "completed": completed,
-                        "due": _datetime_to_app_iso(due) if due is not None else None,
-                    }
-                ),
-            },
-        )
-        if not result.get("ok"):
-            return result
-        return self.reminders_get(reminder_id=result["reminder_id"])
-
-    def _resolve_list_spec(
-        self,
-        *,
-        list_id: str | None,
-        list_name: str | None,
-        list_path: str | None,
-    ) -> dict[str, Any]:
-        """Resolve a reminders list."""
-        result = self._run_jxa_json(
-            """
-const app = Application("Reminders");
-const payload = readPayload();
-let list = null;
-if (payload.list_id) {
-  const matches = app.lists.whose({ id: payload.list_id })();
-  if (matches.length > 0) {
-    list = matches[0];
-  }
-} else if (payload.list_name) {
-  list = app.lists.byName(payload.list_name);
-  if (!list.exists()) {
-    list = null;
-  }
-} else if (payload.list_path) {
-  for (const account of app.accounts()) {
-    for (const candidate of account.lists()) {
-      const path = `${account.name()}/${candidate.name()}`;
-      if (path === payload.list_path) {
-        list = candidate;
-        break;
-      }
-    }
-    if (list) {
-      break;
-    }
-  }
-} else {
-  list = app.defaultList();
-}
-if (!list) {
-  return { ok: false, error: "reminders list not found" };
-}
-return {
-  ok: true,
-  list_id: list.id(),
-  list_name: list.name(),
-  list_path: `${list.container().name()}/${list.name()}`,
-};
-""",
-            payload={
-                "list_id": list_id,
-                "list_name": list_name,
-                "list_path": list_path,
-            },
-        )
-        return result
+        store = open_store(EventKit.EKEntityTypeReminder)
+        reminder = _find_reminder(store, reminder_id)
+        if reminder is None:
+            return {"ok": False, "error": f"reminder not found: {reminder_id}"}
+        if title is not None:
+            reminder.setTitle_(title)
+        if notes is not None:
+            reminder.setNotes_(notes)
+        if priority is not None:
+            reminder.setPriority_(priority)
+        if completed is not None:
+            reminder.setCompleted_(completed)
+        if due is not None:
+            _set_due(reminder, due)
+        saved, error = store.saveReminder_commit_error_(reminder, True, None)
+        if not saved:
+            return save_error(error)
+        identifier = reminder.calendarItemIdentifier()
+        if flagged is None:
+            return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(identifier))}
+        self._set_reminder_flagged(identifier, flagged)
+        # Report the value just written rather than re-reading the database,
+        # which can trail the Reminders.app write.
+        return {"ok": True, "reminder": _reminder_row(reminder, flagged)}
 
 
 def create_reminders_tool(bridge: MacOSAppBridge) -> Callable[..., str]:

@@ -6,11 +6,16 @@ import logging
 import os
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 from ..core.schema import AppConfig
 from ..gui.input_source import list_input_sources
 from ..gui.permissions import check_gui_permissions
+from ..tools.builtin.macos_apps.eventkit import eventkit_permission_problems
+from ..tools.builtin.macos_apps.mail_store import mail_permission_problems
+from ..tools.builtin.macos_apps.notes_store import notes_permission_problems
+from ..tools.builtin.macos_apps.photos import photos_permission_problems
 from .errors import EnvironmentCheckFailed
 from .web_ui import WebUIBuildFailed, build_web_ui, web_ui_is_current
 
@@ -112,4 +117,20 @@ def check_environment(
             raise EnvironmentCheckFailed(
                 f"gui_manager.desktop.default_input_source {default_source!r} is not "
                 f"an enabled input source; available: {', '.join(available)}"
+            )
+
+    # The Apple app tools read EventKit, PhotoKit and the apps' own databases;
+    # a missing grant would fail every call at runtime, so stop here instead.
+    if config.tools.apple_apps.enabled and sys.platform == "darwin":
+        problems = [
+            *eventkit_permission_problems(),
+            *photos_permission_problems(),
+            *notes_permission_problems(),
+            *mail_permission_problems(),
+        ]
+        if problems:
+            raise EnvironmentCheckFailed(
+                "Apple app tools are enabled but permissions are missing "
+                "(run `uv run permissions-warmup`, or set tools.apple_apps.enabled: false):\n"
+                + "\n".join(problems)
             )

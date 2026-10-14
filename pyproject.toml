@@ -23,6 +23,8 @@ dependencies = [
     "pyobjc-framework-applicationservices>=12.2.2",
     "pyobjc-framework-quartz>=12.2.2",
     "pyobjc-framework-cocoa>=12.2.2",
+    "pyobjc-framework-eventkit>=12.2.2",
+    "pyobjc-framework-photos>=12.2.2",
 ]
 
 [project.scripts]

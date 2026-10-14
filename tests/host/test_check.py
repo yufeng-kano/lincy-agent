@@ -16,6 +16,7 @@ def _config(port: int):
     return SimpleNamespace(
         app=SimpleNamespace(server=SimpleNamespace(host="127.0.0.1", port=port)),
         agents={},
+        tools=SimpleNamespace(apple_apps=SimpleNamespace(enabled=False)),
     )
 
 
@@ -148,3 +149,27 @@ def test_unknown_default_input_source_stops_startup(built_repo, monkeypatch):
     config.agents = {"gui_manager": _gui_config("com.apple.keylayout.ABC")}
     with pytest.raises(EnvironmentCheckFailed, match="com.apple.keylayout.US"):
         check_environment(config, built_repo, built_repo / "ws", probe_port=False)
+
+
+def _apple_config(enabled: bool):
+    config = _config(1)
+    config.tools.apple_apps.enabled = enabled
+    return config
+
+
+def _stub_apple_checks(monkeypatch, *, mail: list[str]):
+    monkeypatch.setattr(check, "eventkit_permission_problems", lambda: [])
+    monkeypatch.setattr(check, "photos_permission_problems", lambda: [])
+    monkeypatch.setattr(check, "notes_permission_problems", lambda: [])
+    monkeypatch.setattr(check, "mail_permission_problems", lambda: mail)
+
+
+def test_apple_app_permission_problem_blocks_startup(built_repo, monkeypatch):
+    _stub_apple_checks(monkeypatch, mail=["Mail index is not readable"])
+    with pytest.raises(EnvironmentCheckFailed, match="Mail index is not readable"):
+        check_environment(_apple_config(True), built_repo, built_repo, probe_port=False)
+
+
+def test_apple_app_checks_skipped_when_disabled(built_repo, monkeypatch):
+    _stub_apple_checks(monkeypatch, mail=["Mail index is not readable"])
+    assert check_environment(_apple_config(False), built_repo, built_repo, probe_port=False) is None

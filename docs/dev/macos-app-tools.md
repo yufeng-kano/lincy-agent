@@ -34,22 +34,36 @@ tools:
     mail_export_dir: "tmp/mail-attachments"
 ```
 
-- `timeout_seconds`：單次 JXA / AppleScript 呼叫 timeout
+- `timeout_seconds`：仍走 JXA / AppleScript 的呼叫（Reminders `flagged` 寫入、Notes `get` 與寫入、Mail `trash`）的 timeout；另外也是 Reminders fetch 與 Photos 每個匯出檔案等待 completion handler 的上限
 - `max_search_results`：`search` 預設上限
 - `photos_export_dir`：`photos_tool(action="export")` 未指定 `destination_dir` 時的預設匯出根目錄，會建立在 `agent_os_dir` 下
 - `mail_export_dir`：`mail_tool(action="export_attachment")` 未指定 `destination_dir` 時的預設匯出根目錄，會建立在 `agent_os_dir` 下
 
 這批工具現在只在 LLM 明確判斷需要時才呼叫，不會自動同步到 `agent_note`，也不會自動建立排程或背景摘要。
 
-## 權限預熱
+## 權限
 
-新增或第一次使用 macOS app tool 前，可先跑：
+這批工具需要的 TCC 權限：
+
+| 權限 | 用途 |
+|------|------|
+| 行事曆：完整取用 | `calendar_tool`（EventKit） |
+| 提醒事項：完整取用 | `reminders_tool`（EventKit） |
+| 照片：完整取用 | `photos_tool`（PhotoKit） |
+| 完整磁碟取用權限 | 唯讀讀取 Reminders、Notes、Photos、Mail 的資料庫（`flagged`、筆記、照片文字 metadata、信件） |
+| 自動化：Reminders / Notes / Mail | Reminders `flagged` 寫入、Notes `get` 與寫入、Mail `trash` |
+
+`tools.apple_apps.enabled` 時，validate 階段（`host/check.py`）會呼叫各工具的 `*_permission_problems()`，任一項缺少就 `EnvironmentCheckFailed`，不啟動。理由同 GUI 權限：少了權限每次呼叫都會失敗，寧可啟動時就停。
+
+TCC 以負責程序計。正式環境 lincy 跑在 Terminal 裡的 tmux，權限要給 Terminal；改成 launchd 啟動時要給 `.venv/bin/python` 解析後的真正 binary（見 [gui-computer-use.md](gui-computer-use.md)「權限與部署」）。
+
+### 權限預熱
 
 ```bash
 uv run permissions-warmup
 ```
 
-這個指令會依序安全讀取 Calendar、Reminders、Notes、Photos、Mail 的少量 metadata，讓 macOS 連續跳出授權視窗。它不建立、不更新、不刪除任何資料，也不寄信。
+這個指令會對行事曆、提醒事項送出 EventKit 完整取用請求、對照片送出 PhotoKit 請求，再對 Reminders、Notes、Mail 跑一次唯讀 JXA 讓 macOS 跳出自動化授權，最後列出 validate 階段會擋的剩餘問題。完整磁碟取用權限沒有請求 API，只能手動到系統設定加入。它不建立、不更新、不刪除任何資料，也不寄信。
 
 若只想確認會觸發哪些 app：
 
@@ -104,7 +118,13 @@ actions：
 - `start` / `end` 使用本地時間 ISO 格式，例如 `2026-04-20T14:00`
 - Calendar 讀回的 `start` / `end` 會以 app timezone 輸出並帶 offset，例如 `2026-04-20T14:00:00+08:00`
 - `conflicts` 適合先檢查某個時段是否已有重疊事件，更新既有 event 時可帶 `exclude_event_uid`
-- `catalog` 會回傳 `writable`、`description`、`color`，讓 agent 不只知道名字，也知道哪個 calendar 可寫
+- `catalog` 會回傳 `writable`、`color`、`path`、`source`，讓 agent 不只知道名字，也知道哪個 calendar 可寫；`description` 一律為 null（EventKit 不提供）
+- `calendar` / `calendars` 可用名稱或 `source/title` 路徑；同名 calendar（例如 iCloud 與 Google 都有「工作」）在 search 會一起比對，`create` 會報錯並列出可用路徑
+- `uid` 是 EventKit `calendarItemIdentifier`，與舊 JXA 的 `uid` 相同，先前存下的 uid 仍可用
+- search / conflicts 回傳週期事件的各個 occurrence（帶 `recurring`）；`get` 回 series master。`update` 改標題、備註、地點、URL 會套用到整個 series；改 start / end / all_day 會被拒絕，避免拿某一次 occurrence 的時間把整個 series 搬走
+- search 未帶 start / end 時查 EventKit 上限的 4 年區間
+- `conflicts` 用嚴格重疊判斷，頭尾相接不算撞期
+- Calendar.app 的虛擬日曆「已排程的提醒事項」與「Siri 建議」不在 EventKit 內，`catalog` 不會出現；提醒事項一律用 `reminders_tool`
 
 ### `reminders_tool`
 
@@ -148,6 +168,11 @@ actions：
 - `search` 可直接篩完成狀態、旗標、priority 範圍、到期區間
 - `due` / `due_start` / `due_end` 使用本地時間 ISO 格式，例如 `2026-04-20T09:00`；帶 offset 的輸入（`+08:00`、`Z`）也會被正確換算
 - 讀回的 `due` 會以 app timezone 輸出並帶 offset，例如 `2026-04-20T09:00:00+08:00`，與 Calendar 行為一致
+- `id` / `reminder_id` 是 EventKit `calendarItemIdentifier`（裸 UUID）；輸入帶 `x-apple-reminder://` 前綴也接受
+- `list_path` 格式是 `<帳號>/<清單>`，例如 `iCloud/提醒事項`，與舊版相同
+- 寫入 `due` 時同時寫一個絕對時間的 alarm，與 Reminders.app 透過 JXA 寫 `dueDate` 的結果一致
+- EventKit 沒有 `flagged`：讀取與 `flagged` 篩選改從 Reminders 資料庫（`~/Library/Group Containers/group.com.apple.reminders/Container_v1/Stores/Data-*.sqlite`，表 `ZREMCDREMINDER`，`ZIDENTIFIER` 對 `calendarItemIdentifier`、`ZFLAGGED`）唯讀讀取；寫入 `flagged` 用一次 JXA `reminders.byId(...)`，約 1.2 秒
+- search 回傳 `limit`、`truncated`、`warning`；指定不存在的清單會報錯
 
 ### `notes_tool`
 
@@ -224,6 +249,14 @@ actions：
 - `search` 的摘要建立在 `get` 產出的 `content_markdown` 上，並快取到 `cache/apple_notes`
 - `move` 讓 agent 可以先暫存到某個 folder，之後再整理到正確分類
 - `search` 支援 `offset` 分頁；`limit` 預設 5，最大受 `tools.apple_apps.max_search_results` 限制
+- 讀取來源是 `~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite`：entity 編號查 `Z_PRIMARYKEY`，store UUID 取 `Z_METADATA.Z_UUID`；純文字是 `ZICNOTEDATA.ZDATA` 的 gzip protobuf，欄位路徑 2 → 3 → 2（不含表格附件內的文字）
+- `note_id` 格式 `x-coredata://<Z_UUID>/ICNote/p<Z_PK>`，與舊 JXA id 相同
+- `search` 完全不呼叫 Notes.app：快取新鮮（`modified_stamp` 相符）時用快取的摘要，否則用資料庫純文字做摘要；結果帶 `summary_source`（`cache` / `plain_text` / `none`）。純文字摘要另存在快取的 `plain_summary`，不會讓完整內容的快取看起來是新的
+- `get` 用一次 JXA `notes.byId(id).body()` 取完整 HTML 並更新快取，之後的 search 會變成 `summary_source: "cache"`
+- Notes.app 偶爾會在單次 `body()` 卡住 8 到 85 秒，這是 search 不呼叫 Notes.app 的原因
+- 「最近刪除」資料夾與其中筆記一律排除；上鎖筆記回 `password_protected: true`、`content_kind: "locked_note"`，不讀內容
+- `catalog` 回傳真實巢狀路徑與 `note_count`；存在 NoteStore.sqlite 之外的舊 IMAP 帳號（例如空的 `Google/Notes`）不會出現
+- `search` 指定不存在的 folder 會報錯
 
 ### `photos_tool`
 
@@ -269,7 +302,12 @@ actions：
 - `create_album` 可用 `parent_folder_id` 或 `parent_folder_path`
 - `export` 要帶 `media_ids`
 - `destination_dir` 必須落在 `allowed_paths` 內；未指定時會自動匯出到 `tools.apple_apps.photos_export_dir`
-- 若要排序整個圖庫，必須先縮小範圍；否則容易掃太久
+- `sort_by=filename_asc` 必須先縮小範圍；日期排序在 PhotoKit fetch 內完成，不受限制
+- 未帶 `sort_by` 時預設新到舊
+- 讀回的 `date` 以 app timezone 輸出並帶 offset
+- id 是 PhotoKit `localIdentifier`（例如 `<UUID>/L0/001`），與舊 JXA id 相同
+- `album_path` / `folder_path` 格式不變：`資料夾/子資料夾/相簿`，頂層相簿只有名稱；album 列另有 `path`、`parent_folder_id`、`parent_folder_name`
+- `export` 回傳 `failed: [{id, error}]`；全部失敗或 id 不存在會報錯；iCloud 最佳化儲存的原檔會下載
 
 ### `mail_tool`
 
@@ -308,11 +346,15 @@ actions：
 備註：
 - 不提供 `account` 與 `mailbox_path`；Mail.app 已經負責集中多帳號信件
 - `scope` 可用 `inbox`、`sent`、`drafts`、`trash`、`junk`、`outbox`、`all`，預設是 `inbox`
-- `search` 一律用 `scan_limit` 控制最多檢查幾封信，預設 300，上限 2000
+- `search` 一律用 `scan_limit` 控制最多檢查幾封信，預設 300，上限 2000；檢查範圍是 scope 與日期區間內最新的 N 封，unread / flagged / 附件 / query 篩選在這個範圍內套用
 - `limit` 只控制回傳幾筆結果，不控制 Mail.app 實際掃描量
 - `date_after` / `date_before` 以本地時間解析；日期格式 `YYYY-MM-DD` 會被視為本地整天，避免 UTC 造成日期少抓或多抓
 - `query` 預設只查寄件者與主旨；若要查正文才設 `search_body=true`
-- `search` 回傳 `message_ref`，後續 `get`、`export_attachment`、`trash` 都用它，不讓 agent 自行拼 Mail.app 內部位置
+- `search` 回傳 `message_ref`（格式 `mailmsg:<ROWID>`，ROWID 即 Envelope Index `messages.ROWID`，也等於 Mail AppleScript 的 message `id`），後續 `get`、`export_attachment`、`trash` 都用它，不讓 agent 自行拼 Mail.app 內部位置
+- `attachment_ids` 是 IMAP part 編號（例如 `2`、`1.2`），與 Envelope Index `attachments` 表一致；未下載到本機的附件匯出時會報錯
+- 正文未下載到本機時，`get` 的 `content` 為 null，`content_error` 說明需在 Mail.app 開啟該信
+- `trash` 執行前會先比對每封信的 Message-ID，已在垃圾桶或找不到的信直接拒絕；`dry_run=true` 也會向 Mail.app 確認每封信可定位
+- inbox 未讀數以資料庫為準，可能和 Mail.app 的 `unreadCount` 不同
 - `trash` 只接受 `message_ref` / `message_refs`，不接受 `query`；預設 `dry_run=true`
 - `trash(dry_run=false)` 單次最多 20 封，只移到 Trash，不做永久刪除
 - `export_attachment` 的 `destination_dir` 必須落在 `allowed_paths` 內；未指定時會自動匯出到 `tools.apple_apps.mail_export_dir`
@@ -413,19 +455,44 @@ actions：
 
 ## 實作細節
 
-- 讀取與搜尋主要走 `osascript -l JavaScript`（JXA）
-- Calendar / Reminders 的建立與更新走 JXA；Notes / Photos 的建立與更新走 AppleScript
-- 所有日期時間輸入一律先在 Python 端用設定的 app timezone 轉成帶 offset 的 ISO 字串，再交給 JXA `new Date(...)` 當絕對時間寫入；不透過年月日時分秒逐項組日期，因為那會依賴 `osascript` 子行程的時區解釋，時區不一致時會整批偏移（歷史案例：Reminders due date 在 UTC+8 下偏移 8 小時）
-- AppleScript 寫入的文字欄位不直接用 `system attribute` 傳內容，會先寫成 UTF-8 暫存檔再讀回
-- 這是為了避開 `osascript` 在非 ASCII 文字上的亂碼問題，像中文標題、備忘錄內容、相簿名稱都會受影響
-- 若 JXA / AppleScript 呼叫過慢或超時，log 會記下 `operation`、`elapsed` 與隱私安全的參數摘要，方便追查是哪個 app action 卡住
-- `photos_tool(action="export")` 會先驗證 `destination_dir` 是否在 `allowed_paths` 內
-- `mail_tool(action="search")` 不使用 Mail.app 全信箱 `whose` 查詢；改用 `scan_limit` 逐封掃描，避免大型 inbox 逾時
-- `mail_tool` 時間輸入先在 Python 端用設定的 app timezone 轉成帶 offset 的 ISO 字串，再交給 JXA `Date` 比對
+### 為什麼不用 JXA 讀資料
+
+2026-10 在 macOS 26.7.1 實測，每個 Apple Event 約 1 秒。舊實作逐筆、逐欄位讀資料，54 筆提醒的 search 必定超過 30 秒，Calendar 一週 search 13 到 29 秒，Photos 一週 search 與 Mail 掃 300 封都超過 90 秒。改成下列方式後，讀取都在 1 秒內：
+
+| 工具 | 讀取 | 寫入 |
+|------|------|------|
+| `calendar_tool` | EventKit | EventKit |
+| `reminders_tool` | EventKit；`flagged` 讀 Reminders 資料庫 | EventKit；`flagged` 用一次 JXA `byId` |
+| `photos_tool` | PhotoKit；標題、描述、關鍵字、檔名讀 Photos.sqlite | PhotoKit `performChangesAndWait` |
+| `notes_tool` | NoteStore.sqlite；完整 HTML 用一次 JXA `byId` | AppleScript，以 id 直接指定 note / folder |
+| `mail_tool` | Envelope Index + `.emlx` | `trash` 用 JXA 直接指定單封信 |
+
+規則：
+- 不准回頭用 `whose` 或逐筆掃描整個集合；JXA / AppleScript 只能以 id 直接指定單一物件
+- 資料庫一律以 `file:...?mode=ro` 唯讀開啟；這些資料庫都是 WAL，唯讀連線看得到最新寫入
+- Core Data 的 entity 編號在不同 macOS 版本、不同 store 檔會變，一律從 `Z_PRIMARYKEY` 查，不寫死
+- 不提供退回 JXA 讀取的旁路或旗標；權限或 schema 不符就明確報錯
+
+### EventKit
+
+- 每個 entity type 一個 process-wide `EKEventStore`，每次使用前 `reset()`（約 2ms）。實測每次新建 store 在同一 process 內約 9 次查詢後 `calendarItemWithIdentifier_` 會回 None；長壽 store 又看不到其他 process 的修改，`refreshSourcesIfNecessary()` 也無效，只有 `reset()` 有效（`macos_apps/eventkit.py`）
+- Reminders fetch 是非同步 API，用 `threading.Event` 等，上限 `timeout_seconds`
+- 不在工具內呼叫 requestAccess；授權交給 `permissions-warmup` 與 validate 階段
+
+### 時間
+
+- 所有日期時間輸入一律先在 Python 端用設定的 app timezone 轉成帶 offset 的時間，再交給 EventKit / PhotoKit / JXA；輸出一律轉成 app timezone 帶 offset 的 ISO 字串
+- 不透過年月日時分秒逐項組日期，因為那會依賴子行程的時區解釋（歷史案例：Reminders due date 在 UTC+8 下偏移 8 小時）
+- AppleScript 寫入的文字欄位不直接用 `system attribute` 傳內容，會先寫成 UTF-8 暫存檔再讀回，避開 `osascript` 在非 ASCII 文字上的亂碼問題
+- 若 JXA / AppleScript 呼叫過慢或超時，log 會記下 `operation`、`elapsed` 與隱私安全的參數摘要
+- `photos_tool(action="export")` 與 `mail_tool(action="export_attachment")` 會先驗證 `destination_dir` 是否在 `allowed_paths` 內
 
 ## 測試範圍
 
 這批工具至少要有：
+
+- 資料庫讀取測試：用只含真實欄位名稱的合成 sqlite（Reminders、NoteStore、Photos、Envelope Index）與合成 `.emlx`
+- 權限缺少時的錯誤訊息與 validate 阻擋
 
 - registry wiring 測試：macOS 時會註冊，非 macOS 不註冊
 - action 參數驗證測試：缺必要參數時要回 `Error: ...`
@@ -433,4 +500,4 @@ actions：
 - Mail 時間範圍測試：日期輸入要轉成本地整天，輸出 UTC 時間要轉回 app local time
 - Reminders due 時間測試：輸入本地時間要轉成帶 app offset 的 ISO 再交給 JXA，輸出 UTC 時間要轉回 app local time
 
-真正讀寫 Calendar / Reminders / Notes / Photos 的整合測試目前不放進自動化測試，因為會碰到本機資料與系統權限。
+真正讀寫 Calendar / Reminders / Notes / Photos / Mail 的整合測試不放進自動化測試，因為會碰到本機資料與系統權限。實機驗證在 lincy 主機以正式權限情境（Terminal 裡的 tmux 新視窗）執行；寫入只碰自己建立的 `[lincy-test]` 項目並在結束時刪除。從 ssh 直接跑的結果不準，因為 TCC 對 ssh 的授權與 Terminal 不同。

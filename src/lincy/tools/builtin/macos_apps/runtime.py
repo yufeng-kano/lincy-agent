@@ -69,15 +69,6 @@ def _json_output(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def build_partial_update_payload(values: dict[str, Any]) -> dict[str, Any]:
-    """Build has-field markers and values for optional update payloads."""
-    payload: dict[str, Any] = {}
-    for name, value in values.items():
-        payload[f"has_{name}"] = value is not None
-        payload[name] = value
-    return payload
-
-
 def _error(message: str) -> str:
     """Build a standard tool error string."""
     return f"Error: {message}"
@@ -102,13 +93,6 @@ def _datetime_in_app_tz(value: datetime) -> datetime:
 def _datetime_to_app_iso(value: datetime) -> str:
     """Render a datetime with the configured app timezone and explicit offset."""
     return _datetime_in_app_tz(value).isoformat(timespec="seconds")
-
-
-def _parse_calendar_payload_datetime(value: str | None, *, field_name: str) -> str | None:
-    """Parse a user-supplied calendar datetime and render it with app offset."""
-    if value is None:
-        return None
-    return _datetime_to_app_iso(_parse_local_datetime(value, field_name=field_name))
 
 
 def _parse_mail_range_datetime(value: str | None, *, field_name: str) -> str | None:
@@ -136,43 +120,6 @@ def _parse_tool_iso_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=get_tz())
     return parsed
-
-
-_CALENDAR_DATETIME_KEYS = frozenset({"start", "end"})
-_REMINDER_DATETIME_KEYS = frozenset({"due"})
-_MAIL_DATETIME_KEYS = frozenset({"date", "date_received", "date_sent"})
-
-
-def _localize_datetime_fields(payload: Any, *, keys: frozenset[str]) -> Any:
-    """Convert tool-emitted UTC datetime fields to app-local ISO strings."""
-    if isinstance(payload, list):
-        return [_localize_datetime_fields(item, keys=keys) for item in payload]
-    if not isinstance(payload, dict):
-        return payload
-
-    localized: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key in keys and isinstance(value, str):
-            parsed = _parse_tool_iso_datetime(value)
-            localized[key] = _datetime_to_app_iso(parsed) if parsed else value
-        else:
-            localized[key] = _localize_datetime_fields(value, keys=keys)
-    return localized
-
-
-def _localize_calendar_datetime_fields(payload: Any) -> Any:
-    """Convert calendar start/end fields to app-local ISO strings."""
-    return _localize_datetime_fields(payload, keys=_CALENDAR_DATETIME_KEYS)
-
-
-def _localize_reminder_datetime_fields(payload: Any) -> Any:
-    """Convert reminder due fields to app-local ISO strings."""
-    return _localize_datetime_fields(payload, keys=_REMINDER_DATETIME_KEYS)
-
-
-def _localize_mail_datetime_fields(payload: Any) -> Any:
-    """Convert Mail date fields to app-local ISO strings."""
-    return _localize_datetime_fields(payload, keys=_MAIL_DATETIME_KEYS)
 
 
 def _format_app_tool_log_details(details: dict[str, Any] | None) -> str:
