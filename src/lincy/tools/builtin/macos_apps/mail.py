@@ -221,6 +221,14 @@ class MacOSAppBridge:
                     continue
             matches.append(public_fields(row))
         page = matches[offset:offset + limit]
+        warnings = []
+        if scan_truncated:
+            warnings.append(f"scan_limit {scan_limit} reached; narrow the date range or increase scan_limit")
+        if body_unavailable:
+            warnings.append(
+                f"could not search the body of {body_unavailable} message(s) not downloaded locally; "
+                "matched_count may miss them"
+            )
         result = {
             "ok": True,
             "scope": scope,
@@ -229,16 +237,14 @@ class MacOSAppBridge:
             "scan_limit": scan_limit,
             "scan_truncated": scan_truncated,
             "matched_count": len(matches),
-            "matched_count_exact": True,
+            # A skipped undownloaded body may have matched.
+            "matched_count_exact": body_unavailable == 0,
             "offset": offset,
             "limit": limit,
             "result_truncated": len(matches) > offset + limit,
             "results": page,
             "count": len(page),
-            "warning": (
-                f"scan_limit {scan_limit} reached; narrow the date range or increase scan_limit"
-                if scan_truncated else None
-            ),
+            "warning": "; ".join(warnings) or None,
         }
         if search_body:
             result["body_unavailable_count"] = body_unavailable

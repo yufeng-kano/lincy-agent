@@ -667,3 +667,26 @@ def test_calendar_search_splits_long_range_into_windows(tmp_path: Path, monkeypa
     limited = search(sort_by="start_desc", limit=2)
     assert [row["uid"] for row in limited["results"]] == ["late", "boundary"]
     assert limited["truncated"] is True
+
+
+def test_calendar_conflicts_splits_long_range_into_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    events = [
+        FakeEvent("late", "Late", datetime(2029, 6, 1, 9), datetime(2029, 6, 1, 10)),
+        # Spans the first window boundary (2023-12-31), so two windows return it.
+        FakeEvent("boundary", "Trip", datetime(2023, 12, 30), datetime(2024, 1, 2), all_day=True),
+        FakeEvent("early", "Early", datetime(2020, 6, 1, 9), datetime(2020, 6, 1, 10)),
+    ]
+    store = WindowedEventStore(events)
+    monkeypatch.setattr(calendar_module, "open_store", lambda entity_type: nullcontext(store))
+
+    result = _bridge(tmp_path).calendar_conflicts(
+        calendar=None, calendars=None, start="2020-01-01T00:00", end="2030-01-01T00:00",
+        exclude_event_uid=None, all_day=None, limit=None,
+    )
+
+    assert [(eventkit.nsdate_to_iso(start), eventkit.nsdate_to_iso(end)) for start, end in store.ranges] == [
+        ("2020-01-01T00:00:00+08:00", "2023-12-31T00:00:00+08:00"),
+        ("2023-12-31T00:00:00+08:00", "2027-12-30T00:00:00+08:00"),
+        ("2027-12-30T00:00:00+08:00", "2030-01-01T00:00:00+08:00"),
+    ]
+    assert [row["uid"] for row in result["conflicts"]] == ["early", "boundary", "late"]

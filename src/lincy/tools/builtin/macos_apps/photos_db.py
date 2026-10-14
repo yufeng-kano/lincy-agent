@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import sqlite3
 from typing import Any
+import unicodedata
 
 import Photos
 
@@ -101,15 +102,26 @@ WHERE asset.ZUUID IN (SELECT value FROM json_each(?))
     }
 
 
+def _fold(text: str) -> str:
+    # Photos may store text decomposed (NFD) while queries arrive composed.
+    return unicodedata.normalize("NFC", text).casefold()
+
+
 def match_query_uuids(query: str) -> set[str]:
     """Return UUIDs whose title, original filename, description or keywords contain query.
 
-    SQLite LIKE folds ASCII case only, which covers the filenames and Latin
-    titles a case-insensitive query is for; CJK text has no case.
+    SQLite LIKE folds ASCII case only, so an accented capital would miss its
+    lowercase form; matching runs through a Python function that folds
+    Unicode case and normalization instead.
     """
-    pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     connection = open_library_database()
     try:
+        connection.create_function(
+            "lincy_contains",
+            2,
+            lambda value, needle: value is not None and needle in _fold(value),
+            deterministic=True,
+        )
         table, attributes_column, keyword_column = _keyword_join(connection)
         rows = connection.execute(
             f"""
@@ -117,15 +129,15 @@ SELECT asset.ZUUID
 FROM ZASSET AS asset
 JOIN ZADDITIONALASSETATTRIBUTES AS attributes ON attributes.ZASSET = asset.Z_PK
 LEFT JOIN ZASSETDESCRIPTION AS description ON description.ZASSETATTRIBUTES = attributes.Z_PK
-WHERE attributes.ZTITLE LIKE :pattern ESCAPE '\\'
-   OR attributes.ZORIGINALFILENAME LIKE :pattern ESCAPE '\\'
-   OR description.ZLONGDESCRIPTION LIKE :pattern ESCAPE '\\'
+WHERE lincy_contains(attributes.ZTITLE, :needle)
+   OR lincy_contains(attributes.ZORIGINALFILENAME, :needle)
+   OR lincy_contains(description.ZLONGDESCRIPTION, :needle)
    OR EXISTS (
      SELECT 1 FROM {table} AS link JOIN ZKEYWORD AS keyword ON keyword.Z_PK = link.{keyword_column}
-     WHERE link.{attributes_column} = attributes.Z_PK AND keyword.ZTITLE LIKE :pattern ESCAPE '\\'
+     WHERE link.{attributes_column} = attributes.Z_PK AND lincy_contains(keyword.ZTITLE, :needle)
    )
 """,
-            {"pattern": pattern},
+            {"needle": _fold(query)},
         ).fetchall()
     finally:
         connection.close()

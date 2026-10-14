@@ -293,9 +293,14 @@ def test_search_body_reads_emlx_and_counts_undownloaded_bodies(bridge: MacOSAppB
     result = _search(bridge, query="keyword", search_body=True)
     assert [r["id"] for r in result["results"]] == [1001]
     assert result["body_unavailable_count"] == 1
+    assert result["matched_count_exact"] is False
+    assert "body of 1 message(s) not downloaded locally" in result["warning"]
 
     html = _search(bridge, scope="sent", query="quarterly", search_body=True)
     assert [r["id"] for r in html["results"]] == [1002]
+    assert html["body_unavailable_count"] == 0
+    assert html["matched_count_exact"] is True
+    assert html["warning"] is None
 
 
 def test_get_returns_body_reply_to_and_attachments(bridge: MacOSAppBridge):

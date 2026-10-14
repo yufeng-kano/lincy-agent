@@ -294,6 +294,27 @@ def test_match_query_uuids_covers_text_fields_case_insensitively(fake_library_db
     assert photos_db.match_query_uuids("img%2") == set()
 
 
+def test_match_query_uuids_folds_unicode_case_and_normalization(fake_library_db):
+    nfc_title = "\u00c9t\u00e9 \u00e0 Paris"
+    nfd_keyword = "Cafe\u0301"
+    connection = sqlite3.connect(fake_library_db)
+    connection.executescript(
+        f"""
+INSERT INTO ZASSET VALUES (4, 'U4');
+INSERT INTO ZADDITIONALASSETATTRIBUTES VALUES (14, 4, '{nfc_title}', 'IMG_0004.HEIC', 1);
+INSERT INTO ZKEYWORD VALUES (33, '{nfd_keyword}');
+INSERT INTO Z_1KEYWORDS VALUES (14, 33);
+"""
+    )
+    connection.commit()
+    connection.close()
+
+    assert photos_db.match_query_uuids("\u00e9t\u00e9") == {"U4"}
+    # NFD query against an NFC title, and NFC query against an NFD keyword.
+    assert photos_db.match_query_uuids("e\u0301te\u0301") == {"U4"}
+    assert photos_db.match_query_uuids("CAF\u00c9") == {"U4"}
+
+
 def test_search_rejects_library_wide_filename_sort(granted, tmp_path: Path):
     result = _make_bridge(tmp_path).photos_search(
         album_id=None,
@@ -571,6 +592,7 @@ def test_get_media_without_library_row_returns_empty_text_metadata(granted, monk
     missing = result["results"][1]
     assert (missing["title"], missing["description"], missing["keywords"], missing["size"]) == (None, None, [], None)
     assert missing["width"] == 10
+    assert missing["location"] is None
 
     # Shared-album and synced assets are excluded unless asked for.
     assert fetched_with[0].source_types == ALL_SOURCES

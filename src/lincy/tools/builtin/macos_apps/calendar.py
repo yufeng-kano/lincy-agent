@@ -22,7 +22,7 @@ from .runtime import (
 )
 
 # EventKit silently truncates event predicates to the first four years, so
-# longer searches are split into windows of at most this span.
+# longer ranges are split into windows of at most this span.
 _MAX_SEARCH_SPAN = timedelta(days=4 * 365)
 
 CALENDAR_TOOL_DEFINITION = ToolDefinition(
@@ -182,6 +182,25 @@ def _sorted_events(events: Any, *, descending: bool = False) -> list[Any]:
     return sorted(events or [], key=lambda event: event.startDate().timeIntervalSince1970(), reverse=descending)
 
 
+def _events_in_range(store: Any, start: datetime, end: datetime, calendars: list[Any] | None) -> list[Any]:
+    """Fetch events overlapping start..end, one predicate per window, without duplicates."""
+    # An event that crosses a window boundary is returned by both windows;
+    # the item id plus start names one occurrence.
+    events: dict[tuple[str, float], Any] = {}
+    window_start = start
+    while True:
+        window_end = min(window_start + _MAX_SEARCH_SPAN, end)
+        predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
+            to_nsdate(window_start), to_nsdate(window_end), calendars
+        )
+        for event in store.eventsMatchingPredicate_(predicate) or []:
+            key = (event.calendarItemIdentifier(), event.startDate().timeIntervalSince1970())
+            events.setdefault(key, event)
+        if window_end >= end:
+            return list(events.values())
+        window_start = window_end
+
+
 class MacOSAppBridge:
 
     def calendar_catalog(self) -> dict[str, Any]:
@@ -229,23 +248,8 @@ class MacOSAppBridge:
         needle = (query or "").lower()
         results = []
         with open_store(EventKit.EKEntityTypeEvent) as store:
-            selected = _selected_calendars(store, calendar, calendars)
-            # An event that crosses a window boundary is returned by both
-            # windows; the item id plus start names one occurrence.
-            events: dict[tuple[str, float], Any] = {}
-            window_start = start_dt
-            while True:
-                window_end = min(window_start + _MAX_SEARCH_SPAN, end_dt)
-                predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
-                    to_nsdate(window_start), to_nsdate(window_end), selected
-                )
-                for event in store.eventsMatchingPredicate_(predicate) or []:
-                    key = (event.calendarItemIdentifier(), event.startDate().timeIntervalSince1970())
-                    events.setdefault(key, event)
-                if window_end >= end_dt:
-                    break
-                window_start = window_end
-            for event in _sorted_events(events.values(), descending=sort_by == "start_desc"):
+            events = _events_in_range(store, start_dt, end_dt, _selected_calendars(store, calendar, calendars))
+            for event in _sorted_events(events, descending=sort_by == "start_desc"):
                 if all_day is not None and bool(event.isAllDay()) != all_day:
                     continue
                 row = _event_row(event)
@@ -284,10 +288,8 @@ class MacOSAppBridge:
         limit = max(1, min(limit or self._max_search_results, self._max_search_results))
         results = []
         with open_store(EventKit.EKEntityTypeEvent) as store:
-            predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
-                start_ns, end_ns, _selected_calendars(store, calendar, calendars)
-            )
-            for event in _sorted_events(store.eventsMatchingPredicate_(predicate)):
+            events = _events_in_range(store, start_dt, end_dt, _selected_calendars(store, calendar, calendars))
+            for event in _sorted_events(events):
                 # Strict overlap: back-to-back events that only touch the range are
                 # not conflicts.
                 if event.endDate().compare_(start_ns) != 1 or event.startDate().compare_(end_ns) != -1:

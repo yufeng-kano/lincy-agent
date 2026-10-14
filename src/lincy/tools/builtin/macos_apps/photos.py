@@ -284,7 +284,7 @@ def _asset_rows(assets: list[Any]) -> list[dict[str, Any]]:
                 "favorite": bool(asset.isFavorite()),
                 "width": asset.pixelWidth(),
                 "height": asset.pixelHeight(),
-                "location": list(location.coordinate()) if location else [None, None],
+                "location": list(location.coordinate()) if location else None,
             }
         )
     return rows

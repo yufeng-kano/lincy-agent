@@ -126,7 +126,7 @@ actions：
 - `calendar` / `calendars` 可用名稱或 `source/title` 路徑；同名 calendar（例如 iCloud 與 Google 都有「工作」）在 search 會一起比對，`create` 會報錯並列出可用路徑
 - `uid` 是 EventKit `calendarItemIdentifier`，與舊 JXA 的 `uid` 相同，先前存下的 uid 仍可用
 - search / conflicts 回傳週期事件的各個 occurrence（帶 `recurring`）；`get` 回 series master。`update` 改標題、備註、地點、URL 會套用到整個 series；改 start / end / all_day 會被拒絕，避免拿某一次 occurrence 的時間把整個 series 搬走
-- search 未帶 start / end 時查 EventKit 上限的 4 年區間；明確給的區間超過 4 年時，切成不超過 4 年的連續視窗逐段查詢再合併（以 uid + 開始時間去重），避免 EventKit 靜默截斷
+- search 未帶 start / end 時查 EventKit 上限的 4 年區間；search 與 conflicts 明確給的區間超過 4 年時，切成不超過 4 年的連續視窗逐段查詢再合併（以 uid + 開始時間去重），避免 EventKit 靜默截斷
 - `conflicts` 用嚴格重疊判斷，頭尾相接不算撞期
 - Calendar.app 的虛擬日曆「已排程的提醒事項」與「Siri 建議」不在 EventKit 內，`catalog` 不會出現；提醒事項一律用 `reminders_tool`
 
@@ -303,7 +303,7 @@ actions：
 
 備註：
 - `search` 回傳 `media item id`
-- `search` 也會回傳 `description`、`width`、`height`、`size`、`location`
+- `search` 也會回傳 `description`、`width`、`height`、`size`、`location`；`location` 是 `[緯度, 經度]`，沒有位置時為 null
 - `get_album` 可用 `album_id`、`album_name`、`album_path`
 - `create_album` 可用 `parent_folder_id` 或 `parent_folder_path`
 - `export` 要帶 `media_ids`
@@ -317,6 +317,7 @@ actions：
 - `search`、`get_media`、`export` 的 PhotoKit fetch 包含 iCloud 共享相簿與 iTunes 同步的 asset。PhotoKit 預設只取個人圖庫
 - `export` 會寫出 asset 的每個內容 resource。原始檔：照片、RAW+JPEG 的另一半（AlternatePhoto）、原況照片的影片、影片、音訊。目前版本：編輯後的照片與原況影片（沒編輯就用原檔）、影片、音訊，不含 AlternatePhoto
 - 同一 asset 的檔名都用第一個原始 resource 的檔名主體，加上各自的副檔名，例如 `IMG_0001.HEIC` 與 `IMG_0001.MOV`；單一 resource 寫入失敗只進 `failed`，其他檔案照常回傳
+- `query` 比對標題、檔名、描述、關鍵字，不分大小寫，含非 ASCII 字母（`Été` 可找到 `été`）。兩邊都先轉 NFC 再比，Photos 存成分解形式（NFD）也找得到
 - PhotoKit 已回傳但 Photos.sqlite 還沒有對應列的 asset（例如匯入或同步中），`title`、`filename`、`description`、`size` 回 null、`keywords` 回空陣列
 
 ### `mail_tool`
@@ -360,6 +361,7 @@ actions：
 - `limit` 只控制回傳幾筆結果，不控制 Mail.app 實際掃描量
 - `date_after` / `date_before` 以本地時間解析；日期格式 `YYYY-MM-DD` 會被視為本地整天，避免 UTC 造成日期少抓或多抓
 - `query` 預設只查寄件者與主旨；若要查正文才設 `search_body=true`
+- `search_body=true` 時，正文沒下載到本機、標頭也不符的信會跳過，計入 `body_unavailable_count`。這種信可能其實符合，所以只要有一封，`matched_count_exact` 就是 false，`warning` 也會說明
 - `search` 回傳 `message_ref`（格式 `mailmsg:<ROWID>`，輸入也接受裸數字 ROWID，與舊 JXA 相容；ROWID 即 Envelope Index `messages.ROWID`，也等於 Mail AppleScript 的 message `id`），後續 `get`、`export_attachment`、`trash` 都用它，不讓 agent 自行拼 Mail.app 內部位置
 - `attachment_ids` 是 IMAP part 編號（例如 `2`、`1.2`），與 Envelope Index `attachments` 表一致；未下載到本機的附件匯出時會報錯
 - 正文未下載到本機時，`get` 的 `content` 為 null，`content_error` 說明需在 Mail.app 開啟該信
