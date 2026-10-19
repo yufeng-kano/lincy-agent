@@ -114,7 +114,7 @@ def create_agent_note(
     note_store: NoteStore,
     *,
     max_value_chars: int = 80,
-    max_notes: int = 12,
+    max_notes: int = 100,
 ) -> Callable[..., str]:
     """Create an agent_note function bound to a note store.
 
@@ -284,7 +284,7 @@ def create_agent_note(
 
         Runs after any successful (non-error) agent_note call. Never
         injected into the [Agent Notes] prompt block itself (see
-        NoteStore.format_context_block) -- this is tool-result-only
+        NoteStore.format_context_lines) -- this is tool-result-only
         feedback so the agent learns about it without bloating every turn.
         """
         if result.lstrip().startswith("Error:"):

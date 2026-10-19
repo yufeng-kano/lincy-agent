@@ -258,8 +258,8 @@ def make_heartbeat_message(
 | `src/lincy/agent/tool_setup.py` | 修改：註冊 `agent_task` tool |
 | `src/lincy/tools/builtin/agent_note.py` | agent_note tool 實作 + guardrail enforcement |
 | `src/lincy/agent/note_store.py` | NoteStore：CRUD + trigger matching + 持久化 |
-| `src/lincy/agent/turn_overlay.py` | `[Runtime Context]` / `[Timing Notice]` 文字組裝（純函式） |
-| `src/lincy/agent/responder.py` | `_build_dynamic_turn_overlay`：組出 notes block 等並疊加到 outgoing request |
+| `src/lincy/agent/turn_overlay.py` | 每輪 overlay 組裝（`[Runtime Context]` / `[Timing Notice]` / `[Agent Notes]` delta / common ground），產出 entry metadata |
+| `src/lincy/context/builder.py` | 修改：把 entry metadata 的 `turn_overlay` 接到該輪 user message |
 | `src/lincy/tools/registry.py` | 修改：`add_side_effect_tools` method |
 | `src/lincy/agent/build.py` | 修改：初始化 stores、late tool registration |
 
@@ -269,7 +269,7 @@ def make_heartbeat_message(
 
 ### 概述
 
-結構化 key-value 狀態追蹤。Agent 建立 notes 來追蹤用戶即時狀態（位置、行程等），每個 turn 都注入 context 讓 agent 隨時可用。
+結構化 key-value 狀態追蹤。Agent 建立 notes 來追蹤用戶即時狀態（位置、行程等）。note 新增或變動時注入 context，歷史中保留最近一次的值，讓 agent 隨時可用。
 
 ### 與其他系統的定位
 
@@ -312,7 +312,7 @@ Runtime 規則：`agent_note` 寫入是狀態提交工具，同一 turn 最多�
 | 欄位 | 預設 | 說明 |
 |------|------|------|
 | `max_value_chars` | 80 | 單一 note value 上限（字元數） |
-| `max_notes` | 12 | store 內 note 總數上限 |
+| `max_notes` | 100 | store 內 note 總數上限 |
 
 行為：
 
@@ -323,21 +323,36 @@ Runtime 規則：`agent_note` 寫入是狀態提交工具，同一 turn 最多�
 
 ### Context 注入
 
-每輪 outgoing request 的 latest user message 都附加 notes block：
+note 有新增、變動或刪除時，該輪 user message 後面附加 notes block，只列有變化的 note：
 
 ```
 [Agent Notes]
 location: "新竹" | updated_at 03-29 14:00
-schedule_today: "14:00 開會" | updated_at 03-29 09:00
+schedule_today: (removed)
 ```
 
-注入位置：**responder overlay**，不是 `ContextBuilder.build()`。實際組裝在 `agent/turn_overlay.py:build_dynamic_turn_overlay_text()`（純函式，組出 `[Runtime Context]` + `[Timing Notice]` + `[Agent Notes]`），再由 `agent/responder.py:_build_dynamic_turn_overlay()` 包成 overlay callable，接在 common-ground overlay 之前一起疊加到 outgoing request 的 latest user message（`core.py:_prepare_turn_attempt` 每個 turn attempt 只組裝一次並快取；同一 turn 內的每次 LLM call、包含 tool loop 重建與 overflow retry，都重複套用同一份快取文字，確保 prompt cache 的 BP4 仍然命中）。
+- 每行格式 `key: "value" | updated_at MM-DD HH:MM`，不帶 `source_*`：每次注入都要付 token，需要時用 `list` 查
+- 沒列出的 note 沿用對話中最近一次出現的那一行；`key: (removed)` 代表已刪除
+- 歷史中沒有任何 notes 紀錄時（第一輪、升級後第一輪），列出全部 note
 
-`Conversation`、`ContextBuilder` 的 render cache、以及 session 的 `messages.jsonl` **永遠不會**含有這個 block——只有送給 LLM 的 request（`requests.jsonl` 記錄的內容）才看得到。
+組裝與保存：`core.py:_add_turn_user_entry` 在每個 turn attempt 開始時呼叫 `agent/turn_overlay.py:build_turn_overlay_metadata()`，一次組好 `[Runtime Context]` + `[Timing Notice]` + `[Agent Notes]` + common ground，存在該輪 user entry 的 metadata：
 
-**Turn-snapshot 語意**：overlay 文字在 turn 開始時就快照定案；若 agent 在同一 turn 的 tool loop 中途改了某個 note，本輪剩餘的 LLM call 仍會看到 turn 開始時的舊值，直到**下一輪**才會看到新值。這是刻意設計，換取 prompt cache 穩定，不是 bug。
+| metadata key | 內容 |
+|---|---|
+| `turn_overlay` | 整段 overlay 文字；`ContextBuilder.build()` 每次 build 都接在該 entry 內容後面 |
+| `agent_notes_shown` | 本輪注入的 delta：`key -> 行文字`，刪除為 `null` |
 
-**既有 session 不會回溯**：這個改動生效前，舊 session 已經把 `[Agent Notes]` 等 block 凍結進 render cache（見 `docs/dev/token-only-context-policy.md`）。這些 session 沒有 migration，凍結副本會保留到下次 `context_refresh` 或 compaction 自然清掉為止。
+delta 的基準由保留中的歷史 entry 的 `agent_notes_shown` 依序疊加而來（`diff_agent_notes()`），不另存狀態：
+
+- compaction 丟掉舊 entry 後，對應的 note 在下一輪自然重新列出
+- overflow retry 以 compact 後的歷史重新計算 overlay
+- metadata 隨 entry 寫入 `messages.jsonl`，重啟恢復 session 後渲染結果與 delta 基準都不變
+
+**Turn-snapshot 語意**：overlay 在 turn 開始時定案。agent 在同一 turn 的 tool loop 中途改了 note，本輪剩餘的 LLM call 仍看到舊值，下一輪才以 delta 列出新值。這是刻意設計，換取 prompt cache 穩定，不是 bug。
+
+**歷史不改寫**：舊輪的 overlay 原樣留在歷史，下一輪不刪除。刪除等於修改歷史，該位置之後的 cache 會失效，也會觸發 Anthropic preserved thinking 的 prefix 檢查（見 `docs/dev/token-only-context-policy.md`）。
+
+**既有 session**：升級前的 entry 沒有 `turn_overlay` metadata，渲染結果與升級前相同。
 
 注意：context 注入必須使用穩定字串（例如絕對時間），不可用 `2h ago` 這種相對時間；否則 prompt rebuild 時會因 wall clock 漂移破壞 prompt cache 前綴。
 

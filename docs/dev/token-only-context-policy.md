@@ -14,12 +14,15 @@
 
 - `ContextBuilder` 的 BP1 / BP2 屬於 system-tier cache prefix：system prompt + boot files
 - 任何 per-turn reminder / hint / overlay 都**不可**改寫 BP1 / BP2，也**不可**額外插入新的 system message 來做近端提醒
-- 任何會隨本輪變動的插入資訊（例如 `current_local_time`、`[Timing Notice]`、message-time common ground）都必須待在 **latest turn**
+- 任何會隨本輪變動的插入資訊（例如 `current_local_time`、`[Timing Notice]`、`[Agent Notes]`、message-time common ground）只能附加在**產生它的那一輪** user message（產生當下就是 latest turn），之後原樣留在歷史，不得刪除或改寫
 - 原因：
   - 會破壞快取前綴穩定性，降低 cache hit
   - Anthropic / Gemini adapter 都只保留最後一個 system 欄位，多個 system message 可能互相覆蓋
+  - 刪除或改寫舊輪的區塊等於修改歷史：該位置之後的 cache 全部失效，也會觸發 Anthropic preserved thinking 的 prefix 檢查
 - 若需要本輪近端提醒，只能放在 conversation tier；做法是附加在**最新 user message**
-- 目前落地方式：`[Runtime Context]` / `[Timing Notice]` / `[Agent Notes]` 由 `agent/turn_overlay.py` 組字串，`agent/responder.py:_build_dynamic_turn_overlay()` 包成 overlay，接在 common-ground overlay 之前，一起疊加到 latest user message（`core.py:_prepare_turn_attempt` 每個 turn attempt 只組裝、快照一次）。這些 block **只存在於送給 LLM 的 request**，不寫回 `Conversation`，也不進 `ContextBuilder` 的 render cache——`ContextBuilder` 本身不再依賴 `NoteStore` 或這幾個 block 的組字邏輯，所以歷史訊息不會凍結到任何一份 block 的舊副本（詳見 `docs/dev/agent-task-system.md` 的 Agent Note System 一節）
+- 目前落地方式：`core.py:_add_turn_user_entry` 在每個 turn attempt 開始時呼叫 `agent/turn_overlay.py:build_turn_overlay_metadata()`，一次組好 `[Runtime Context]` / `[Timing Notice]` / `[Agent Notes]` / common ground，存進該輪 user entry 的 metadata `turn_overlay`，隨 entry 寫入 `messages.jsonl`
+- `ContextBuilder.build()` 每次 build 都把 `turn_overlay` 接在該 entry 內容後面。同一輪 tool loop 重建、之後各輪、重啟後恢復 session，送出的位元組都相同（`tests/agent/test_turn_overlay_injection.py` 驗證 Anthropic payload 跨輪一致）
+- `[Agent Notes]` 只列新增、變動或刪除的 note，避免每輪重複整份清單（詳見 `docs/dev/agent-task-system.md` 的 Agent Note System 一節）
 
 ## Prompt Cache 操作目標
 
@@ -36,6 +39,7 @@
 - 在 `ContextBuilder.build()` 內直接讀 `tz_now()` 或其他 wall-clock 值來組 prompt
 - 把 per-turn dynamic note 做成獨立 `system` message
 - 把 dynamic overlay 插在 latest turn 之前（例如 pre-latest-user synthetic pair）
+- 下一輪刪除或改寫舊輪已送出的 per-turn 區塊
 - 在同一輪重建 prompt 時重新計算會變的提示，而不是使用 turn-start metadata snapshot
 - 讓不同路徑各自決定哪些 dynamic note 可以進 cache prefix，缺乏單一規則
 

@@ -1,9 +1,7 @@
-"""Tests for NoteStore's prompt-context formatting.
+"""Tests for NoteStore's prompt-line formatting.
 
-Runtime injection of [Agent Notes] into requests moved to the responder
-overlay (see agent/turn_overlay.py); these tests exercise
-NoteStore.format_context_block() directly rather than through
-ContextBuilder.build().
+The per-turn overlay (agent/turn_overlay.py) injects these lines, only for
+notes the conversation does not already show as current.
 """
 
 import json
@@ -12,7 +10,7 @@ from pathlib import Path
 from lincy.agent.note_store import NoteStore
 
 
-def test_format_context_block_uses_stable_short_timestamp(tmp_path: Path):
+def test_format_context_lines_use_stable_short_timestamp(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True)
     (state_dir / "notes.json").write_text(
@@ -30,16 +28,13 @@ def test_format_context_block_uses_stable_short_timestamp(tmp_path: Path):
     )
 
     store = NoteStore(state_dir)
-    block = store.format_context_block()
 
-    assert block is not None
-    assert "[Agent Notes]" in block
-    assert 'location: "新竹" | updated_at 03-29 14:00' in block
-    assert "2026-03-29" not in block
-    assert "ago" not in block
+    assert store.format_context_lines() == {
+        "location": 'location: "新竹" | updated_at 03-29 14:00',
+    }
 
 
-def test_format_context_block_includes_source_tag_when_present(tmp_path: Path):
+def test_format_context_lines_leave_out_source_tag(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True)
     (state_dir / "notes.json").write_text(
@@ -59,14 +54,17 @@ def test_format_context_block_includes_source_tag_when_present(tmp_path: Path):
     )
 
     store = NoteStore(state_dir)
-    block = store.format_context_block()
 
-    assert block is not None
-    assert 'meeting_context: "2026-04-11 14:00-15:00 | 專題會議 [工作]"' in block
-    assert "source calendar:manual_capture" in block
-    assert "| updated_at 04-11 09:30" in block
+    assert store.format_context_lines() == {
+        "meeting_context": (
+            'meeting_context: "2026-04-11 14:00-15:00 | 專題會議 [工作]"'
+            " | updated_at 04-11 09:30"
+        ),
+    }
+    # The source stays reachable through the tool's list action.
+    assert "source: calendar:manual_capture" in store.format_list_detail()
 
 
-def test_format_context_block_returns_none_when_no_notes(tmp_path: Path):
+def test_format_context_lines_empty_when_no_notes(tmp_path: Path):
     store = NoteStore(tmp_path / "state")
-    assert store.format_context_block() is None
+    assert store.format_context_lines() == {}

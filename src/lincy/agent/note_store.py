@@ -1,9 +1,10 @@
 """Persistent note store: structured key-value state tracking.
 
-Notes are stored in ``state/notes.json`` and injected into every turn's
-context so the agent always has access to real-time user state.  Each
-note can have trigger phrases; when a user message matches a trigger,
-the system prompts the agent to review and update the note.
+Notes are stored in ``state/notes.json``. Each turn's context carries the
+notes that are new or changed since the agent last saw them (see
+agent/turn_overlay.py), so the agent always has the current user state.
+Each note can have trigger phrases; when a user message matches a
+trigger, the system prompts the agent to review and update the note.
 """
 
 from __future__ import annotations
@@ -160,27 +161,18 @@ class NoteStore:
 
     # -- Display ------------------------------------------------------------
 
-    def format_context_block(self) -> str | None:
-        """Build a compact notes block for context injection.
-
-        Returns None if there are no notes.
+    def format_context_lines(self) -> dict[str, str]:
+        """Render each note as one prompt line, keyed by note key.
 
         Use stable absolute timestamps here. Relative ages would require
-        wall-clock reads during prompt rebuild and churn the latest-turn
-        cache prefix every minute.
+        wall-clock reads during prompt rebuild and churn the cache prefix
+        every minute. The source tag is left out: it costs tokens on every
+        injection and stays visible through the tool's list action.
         """
-        notes = self.list_all()
-        if not notes:
-            return None
-        lines = ["[Agent Notes]"]
-        for n in notes:
-            source = _format_source_tag(n)
-            lines.append(
-                f'{n.key}: "{n.value}"'
-                f"{f' | source {source}' if source else ''}"
-                f" | updated_at {_format_context_updated_at(n.updated_at)}"
-            )
-        return "\n".join(lines)
+        return {
+            n.key: f'{n.key}: "{n.value}" | updated_at {_format_context_updated_at(n.updated_at)}'
+            for n in self.list_all()
+        }
 
     def format_list_detail(self) -> str:
         """Detailed listing for the tool's list action."""

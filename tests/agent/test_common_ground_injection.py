@@ -2,8 +2,7 @@ from contextlib import nullcontext
 from unittest.mock import MagicMock
 
 from lincy.agent.core import _run_responder
-from lincy.agent.responder import _make_latest_user_text_overlay
-from lincy.context.builder import ContextBuilder
+from lincy.context.builder import TURN_OVERLAY_METADATA_KEY, ContextBuilder
 from lincy.context.conversation import Conversation
 from lincy.llm.schema import ContentPart, LLMResponse, Message, ToolCall
 from lincy.tools.registry import ToolResult
@@ -58,59 +57,50 @@ def _conversation_cache_breakpoint(messages: list[Message]) -> Message:
     raise AssertionError("conversation cache breakpoint not found")
 
 
-def test_run_responder_reapplies_overlay_after_rebuild():
+_COMMON_GROUND = "[Common Ground at Message Time]\n\nscope_id: demo\nmessage_time_shared_rev: 1"
+
+
+def test_run_responder_keeps_stored_common_ground_after_rebuild():
     client = _FakeClient()
     conversation = Conversation()
-    builder = _FakeBuilder()
+    conversation.add("user", "u", metadata={TURN_OVERLAY_METADATA_KEY: _COMMON_GROUND})
+    builder = ContextBuilder(system_prompt="sys")
     console = MagicMock()
     console.spinner.side_effect = lambda *a, **k: nullcontext()
     console.debug = False
     console.show_tool_use = False
     registry = _FakeRegistry()
 
-    overlay = _make_latest_user_text_overlay(
-        "[Common Ground at Message Time]\n\nscope_id: demo\nmessage_time_shared_rev: 1"
-    )
-
     _run_responder(
         client=client,
-        messages=[Message(role="system", content="sys"), Message(role="user", content="u")],
+        messages=builder.build(conversation),
         tools=[],
         conversation=conversation,
         builder=builder,
         registry=registry,  # type: ignore[arg-type]
         console=console,  # type: ignore[arg-type]
         max_iterations=3,
-        message_overlay=overlay,
     )
 
     assert len(client.calls) == 2
     for call_messages in client.calls:
-        assert len([m for m in call_messages if m.role == "user"]) == 1
-        user_msg = next(msg for msg in call_messages if msg.role == "user")
-        assert "[Common Ground at Message Time]" in user_msg.content
-        assert "scope_id: demo" in user_msg.content
+        user_messages = [m for m in call_messages if m.role == "user"]
+        assert len(user_messages) == 1
+        assert user_messages[0].content.count("[Common Ground at Message Time]") == 1
+        assert user_messages[0].content.endswith(_COMMON_GROUND)
 
 
-def test_latest_user_text_overlay_appends_to_current_turn_user():
-    overlay = _make_latest_user_text_overlay("[Common Ground at Message Time]\n\nscope_id: demo")
-    messages = [
-        Message(role="system", content="sys"),
-        Message(role="user", content="older"),
-        Message(role="assistant", content="older reply"),
-        Message(role="user", content="current"),
-    ]
+def test_stored_common_ground_stays_on_its_own_turn():
+    conversation = Conversation()
+    conversation.add("user", "older", metadata={TURN_OVERLAY_METADATA_KEY: _COMMON_GROUND})
+    conversation.add("assistant", "older reply")
+    conversation.add("user", "current")
 
-    result = overlay(messages)
+    messages = ContextBuilder(system_prompt="sys").build(conversation)
 
-    assert [msg.role for msg in result] == [
-        "system",
-        "user",
-        "assistant",
-        "user",
-    ]
-    assert result[3].content.startswith("current\n\n[Common Ground at Message Time]")
-    assert result[3].content.endswith("scope_id: demo")
+    assert [msg.role for msg in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1].content.endswith(f"older\n\n{_COMMON_GROUND}")
+    assert "[Common Ground at Message Time]" not in messages[3].content
 
 
 def test_run_responder_shows_thinking_block_with_char_count_for_tool_loop():

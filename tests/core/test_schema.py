@@ -427,7 +427,7 @@ def test_agent_note_tool_config_defaults():
         }
     )
     assert config.tools.agent_note.max_value_chars == 80
-    assert config.tools.agent_note.max_notes == 12
+    assert config.tools.agent_note.max_notes == 100
 
 
 def test_agent_note_tool_config_override():

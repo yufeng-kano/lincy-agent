@@ -8,11 +8,9 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .note_store import NoteStore
     from .shared_state import SharedStateStore
     from .skill_governance import SkillGovernanceRegistry
     from .turn_context import TurnContext
-    from ..session.schema import SessionEntry
 from .turn_context import ProactiveTurnYield
 
 from ..context import ContextBuilder, Conversation
@@ -33,7 +31,6 @@ from .skill_governance import (
     build_skill_deferral_text,
     build_skill_prerequisite_messages,
 )
-from .turn_overlay import build_dynamic_turn_overlay_text
 from .ui_event_console import AgentUiPort
 
 logger = logging.getLogger(__name__)
@@ -178,100 +175,6 @@ def _format_memory_edit_failure_summaries(summaries: list[str]) -> str:
     return text
 
 
-def _append_text_block(content: str, block: str) -> str:
-    """Append a stable note block to the current-turn user message."""
-    if not content:
-        return block
-    return f"{content}\n\n{block}"
-
-
-def _make_latest_user_text_overlay(
-    extra_text: str,
-) -> Callable[[list[Message]], list[Message]]:
-    """Return an overlay callback that appends text to the latest user turn."""
-    block = extra_text.strip()
-
-    def _overlay(messages: list[Message]) -> list[Message]:
-        for idx in range(len(messages) - 1, -1, -1):
-            message = messages[idx]
-            if message.role != "user":
-                continue
-            if isinstance(message.content, str):
-                updated = list(messages)
-                updated[idx] = message.model_copy(update={
-                    "content": _append_text_block(message.content, block),
-                })
-                return updated
-            if isinstance(message.content, list):
-                parts = list(message.content)
-                for part_idx in range(len(parts) - 1, -1, -1):
-                    part = parts[part_idx]
-                    if part.type != "text":
-                        continue
-                    parts[part_idx] = part.model_copy(update={
-                        "text": _append_text_block(part.text, block),
-                    })
-                    updated = list(messages)
-                    updated[idx] = message.model_copy(update={"content": parts})
-                    return updated
-        return [*messages, Message(role="user", content=block)]
-
-    return _overlay
-
-
-def _build_dynamic_turn_overlay(
-    *,
-    entry: "SessionEntry",
-    builder: ContextBuilder,
-    note_store: "NoteStore | None",
-) -> Callable[[list[Message]], list[Message]] | None:
-    """Build the responder overlay for the per-turn dynamic blocks.
-
-    Assembles [Runtime Context], [Timing Notice], and [Agent Notes] (see
-    agent/turn_overlay.py) and returns an overlay that appends them to the
-    latest user message of the outgoing request only. These blocks used to
-    be baked into ContextBuilder's rendered/frozen messages on every turn;
-    they now live only on the wire, never in Conversation or the builder's
-    render cache. Returns None when none of the blocks have anything to
-    say (e.g. no notes, no boot dir, timing unremarkable).
-    """
-    text = build_dynamic_turn_overlay_text(
-        entry=entry,
-        agent_os_dir=builder.agent_os_dir,
-        note_store=note_store,
-    )
-    if not text:
-        return None
-    return _make_latest_user_text_overlay(text)
-
-
-def _prepare_turn_call_messages(
-    messages: list[Message],
-    message_overlay: Callable[[list[Message]], list[Message]] | None = None,
-) -> list[Message]:
-    """Advance the latest-turn breakpoint before any per-turn overlays."""
-    prepared = _advance_responder_cache_breakpoint(messages)
-    if message_overlay is not None:
-        prepared = message_overlay(prepared)
-    return prepared
-
-
-def _compose_message_overlays(
-    first: Callable[[list[Message]], list[Message]] | None,
-    second: Callable[[list[Message]], list[Message]] | None,
-) -> Callable[[list[Message]], list[Message]] | None:
-    """Compose two message overlays in order."""
-    if first is None:
-        return second
-    if second is None:
-        return first
-
-    def _overlay(messages: list[Message]) -> list[Message]:
-        return second(first(messages))
-
-    return _overlay
-
-
 # Compatibility aliases for scripts/tests that import private responder names.
 _advance_responder_cache_breakpoint = advance_cache_breakpoint
 
@@ -337,7 +240,6 @@ def _run_responder(
     memory_edit_turn_retry_limit: int = 3,
     is_cancel_requested: Callable[[], bool] | None = None,
     on_cancel_pending: Callable[[], None] | None = None,
-    message_overlay: Callable[[list[Message]], list[Message]] | None = None,
     on_model_response: Callable[[LLMResponse], None] | None = None,
     thinking_channel: str | None = None,
     thinking_sender: str | None = None,
@@ -364,7 +266,7 @@ def _run_responder(
         )
         return model_response
 
-    messages = _prepare_turn_call_messages(messages, message_overlay)
+    messages = _advance_responder_cache_breakpoint(messages)
     response = _call_model(messages)
 
     memory_edit_turn_fail_streak = 0
@@ -410,7 +312,7 @@ def _run_responder(
         if deferred_results is not None:
             tool_results_this_round = deferred_results
             messages = builder.build(conversation)
-            messages = _prepare_turn_call_messages(messages, message_overlay)
+            messages = _advance_responder_cache_breakpoint(messages)
             response = _call_model(messages)
             continue
 
@@ -614,7 +516,7 @@ def _run_responder(
             # is gone (e.g. removed meanwhile) end the turn as before.
             if on_preempt is not None and on_preempt():
                 messages = builder.build(conversation)
-                messages = _prepare_turn_call_messages(messages, message_overlay)
+                messages = _advance_responder_cache_breakpoint(messages)
                 response = _call_model(messages)
                 continue
             response.content = None
@@ -656,22 +558,20 @@ def _run_responder(
 
         messages = builder.build(conversation)
         messages = _advance_responder_cache_breakpoint(messages)
-        if message_overlay is not None:
-            messages = message_overlay(messages)
         response = _call_model(messages)
 
     return response
 
 
-def _build_common_ground_overlay(
+def _build_common_ground_text(
     *,
     shared_state_store: SharedStateStore | None,
     config: AppConfig,
     turn_metadata: dict[str, object] | None,
     console: AgentUiPort,
     debug: bool,
-) -> tuple[Callable[[list[Message]], list[Message]] | None, _CommonGroundTurnDebug]:
-    """Build per-turn common-ground synthetic tool overlay when revisions diverge."""
+) -> tuple[str | None, _CommonGroundTurnDebug]:
+    """Build the per-turn common-ground block when revisions diverge."""
     metadata = turn_metadata or {}
     scope_id = metadata.get("scope_id")
     anchor_shared_rev = metadata.get("anchor_shared_rev")
@@ -741,4 +641,4 @@ def _build_common_ground_overlay(
             f"scope={debug_scope_id} anchor={debug_anchor_rev} "
             f"current={current_shared_rev} chars={len(text)}",
         )
-    return _make_latest_user_text_overlay(text), current_debug
+    return text, current_debug

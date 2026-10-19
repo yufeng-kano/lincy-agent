@@ -318,7 +318,7 @@
 | `provider_routing` payload | YAML `provider_routing` 映射到 request `provider` object；`null` 時不送 `provider`（走 OpenRouter 預設路由） | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/openrouter.py` + `src/lincy/llm/providers/openai_compat.py` | 允許各 profile 個別固定 endpoint 或回到預設 |
 | Header 名稱 | 同時送 `X-OpenRouter-Title` + `X-Title` | `openrouter.py` | 官方 header + alias 相容 |
 | 連線參數 self-contained | `api_key_env`/`base_url`/`site_url` 在每個 LLM YAML；`site_name` null 時 fallback 到 agent name；`site_url` 在 `load_config()` 自動附加 `/{agent_name}`（可用 `agents.*.openrouter.site_url` 覆蓋） | `src/lincy/core/config.py`（`load_config()`） | YAML 可獨立使用（validate_llm.py 等） |
-| Cache breakpoint 注入 | `ContextBuilder` BP1 (system prompt) + BP2 (boot files)，`cache_control` passthrough via `_convert_content_parts()`；所有 per-turn dynamic note（`current_local_time` / `[Timing Notice]` / message-time common ground）必須留在 latest turn，不得新增 system-tier message；僅 OpenRouter provider 啟用 | `src/lincy/context/builder.py` + `src/lincy/agent/responder.py` + `openai_compat.py` + `agent/build.py` | 成本最佳化：1h TTL for heartbeat；重建同一輪長 prompt 時，cache hit 應維持 >90% |
+| Cache breakpoint 注入 | `ContextBuilder` BP1 (system prompt) + BP2 (boot files)，`cache_control` passthrough via `_convert_content_parts()`；所有 per-turn dynamic note（`current_local_time` / `[Timing Notice]` / `[Agent Notes]` / message-time common ground）只能附加在產生它的那一輪 user message，之後原樣保留，不得新增 system-tier message；僅 OpenRouter provider 啟用 | `src/lincy/context/builder.py` + `src/lincy/agent/responder.py` + `openai_compat.py` + `agent/build.py` | 成本最佳化：1h TTL for heartbeat；重建同一輪長 prompt 時，cache hit 應維持 >90% |
 
 ### 3. 逆向/實測資訊
 

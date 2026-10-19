@@ -4,13 +4,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lincy.context.builder import (
+    TURN_OVERLAY_METADATA_KEY,
     ContextBuilder,
     _TOOL_BOOT_CALL_ID,
     _TOOL_BOOT_NAME,
     _PINNED_TOOL_NAME,
 )
 from lincy.context.conversation import Conversation
-from lincy.llm.schema import ToolCall
+from lincy.llm.schema import ContentPart, Message, ToolCall
+from lincy.session.schema import SessionEntry
 
 
 def test_boot_files_injected_as_core_rules(tmp_path: Path):
@@ -207,16 +209,12 @@ def test_import_render_cache_rejects_stale_position_shift():
 
 
 def test_build_never_injects_dynamic_turn_blocks(tmp_path: Path):
-    """[Runtime Context]/[Timing Notice] never appear.
+    """The builder never computes per-turn blocks itself.
 
-    These blocks moved to the responder overlay (see agent/turn_overlay.py,
-    agent/responder.py:_build_dynamic_turn_overlay); ContextBuilder no
-    longer builds or freezes them, even under conditions (agent_os_dir set,
-    a stale/delayed message) that used to trigger them. [Agent Notes] is
-    covered separately: ContextBuilder no longer accepts a note_store at
-    all (see tests/agent/test_turn_overlay_injection.py for the
-    responder-side proof that notes still reach the model, only via the
-    overlay).
+    AgentCore computes them once per turn and stores them on the user entry
+    (see agent/turn_overlay.py); the builder only renders that stored text.
+    An entry without one renders without blocks, even under conditions
+    (agent_os_dir set, a stale/delayed message) that would produce them.
     """
     builder = ContextBuilder(
         system_prompt="sys",
@@ -253,6 +251,59 @@ def test_build_never_injects_dynamic_turn_blocks(tmp_path: Path):
         if isinstance(cached.content, str):
             for marker in forbidden:
                 assert marker not in cached.content
+
+
+def test_build_renders_stored_overlay_on_its_entry_in_every_build():
+    builder = ContextBuilder(system_prompt="sys", cache_ttl="1h")
+    conv = Conversation()
+    conv.add(
+        "user",
+        "first",
+        channel="cli",
+        sender="tester",
+        metadata={TURN_OVERLAY_METADATA_KEY: "[Agent Notes]\nmood: \"ok\""},
+    )
+    first_build = builder.build(conv)
+    conv.add("assistant", "reply")
+    conv.add("user", "second", channel="cli", sender="tester")
+    second_build = builder.build(conv)
+
+    def first_user_text(messages):
+        message = next(m for m in messages if m.role == "user")
+        if isinstance(message.content, str):
+            return message.content
+        return "".join(part.text or "" for part in message.content)
+
+    assert first_user_text(first_build).endswith('first\n\n[Agent Notes]\nmood: "ok"')
+    assert first_user_text(second_build) == first_user_text(first_build)
+    latest = [m for m in second_build if m.role == "user"][-1]
+    latest_text = latest.content if isinstance(latest.content, str) else latest.content[-1].text
+    assert "[Agent Notes]" not in latest_text
+
+
+def test_build_appends_stored_overlay_to_list_content():
+    overlay = "[Runtime Context]\nagent_os_dir: /tmp/x"
+    image = ContentPart(type="image", media_type="image/png", data="aGk=")
+    conv = Conversation()
+    conv.replace_messages([
+        SessionEntry(
+            message=Message(role="user", content=[image, ContentPart(type="text", text="look")]),
+            metadata={TURN_OVERLAY_METADATA_KEY: overlay},
+        ),
+        SessionEntry(message=Message(role="assistant", content="ok")),
+        SessionEntry(
+            message=Message(role="user", content=[image]),
+            metadata={TURN_OVERLAY_METADATA_KEY: overlay},
+        ),
+    ])
+
+    messages = ContextBuilder(system_prompt="sys").build(conv)
+
+    with_text, image_only = [m for m in messages if m.role == "user"]
+    assert [part.type for part in with_text.content] == ["image", "text"]
+    assert with_text.content[1].text == f"look\n\n{overlay}"
+    assert [part.type for part in image_only.content] == ["image", "text"]
+    assert image_only.content[1].text == overlay
 
 
 def test_builder_cache_breakpoint_skips_system_messages_before_current_turn():

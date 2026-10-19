@@ -254,7 +254,7 @@ class AgentNoteToolConfig(StrictConfigModel):
     """
 
     max_value_chars: int = Field(default=80, ge=1)
-    max_notes: int = Field(default=12, ge=1)
+    max_notes: int = Field(default=100, ge=1)
 
 
 class ToolsConfig(StrictConfigModel):
