@@ -1,25 +1,38 @@
-"""Tests for the per-turn dynamic prompt block builders.
+"""Tests for the per-turn overlay builders (agent/turn_overlay.py).
 
-These blocks moved out of ContextBuilder (see src/lincy/context/builder.py)
-into standalone functions the responder applies as an overlay (see
-agent/responder.py:_build_dynamic_turn_overlay). Covered here as pure
-functions; tests/agent/test_turn_overlay_injection.py covers the responder
-wiring end to end.
+Pure-function coverage; tests/agent/test_turn_overlay_injection.py covers how
+AgentCore stores the overlay on the turn's entry and how later requests
+render it.
 """
 
 from pathlib import Path
 
 from lincy.agent.note_store import NoteStore
 from lincy.agent.turn_overlay import (
-    build_dynamic_turn_overlay_text,
+    AGENT_NOTES_SHOWN_METADATA_KEY,
     build_latest_turn_runtime_context,
+    build_turn_overlay_metadata,
+    diff_agent_notes,
 )
+from lincy.context.builder import TURN_OVERLAY_METADATA_KEY
 from lincy.llm.schema import Message
 from lincy.session.schema import SessionEntry
 
 
 def _entry(metadata: dict | None = None) -> SessionEntry:
     return SessionEntry(message=Message(role="user", content="hello"), metadata=metadata)
+
+
+def _shown(lines: dict[str, str | None]) -> SessionEntry:
+    """A history entry whose overlay showed these note lines."""
+    return _entry({AGENT_NOTES_SHOWN_METADATA_KEY: lines})
+
+
+def _note_store(tmp_path: Path, **notes: str) -> NoteStore:
+    store = NoteStore(tmp_path / "state")
+    for key, value in notes.items():
+        store.create(key=key, value=value)
+    return store
 
 
 def test_runtime_context_includes_local_time_and_agent_os_dir(tmp_path: Path):
@@ -49,33 +62,110 @@ def test_runtime_context_none_without_agent_os_dir():
     assert build_latest_turn_runtime_context(entry, agent_os_dir=None) is None
 
 
-def test_dynamic_overlay_text_joins_blocks_in_order(tmp_path: Path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir(parents=True)
-    note_store = NoteStore(state_dir)
-    note_store.create(key="location", value="新竹")
-    entry = _entry({"turn_processing_started_at": "2026-03-12T09:11:00+08:00"})
+def test_first_turn_shows_every_note(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹", mood="ok")
 
-    text = build_dynamic_turn_overlay_text(
+    assert diff_agent_notes(store, []) == store.format_context_lines()
+
+
+def test_notes_already_shown_are_left_out(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹", mood="ok")
+    history = [_shown(store.format_context_lines())]
+
+    assert diff_agent_notes(store, history) == {}
+
+
+def test_changed_note_is_shown_again(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹", mood="ok")
+    history = [_shown(store.format_context_lines())]
+
+    store.update(key="location", value="台北")
+
+    assert diff_agent_notes(store, history) == {
+        "location": store.format_context_lines()["location"],
+    }
+
+
+def test_removed_note_is_marked_once(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹", mood="ok")
+    history = [_shown(store.format_context_lines())]
+
+    store.remove("mood")
+
+    assert diff_agent_notes(store, history) == {"mood": None}
+    history.append(_shown({"mood": None}))
+    assert diff_agent_notes(store, history) == {}
+
+
+def test_removed_then_recreated_note_is_shown(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹")
+    history = [_shown(store.format_context_lines()), _shown({"location": None})]
+
+    assert diff_agent_notes(store, history) == store.format_context_lines()
+
+
+def test_note_whose_turn_was_compacted_away_is_shown_again(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹", mood="ok")
+    lines = store.format_context_lines()
+    # Compaction dropped the turn that showed both notes; the retained turn
+    # only showed mood after it changed.
+    history = [_shown({"mood": lines["mood"]})]
+
+    assert diff_agent_notes(store, history) == {"location": lines["location"]}
+
+
+def test_overlay_metadata_orders_blocks_and_records_shown_notes(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹")
+    entry = _entry({
+        "turn_processing_started_at": "2026-03-12T09:11:00+08:00",
+        "turn_processing_delay_seconds": 48660,
+        "turn_processing_delay_reason": "scheduled_turn",
+        "turn_processing_stale": True,
+    })
+
+    metadata = build_turn_overlay_metadata(
         entry=entry,
         agent_os_dir=tmp_path,
-        note_store=note_store,
+        note_store=store,
+        history=[],
+        common_ground="[Common Ground at Message Time]\n\nscope_id: demo",
     )
 
-    runtime_idx = text.index("[Runtime Context]")
-    notes_idx = text.index("[Agent Notes]")
-    assert runtime_idx < notes_idx
-    assert text.count("[Runtime Context]") == 1
+    text = metadata[TURN_OVERLAY_METADATA_KEY]
+    order = [
+        text.index("[Runtime Context]"),
+        text.index("[Timing Notice]"),
+        text.index("[Agent Notes]"),
+        text.index("[Common Ground at Message Time]"),
+    ]
+    assert order == sorted(order)
     assert text.count("[Agent Notes]") == 1
+    assert metadata[AGENT_NOTES_SHOWN_METADATA_KEY] == store.format_context_lines()
 
 
-def test_dynamic_overlay_text_empty_when_nothing_applies():
-    entry = _entry(None)
+def test_overlay_metadata_renders_removed_note(tmp_path: Path):
+    store = _note_store(tmp_path, location="新竹")
+    history = [_shown({**store.format_context_lines(), "mood": 'mood: "ok" | updated_at 03-12 09:00'})]
 
-    text = build_dynamic_turn_overlay_text(
-        entry=entry,
+    metadata = build_turn_overlay_metadata(
+        entry=_entry(None),
+        agent_os_dir=None,
+        note_store=store,
+        history=history,
+        common_ground=None,
+    )
+
+    assert metadata[TURN_OVERLAY_METADATA_KEY] == "[Agent Notes]\nmood: (removed)"
+    assert metadata[AGENT_NOTES_SHOWN_METADATA_KEY] == {"mood": None}
+
+
+def test_overlay_metadata_empty_when_nothing_applies():
+    metadata = build_turn_overlay_metadata(
+        entry=_entry(None),
         agent_os_dir=None,
         note_store=None,
+        history=[],
+        common_ground=None,
     )
 
-    assert text == ""
+    assert metadata == {}

@@ -1880,3 +1880,35 @@ class TestM0181AudioAgent:
         M0181AudioAgent().upgrade(tmp_path / "kernel", tmp_path / "templates")
 
         assert yaml.safe_load(config_path.read_text())["agents"]["audio"] == {"enabled": False}
+
+
+class TestM0183AgentNoteTurnOverlay:
+    """Tests for the delta agent notes / note cap migration."""
+
+    def _run(self, tmp_path: Path, max_notes: int) -> dict:
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        prompt = tmp_path / "templates/agents/brain/prompts/system.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("brain prompt")
+        config_path = tmp_path / "agent.yaml"
+        config_path.write_text(
+            f"tools:\n  agent_note:\n    max_value_chars: 80\n    max_notes: {max_notes}\n",
+            encoding="utf-8",
+        )
+
+        from lincy.workspace.migrations.m0183_agent_note_turn_overlay import (
+            M0183AgentNoteTurnOverlay,
+        )
+
+        M0183AgentNoteTurnOverlay().upgrade(kernel_dir, tmp_path / "templates")
+        return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    def test_copies_brain_prompt_and_raises_old_cap(self, tmp_path: Path):
+        config = self._run(tmp_path, 12)
+        assert config["tools"]["agent_note"] == {"max_value_chars": 80, "max_notes": 100}
+        assert (tmp_path / "kernel/agents/brain/prompts/system.md").read_text() == "brain prompt"
+
+    def test_keeps_custom_cap(self, tmp_path: Path):
+        config = self._run(tmp_path, 30)
+        assert config["tools"]["agent_note"]["max_notes"] == 30

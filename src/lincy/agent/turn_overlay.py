@@ -1,15 +1,15 @@
-"""Per-turn dynamic prompt blocks: runtime context, timing notice, agent notes.
+"""Per-turn overlay: runtime context, timing notice, agent notes, common ground.
 
-Moved out of ContextBuilder (see src/lincy/context/builder.py) so these
-blocks can be applied as a responder-side overlay on the outgoing request's
-latest user message (see responder.py) instead of being baked into
-ContextBuilder's rendered/frozen conversation messages, where they would
-persist forever on every historical user message once frozen by the render
-cache.
+The overlay is computed once when a turn's user entry is added (see
+AgentCore._add_turn_user_entry) and stored in that entry's metadata.
+ContextBuilder renders it after the message on every later request too, so
+history stays append-only: an earlier user message is never rewritten, which
+keeps the prompt cache prefix and replayed thinking blocks valid.
 
-Kept in a standalone module rather than living directly in responder.py so
-the block assembly stays testable on its own and responder.py stays focused
-on the tool loop.
+[Agent Notes] carries only notes that are new, changed, or removed compared
+with what the retained conversation already shows. That shown state is folded
+from the retained entries' metadata, so once compaction drops the turns that
+showed a note, the next turn shows it again.
 
 Runtime-context time always comes from turn metadata (parse_turn_timing_info),
 never a wall-clock read -- see docs/dev/token-only-context-policy.md.
@@ -20,12 +20,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..context.builder import TURN_OVERLAY_METADATA_KEY
 from ..session.schema import SessionEntry
 from ..timezone_utils import format_local_stamp
 from ..turn_timing import build_turn_timing_notice, parse_turn_timing_info
 
 if TYPE_CHECKING:
     from .note_store import NoteStore
+
+# Note lines this turn's overlay showed, by key; None marks a removed note.
+AGENT_NOTES_SHOWN_METADATA_KEY = "agent_notes_shown"
 
 
 def build_latest_turn_runtime_context(
@@ -47,22 +51,59 @@ def build_latest_turn_runtime_context(
     return f"[Runtime Context]\n{'\n'.join(parts)}"
 
 
-def build_dynamic_turn_overlay_text(
+def diff_agent_notes(
+    note_store: "NoteStore",
+    history: list[SessionEntry],
+) -> dict[str, str | None]:
+    """Return lines for notes the history does not show as current.
+
+    New or changed notes map to their line; notes the history still shows
+    but the store no longer has map to None.
+    """
+    shown: dict[str, str | None] = {}
+    for entry in history:
+        shown.update((entry.metadata or {}).get(AGENT_NOTES_SHOWN_METADATA_KEY) or {})
+    current = note_store.format_context_lines()
+    delta: dict[str, str | None] = {
+        key: line for key, line in current.items() if shown.get(key) != line
+    }
+    for key, line in shown.items():
+        if line is not None and key not in current:
+            delta[key] = None
+    return delta
+
+
+def build_turn_overlay_metadata(
     *,
     entry: SessionEntry,
     agent_os_dir: Path | None,
     note_store: "NoteStore | None",
-) -> str:
-    """Assemble the responder-only per-turn dynamic overlay text.
+    history: list[SessionEntry],
+    common_ground: str | None,
+) -> dict[str, object]:
+    """Return the metadata that stores this turn's overlay on its user entry.
 
-    Block order matches ContextBuilder's original latest-turn injection
-    order: Runtime Context, Timing Notice, Agent Notes. The common-ground
-    block (built separately in responder.py) is appended after this text
-    by the caller, preserving today's final on-the-wire order.
+    Block order: Runtime Context, Timing Notice, Agent Notes, common ground.
+    ``history`` is the conversation before this entry. Returns {} when no
+    block has anything to say.
     """
+    notes_delta = diff_agent_notes(note_store, history) if note_store is not None else {}
+    notes_block = None
+    if notes_delta:
+        notes_block = "[Agent Notes]\n" + "\n".join(
+            line if line is not None else f"{key}: (removed)"
+            for key, line in notes_delta.items()
+        )
     blocks = [
         build_latest_turn_runtime_context(entry, agent_os_dir=agent_os_dir),
         build_turn_timing_notice(entry),
-        note_store.format_context_block() if note_store is not None else None,
+        notes_block,
+        common_ground,
     ]
-    return "\n\n".join(block for block in blocks if block)
+    metadata: dict[str, object] = {}
+    text = "\n\n".join(block for block in blocks if block)
+    if text:
+        metadata[TURN_OVERLAY_METADATA_KEY] = text
+    if notes_delta:
+        metadata[AGENT_NOTES_SHOWN_METADATA_KEY] = notes_delta
+    return metadata

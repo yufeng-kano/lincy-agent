@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from .scope import ScopeResolver
     from .shared_state import SharedStateStore
     from ..brain_prompt_policy import BrainPromptPolicy
-    from ..session.schema import SessionEntry
     from ..worker.runner import WorkerRunner
 
 from ..context import ContextBuilder, Conversation
@@ -43,6 +42,7 @@ from ..memory import (
 )
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
+from ..session.schema import SessionEntry
 from ..skills import rebuild_personal_skills_index
 from ..timezone_utils import get_tz, now as tz_now
 from ..tools import FilteredToolRegistry, ToolRegistry
@@ -61,12 +61,8 @@ from .compaction import ContextCompactionResult, ContextCompactor
 from .requeue import RequeuePolicy, TurnFailureCategory, classify_turn_failure, should_requeue_failed_turn
 from .token_telemetry import LatestTokenStatus, TokenTelemetry, TurnTokenUsage
 from .queue import PersistentPriorityQueue, QueueItem
-from .responder import (
-    _CommonGroundTurnDebug,
-    _build_common_ground_overlay,
-    _build_dynamic_turn_overlay,
-    _compose_message_overlays,
-)
+from .responder import _CommonGroundTurnDebug, _build_common_ground_text
+from .turn_overlay import build_turn_overlay_metadata
 from .run_helpers import (
     _resolve_final_content,
     _surface_error_message,
@@ -181,13 +177,6 @@ class _PreparedTurn:
     pre_turn_anchor: int
     turn_metadata: dict[str, object] | None
     messages: list[Message]
-    # Composed overlay applied to the latest user message of every outgoing
-    # request this turn: per-turn dynamic blocks ([Runtime Context],
-    # [Timing Notice], [Decision Reminder], [Agent Notes]) followed by the
-    # common-ground block, in that order. Captured once per turn attempt
-    # (see _prepare_turn_attempt) and reused verbatim across tool-loop
-    # rounds and the single overflow retry so BP4 still hits within the turn.
-    message_overlay: Callable[[list[Message]], list[Message]] | None
     turn_memory_snapshot: _TurnMemorySnapshot
     turn_anchor: int
 
@@ -377,6 +366,60 @@ class AgentCore:
 
         return _output
 
+    def _add_turn_user_entry(
+        self,
+        user_input: str,
+        *,
+        channel: str,
+        sender: str | None,
+        timestamp: datetime | None,
+        turn_metadata: dict[str, object] | None,
+        debug: bool,
+    ) -> None:
+        """Append the turn's user entry with its per-turn overlay stored on it.
+
+        The overlay ([Runtime Context], [Timing Notice], [Agent Notes]
+        changes, common ground) is computed once here from the turn-start
+        snapshot and kept in the entry's metadata, so ContextBuilder renders
+        this message byte-identically on every request of this turn and of
+        later turns. A note edited mid-turn shows up in the next turn.
+        """
+        timestamp = timestamp or tz_now()
+        common_ground, common_ground_debug = _build_common_ground_text(
+            shared_state_store=getattr(self, "shared_state_store", None),
+            config=self.config,
+            turn_metadata=turn_metadata,
+            console=self.console,
+            debug=debug,
+        )
+        self._debug_common_ground_turn(
+            common_ground_debug=common_ground_debug,
+            common_ground=common_ground,
+            debug=debug,
+        )
+        # Timing blocks read the entry's metadata and timestamp; build them
+        # from an identical provisional entry because add() persists at once.
+        overlay_metadata = build_turn_overlay_metadata(
+            entry=SessionEntry(
+                message=Message(role="user", content=user_input, timestamp=timestamp),
+                channel=channel,
+                sender=sender,
+                metadata=turn_metadata,
+            ),
+            agent_os_dir=self.builder.agent_os_dir,
+            note_store=getattr(self, "note_store", None),
+            history=self.conversation.get_messages(),
+            common_ground=common_ground,
+        )
+        self.conversation.add(
+            "user",
+            user_input,
+            channel=channel,
+            sender=sender,
+            timestamp=timestamp,
+            metadata={**(turn_metadata or {}), **overlay_metadata} or None,
+        )
+
     def _prepare_turn_attempt(
         self,
         user_input: str,
@@ -389,39 +432,15 @@ class AgentCore:
         """Append the user input and prepare one responder attempt."""
         debug = self.console.debug
         pre_turn_anchor = len(self.conversation.get_messages())
-        self.conversation.add(
-            "user",
+        self._add_turn_user_entry(
             user_input,
             channel=channel,
             sender=sender,
             timestamp=timestamp,
-            metadata=turn_metadata,
+            turn_metadata=turn_metadata,
+            debug=debug,
         )
         messages = self.builder.build(self.conversation)
-        # Snapshot the full per-turn overlay text ONCE here (dynamic blocks
-        # then common ground, preserving today's final on-the-wire order)
-        # and reuse the identical composed callable for every LLM call this
-        # turn, including the single overflow retry. If agent_note edits a
-        # note mid-turn, later rounds of THIS turn still see this snapshot;
-        # the next turn picks up the change.
-        latest_user_entry = self.conversation.get_messages()[-1]
-        dynamic_overlay = _build_dynamic_turn_overlay(
-            entry=latest_user_entry,
-            builder=self.builder,
-            note_store=getattr(self, "note_store", None),
-        )
-        common_ground_overlay, common_ground_debug = _build_common_ground_overlay(
-            shared_state_store=getattr(self, "shared_state_store", None),
-            config=self.config,
-            turn_metadata=turn_metadata,
-            console=self.console,
-            debug=debug,
-        )
-        self._debug_common_ground_turn(
-            common_ground_debug=common_ground_debug,
-            common_ground_overlay=common_ground_overlay,
-            debug=debug,
-        )
         self._debug_latest_user_context(messages, debug=debug)
 
         turn_memory_snapshot = _TurnMemorySnapshot(agent_os_dir=self.agent_os_dir)
@@ -431,10 +450,6 @@ class AgentCore:
             pre_turn_anchor=pre_turn_anchor,
             turn_metadata=turn_metadata,
             messages=messages,
-            message_overlay=_compose_message_overlays(
-                dynamic_overlay,
-                common_ground_overlay,
-            ),
             turn_memory_snapshot=turn_memory_snapshot,
             turn_anchor=turn_anchor,
         )
@@ -447,23 +462,23 @@ class AgentCore:
         sender: str | None,
         timestamp: datetime | None,
         turn_metadata: dict[str, object] | None,
-        message_overlay: Callable[[list[Message]], list[Message]] | None,
     ) -> _PreparedTurn:
         """Prepare the single retry after overflow compaction.
 
-        This intentionally reuses the original turn-start overlay (dynamic
-        blocks + common ground) and skips extra debug output to preserve
-        the previous retry behavior while keeping the original inbound
-        timestamp stable across the single retry.
+        Recomputes the overlay through the same path as the first attempt,
+        against the compacted history, so notes whose earlier lines were
+        compacted away are shown again. Runtime context and timing come from
+        the same turn metadata, so they match the first attempt. Skips the
+        extra debug output and keeps the original inbound timestamp.
         """
         pre_turn_anchor = len(self.conversation.get_messages())
-        self.conversation.add(
-            "user",
+        self._add_turn_user_entry(
             user_input,
             channel=channel,
             sender=sender,
             timestamp=timestamp,
-            metadata=turn_metadata,
+            turn_metadata=turn_metadata,
+            debug=False,
         )
         messages = self.builder.build(self.conversation)
         turn_memory_snapshot = _TurnMemorySnapshot(agent_os_dir=self.agent_os_dir)
@@ -473,7 +488,6 @@ class AgentCore:
             pre_turn_anchor=pre_turn_anchor,
             turn_metadata=turn_metadata,
             messages=messages,
-            message_overlay=message_overlay,
             turn_memory_snapshot=turn_memory_snapshot,
             turn_anchor=turn_anchor,
         )
@@ -482,7 +496,7 @@ class AgentCore:
         self,
         *,
         common_ground_debug: _CommonGroundTurnDebug,
-        common_ground_overlay: Callable[[list[Message]], list[Message]] | None,
+        common_ground: str | None,
         debug: bool,
     ) -> None:
         """Print current common-ground injection state in debug mode."""
@@ -513,7 +527,7 @@ class AgentCore:
             self.console.print_debug(
                 "common-ground-turn",
                 "injected="
-                f"{common_ground_overlay is not None} "
+                f"{common_ground is not None} "
                 f"scope={cg_scope_id} "
                 f"anchor={cg_anchor_rev} "
                 f"current={cg_turn_start_current_rev}",
@@ -637,7 +651,6 @@ class AgentCore:
                 memory_edit_turn_retry_limit=self.config.tools.memory_edit.turn_retry_limit,
                 is_cancel_requested=is_cancel_requested,
                 on_cancel_pending=on_cancel_pending,
-                message_overlay=prepared.message_overlay,
                 on_model_response=self._record_brain_response_usage,
                 thinking_channel=channel,
                 thinking_sender=sender,
@@ -928,7 +941,6 @@ class AgentCore:
             sender=sender,
             timestamp=timestamp,
             turn_metadata=prepared.turn_metadata,
-            message_overlay=prepared.message_overlay,
         )
         try:
             final_content = self._execute_turn_attempt(

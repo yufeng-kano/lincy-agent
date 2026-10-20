@@ -17,6 +17,26 @@ _PINNED_CALL_ID = "pinned_ctx_0"
 _PINNED_TOOL_NAME = "read_pinned_context"
 
 _RENDERED_STATIC_METADATA_KEY = "rendered_static"
+# Per-turn overlay text stored on a user entry when its turn starts (see
+# agent/turn_overlay.py). Rendered after that message on every request.
+TURN_OVERLAY_METADATA_KEY = "turn_overlay"
+
+
+def _append_turn_overlay(
+    content: str | list[ContentPart] | None,
+    overlay: str,
+) -> str | list[ContentPart]:
+    """Append the overlay after the message's last text, or as a new text part."""
+    if not isinstance(content, list):
+        return f"{content}\n\n{overlay}" if content else overlay
+    parts = list(content)
+    for index in range(len(parts) - 1, -1, -1):
+        part = parts[index]
+        if part.type == "text":
+            text = f"{part.text}\n\n{overlay}" if part.text else overlay
+            parts[index] = part.model_copy(update={"text": text})
+            return parts
+    return [*parts, ContentPart(type="text", text=overlay)]
 
 
 class ContextBuilder:
@@ -469,16 +489,6 @@ class ContextBuilder:
                     content = f"[{channel}, from {sender}] {content}"
                 elif channel:
                     content = f"[{channel}] {content}"
-                # Per-turn dynamic blocks ([Runtime Context], [Timing Notice],
-                # [Agent Notes]) are NOT injected here.
-                # They used to be appended to the latest user message and,
-                # once frozen by the render cache, would persist forever on
-                # every historical user message. They are now applied only
-                # to the outgoing request's latest user message by the
-                # responder overlay (see agent/turn_overlay.py and
-                # agent/responder.py), never written back into Conversation
-                # or this render cache. See docs/dev/agent-task-system.md
-                # and docs/dev/token-only-context-policy.md.
 
             if (
                 not rendered_static
@@ -488,6 +498,15 @@ class ContextBuilder:
                 and content
             ):
                 content = f"[{format_local_stamp(msg.timestamp)}] {content}"
+
+            # The builder never computes per-turn blocks itself; it renders
+            # the overlay frozen on the entry when its turn started. Keeping
+            # it on every later request leaves history append-only, so the
+            # prompt cache and replayed thinking blocks stay valid. See
+            # docs/dev/token-only-context-policy.md.
+            overlay = entry_metadata.get(TURN_OVERLAY_METADATA_KEY)
+            if overlay and msg.role == "user":
+                content = _append_turn_overlay(content, overlay)
 
             rendered = Message(
                 role=msg.role,

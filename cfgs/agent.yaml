@@ -248,7 +248,7 @@ tools:
         enforcement: require_context
   agent_note:
     max_value_chars: 80 # reject create/update writes above this; existing oversized values keep working (warning-only)
-    max_notes: 12 # reject create when the store already holds this many notes
+    max_notes: 100 # reject create when the store already holds this many notes
 
 # Agents
 agents:

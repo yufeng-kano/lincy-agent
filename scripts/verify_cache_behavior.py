@@ -10,7 +10,7 @@ Scenarios:
 1. Baseline: same-turn request rebuilt twice should hit cache strongly.
 2. Runtime snapshot: rebuilding later still reuses the frozen ``current_local_time`` note.
 3. Timing notice: delayed-turn notes stay on the latest turn and no longer poison raw/advanced paths.
-4. Common ground: latest-turn common-ground note survives responder rebuilds without wrecking cache.
+4. Common ground: an overlay stored on the latest turn survives rebuilds without wrecking cache.
 
 Usage:
     uv run python scripts/verify_cache_behavior.py
@@ -27,11 +27,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from lincy.agent.responder import (
-    _advance_responder_cache_breakpoint,
-    _make_latest_user_text_overlay,
-)
-from lincy.context.builder import ContextBuilder
+from lincy.agent.responder import _advance_responder_cache_breakpoint
+from lincy.context.builder import TURN_OVERLAY_METADATA_KEY, ContextBuilder
 from lincy.context.conversation import Conversation
 from lincy.core.config import resolve_llm_config
 from lincy.core.schema import OpenRouterConfig
@@ -103,7 +100,10 @@ def _make_basic_conversation() -> Conversation:
     return conv
 
 
-def _make_delayed_turn_conversation(processing_started_at: str) -> Conversation:
+def _make_delayed_turn_conversation(
+    processing_started_at: str,
+    turn_overlay: str | None = None,
+) -> Conversation:
     history_blob = "Prior conversation digest. " + " ".join(
         f"Exchange {i}: reminder thread {i} stays open until task {i + 3} is confirmed complete."
         for i in range(1, 180)
@@ -130,6 +130,7 @@ def _make_delayed_turn_conversation(processing_started_at: str) -> Conversation:
             "turn_processing_delay_seconds": 48660,
             "turn_processing_delay_reason": "scheduled_turn",
             "turn_processing_stale": True,
+            **({TURN_OVERLAY_METADATA_KEY: turn_overlay} if turn_overlay else {}),
         },
     )
     return conv
@@ -226,22 +227,23 @@ def test_timing_notice_paths(tmp_path: Path, client) -> tuple[int, int, int, int
 
 
 def test_common_ground_overlay(tmp_path: Path, client) -> tuple[int, int]:
-    print("\n=== Common Ground: latest-turn overlay ===")
+    print("\n=== Common Ground: overlay stored on the latest turn ===")
     builder = _make_builder(tmp_path)
-    conv = _make_delayed_turn_conversation("2026-03-24T17:11:00+08:00")
-    base_messages = _advance_responder_cache_breakpoint(builder.build(conv))
-    overlay = _make_latest_user_text_overlay(
-        "[Common Ground at Message Time]\n\n"
-        "scope_id: demo\n"
-        "message_time_shared_rev: 4\n"
-        "turn_start_shared_rev: 6\n\n"
-        "The user had already been told in this conversation when they sent the current message:\n"
-        "- rev 1: Remember the medication after dinner.\n"
-        "- rev 4: Only send one short reminder."
+    conv = _make_delayed_turn_conversation(
+        "2026-03-24T17:11:00+08:00",
+        turn_overlay=(
+            "[Common Ground at Message Time]\n\n"
+            "scope_id: demo\n"
+            "message_time_shared_rev: 4\n"
+            "turn_start_shared_rev: 6\n\n"
+            "The user had already been told in this conversation when they sent the current message:\n"
+            "- rev 1: Remember the medication after dinner.\n"
+            "- rev 4: Only send one short reminder."
+        ),
     )
 
-    overlaid1 = overlay(base_messages)
-    overlaid2 = overlay(base_messages)
+    overlaid1 = _advance_responder_cache_breakpoint(builder.build(conv))
+    overlaid2 = _advance_responder_cache_breakpoint(builder.build(conv))
     print(f"  BP3: {_describe_bp3(overlaid1)}")
     r1 = _send("common-ground call 1", client, overlaid1)
     _sleep()

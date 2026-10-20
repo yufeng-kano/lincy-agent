@@ -42,9 +42,9 @@ _BRAIN_LABEL_MARKERS = ('"client_label":"brain"', '"client_label": "brain"')
 # which both wrap injected file content as <file path="...">...</file>.
 _FILE_TAG_RE = re.compile(r'<file path="([^"]+)">\n?(.*?)\n?</file>', re.S)
 
-# Per-turn dynamic blocks ContextBuilder.build() appends to the latest user
-# message (in the order builder.py appends them), plus the common-ground
-# block injected upstream in shared_state.py. Order here does not matter:
+# Per-turn dynamic blocks agent/turn_overlay.py stores on each turn's user
+# entry and ContextBuilder.build() appends to it. Earlier turns keep theirs,
+# but only the latest user message is split here. Order here does not matter:
 # positions are found by substring search and re-sorted by where they
 # actually landed in the text.
 _LATEST_TURN_MARKERS = (
