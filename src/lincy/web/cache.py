@@ -73,6 +73,20 @@ def _aggregate_write_cache_measurable(
     return bool(rows) and all(_is_write_cache_measurable(row.provider) for row in rows)
 
 
+def _is_brain(row: ResponseMetrics) -> bool:
+    # Same test as get_live_status: only the literal "brain" label counts.
+    return row.client_label == "brain"
+
+
+def _brain_read_cache_rate(rows: list[ResponseMetrics]) -> float | None:
+    brain_rows = [row for row in rows if _is_brain(row)]
+    return _compute_read_cache_rate(
+        sum(row.prompt_tokens for row in brain_rows),
+        sum(row.cache_read_tokens for row in brain_rows),
+        measurable=_aggregate_read_cache_measurable(brain_rows),
+    )
+
+
 def _aggregate_pricing_sources(rows: list[ResponseMetrics]) -> list[dict]:
     counts: dict[tuple[str, str | None, bool], int] = {}
     for row in rows:
@@ -185,6 +199,10 @@ class DashboardSummary:
     total_cache_write: int
     cache_hit_rate: float | None
     write_cache_measurable: bool
+    # Brain-only read rate. Sub-agents run on separate contexts (and, through
+    # kano-proxy, often on a different upstream with implicit caching), so the
+    # all-clients rate hides what the brain's breakpoints actually achieve.
+    brain_read_cache_rate: float | None
     daily_costs: list[dict]  # [{date, cost, turns}]
     pricing_sources: list[dict]
     pricing_stale: bool
@@ -430,6 +448,8 @@ class MetricsCache:
                     "prompt_tokens": 0,
                     "cache_read": 0,
                     "cache_write": 0,
+                    "brain_prompt_tokens": 0,
+                    "brain_cache_read": 0,
                     "read_cache_measurable": True,
                     "write_cache_measurable": True,
                     "pricing_stale": False,
@@ -461,6 +481,9 @@ class MetricsCache:
                 bucket["prompt_tokens"] += rm.prompt_tokens
                 bucket["cache_read"] += rm.cache_read_tokens
                 bucket["cache_write"] += rm.cache_write_tokens
+                if _is_brain(rm):
+                    bucket["brain_prompt_tokens"] += rm.prompt_tokens
+                    bucket["brain_cache_read"] += rm.cache_read_tokens
                 if rm.cost is not None:
                     bucket["cost"] += rm.cost
                 bucket["_responses"].append(rm)
@@ -470,6 +493,7 @@ class MetricsCache:
             rows: list[ResponseMetrics] = bucket.pop("_responses")
             bucket["read_cache_measurable"] = _aggregate_read_cache_measurable(rows)
             bucket["write_cache_measurable"] = _aggregate_write_cache_measurable(rows)
+            bucket["brain_read_cache_rate"] = _brain_read_cache_rate(rows)
 
         hit_rate = total_cr / (total_cr + total_cw) if (total_cr + total_cw) > 0 else None
 
@@ -499,6 +523,7 @@ class MetricsCache:
             total_cache_write=total_cw,
             cache_hit_rate=hit_rate,
             write_cache_measurable=_aggregate_write_cache_measurable(all_responses),
+            brain_read_cache_rate=_brain_read_cache_rate(all_responses),
             daily_costs=daily_list,
             pricing_sources=_aggregate_pricing_sources(all_responses),
             pricing_stale=_has_stale_pricing(all_responses),

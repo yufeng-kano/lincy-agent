@@ -58,6 +58,7 @@ def create_router(settings: WebSettings, state: WebState) -> APIRouter:
             "total_cache_write": summary.total_cache_write,
             "cache_hit_rate": summary.cache_hit_rate,
             "write_cache_measurable": summary.write_cache_measurable,
+            "brain_read_cache_rate": summary.brain_read_cache_rate,
             "daily_costs": summary.daily_costs,
             "pricing_sources": summary.pricing_sources,
             "pricing_stale": summary.pricing_stale,

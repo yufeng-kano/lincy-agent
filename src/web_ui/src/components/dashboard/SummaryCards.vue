@@ -17,7 +17,11 @@ const cards = computed(() => {
     },
     { label: 'Turns', value: String((s.total_turns as number | undefined) ?? 0) },
     { label: 'Sessions', value: String((s.total_sessions as number | undefined) ?? 0) },
-    { label: 'Read Cache Rate', value: formatCacheRate(s.read_cache_rate as number | null) },
+    {
+      label: 'Brain Read Cache Rate',
+      value: formatCacheRate(s.brain_read_cache_rate as number | null),
+      detail: `all clients ${formatCacheRate(s.read_cache_rate as number | null)}`,
+    },
     {
       label: 'Write Cache',
       value: formatCacheWriteTokens(

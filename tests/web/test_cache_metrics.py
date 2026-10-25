@@ -431,3 +431,39 @@ def test_session_detail_responses_carry_served_fields():
     response = detail["turns"][0]["responses"][0]
     assert response["served_provider"] == "heyroute"
     assert response["served_by_fallback"] is True
+
+
+def test_dashboard_reports_brain_only_read_cache_rate():
+    """Workers run on separate contexts, so the brain rate must not be diluted."""
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [
+        _response(client_label="brain", prompt_tokens=1000, cache_read_tokens=900),
+        _response(client_label="brain", prompt_tokens=1000, cache_read_tokens=1000),
+        _response(
+            client_label="worker-3",
+            model="worker-agent",
+            prompt_tokens=2000,
+            cache_read_tokens=0,
+        ),
+    ]
+    cache._turns["s1"] = []
+
+    dash = cache.get_dashboard(date(2026, 4, 11), date(2026, 4, 11))
+
+    assert dash.read_cache_rate == 1900 / 4000
+    assert dash.brain_read_cache_rate == 0.95
+    assert dash.daily_costs[0]["brain_read_cache_rate"] == 0.95
+    assert dash.daily_costs[0]["brain_prompt_tokens"] == 2000
+
+
+def test_dashboard_brain_read_cache_rate_is_none_without_brain_rows():
+    cache = MetricsCache(Path("/tmp"), {})
+    cache._files["s1"] = SessionFiles(session_dir=Path("/tmp/s1"), meta=_meta("s1"))
+    cache._responses["s1"] = [_response(client_label="worker-3", model="worker-agent")]
+    cache._turns["s1"] = []
+
+    dash = cache.get_dashboard(date(2026, 4, 11), date(2026, 4, 11))
+
+    assert dash.brain_read_cache_rate is None
+    assert dash.daily_costs[0]["brain_read_cache_rate"] is None

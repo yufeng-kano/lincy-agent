@@ -57,7 +57,7 @@ Agent 活動事件模型與 JSONL store 位於 `src/lincy/agent/ui_event_stream.
 
 | Method | Path | 說明 |
 |--------|------|------|
-| GET | `/api/dashboard?from=&to=` | 總覽：cost、turns、read cache rate、daily 聚合 |
+| GET | `/api/dashboard?from=&to=` | 總覽：cost、turns、read cache rate（全部 client 與 `brain_read_cache_rate`）、daily 聚合（每日另含 `brain_prompt_tokens` / `brain_cache_read` / `brain_read_cache_rate`） |
 | GET | `/api/sessions?from=&to=&limit=&offset=` | Session 列表 |
 | GET | `/api/sessions/{id}` | Session 細節：turns + per-request breakdown |
 | GET | `/api/requests?from=&to=&limit=&offset=` | 跨 session 的全域 request log |
@@ -271,9 +271,11 @@ Overview、Requests、Context 之間用 tab bar 切換（`MonitorTabs.vue`）。
 ### 圖表
 
 - **Daily Cost**（bar chart）：每日花費，黑色柱狀
-- **Read Cache Rate**（line chart）：
-  - Today → per-request 粒度，x 軸 `HH:MM`，標題 "Request Read Cache Rate"
-  - 7D/30D/Month → per-day 粒度，x 軸 `MM/DD`，標題 "Daily Read Cache Rate"
+- **Read Cache Rate**（line chart，`DailyCacheChart.vue`）：
+  - 兩條 series 分開畫，不混在一條線：**Brain**（黑 `#111827`）與 **Sub-agents / All clients**（灰 `#9CA3AF`），附 legend。brain 的 prompt cache 走 Anthropic breakpoint；worker / maintenance / compactor 等 sub-agent 各自獨立 context，且 kano-proxy 背後常是另一個 upstream（例如 Gemini 的 implicit cache，每個任務開頭幾個 round 必然 0%、write 永遠 0）。混在一起時曲線上的 0% 幾乎全來自 sub-agent，看不出 brain 真正的命中率
+  - lincy 看不到 kano-proxy 實際轉送的 upstream model（`served_model` 只是 group 內的 model 名），所以只能按 `client_label` 分系列，不嘗試按 upstream 判斷「可量測」
+  - Today → per-request 粒度，x 軸是 **線性時間軸**（0 到 24 小時，每 3 小時一個刻度），點的位置照實際時間排、時間由左到右；夜間空檔會呈現為空白而不是被壓縮。Brain 以折線連接，sub-agent 只畫點（相鄰兩點通常屬於不同 worker，連線沒有意義）。資料來自 `/api/requests`（limit 1000，依 `ts` 升冪排序後繪製），tooltip 顯示 client、round、read %、prompt / cache read / cache write token
+  - 7D/30D/Month → per-day 粒度，x 軸 `MM/DD`，Brain 用 `daily_costs[].brain_read_cache_rate`，All clients 用 `daily_costs[].read_cache_rate`
 
 ### 時間範圍
 
@@ -322,7 +324,8 @@ Production 模式由 `lincy` 程序內的 server 直接 serve `src/web_ui/dist/`
 - Agent 活動事件是**當次執行**的快照：`lincy` 重啟就輪替檔案，Web 端讀不到上一輪歷史（`events.prev.jsonl` 只留給人工檢查）。
 - Agent 活動 export 是唯讀旁路，不得反向影響 agent；新增事件型別時要同步更新 `ui_event_stream.py` 的 `_EVENT_SPECS` 與前端 `AgentUiEventType`。
 - `requests.jsonl` 含完整 message payload，**不要全部載入 cache**；`context_composition.py`（Context 頁）示範了 on-demand、每次請求重新 parse 的做法，之後若有新功能要讀 `requests.jsonl` 應比照此模式
-- `read_cache_rate = cache_read_tokens / prompt_tokens`
+- `read_cache_rate = cache_read_tokens / prompt_tokens`；`brain_read_cache_rate` 同一公式，但只納入 `client_label == "brain"` 的 response（與 `/api/live` 的 brain 判定一致），沒有 brain response 時為 `null`
+- Summary card「Brain Read Cache Rate」主數字是 brain 口徑，副標顯示全部 client 的口徑
 - `write_cache` 和 `read_cache_rate` 分開顯示
 - provider 不支援 write cache 度量時，前端直接顯示「無法測量」
 - `watchfiles` 使用 OS 原生通知（macOS FSEvents），不是 polling
