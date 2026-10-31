@@ -469,7 +469,7 @@ class ContextConfig(StrictConfigModel):
         persist_cache: bool = True
 
     soft_max_prompt_tokens: int = Field(default=128_000, ge=1_024)
-    preserve_turns: int = Field(default=6, ge=1)
+    preserve_turns: int = Field(default=10, ge=1)
     boot_files: list[str] = Field(
         default_factory=lambda: [
             "memory/agent/persona.md",

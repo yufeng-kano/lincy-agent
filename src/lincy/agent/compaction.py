@@ -154,6 +154,11 @@ class ContextCompactor:
         )
         if not result.changed:
             return
+        # Boot content is a snapshot taken at session start / context_refresh,
+        # so by now temp-memory and pinned files have drifted from what the
+        # prompt shows. Compaction already rebuilt everything after the prefix;
+        # this is the cheap moment to refresh the prefix as well.
+        self._core.builder.reload_boot_files()
         via = f" via {result.source_label}" if result.source_label else ""
         details = (
             f"compacted {result.removed_messages} messages"

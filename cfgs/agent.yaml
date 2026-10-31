@@ -22,7 +22,10 @@ ui:
 # Context window management
 context:
   soft_max_prompt_tokens: 400000
-  preserve_turns: 4
+  # Turns kept verbatim when the soft limit compacts the conversation.
+  # Brain turns are mostly tool loops (scheduled / task-due work), so 10
+  # turns is only a few hours of real dialogue, not a whole day.
+  preserve_turns: 10
   # Core rules: high attention weight, injected as system message
   boot_files:
     - "memory/agent/persona.md"

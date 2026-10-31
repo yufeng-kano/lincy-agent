@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..worker.runner import WorkerRunner
 
 from ..context import ContextBuilder, Conversation
+from ..context.pinned_context import list_pinned_paths
 from ..core.schema import AppConfig
 from ..llm import LLMResponse
 from ..llm.session import llm_session
@@ -337,6 +338,17 @@ class AgentCore:
 
     def _compact_context(self, *, preserve_turns: int, trigger: str) -> ContextCompactionResult:
         return self._compaction().compact(preserve_turns=preserve_turns, trigger=trigger)
+
+    def _loaded_context_paths(self) -> frozenset[str]:
+        """Files injected into every brain prompt: boot files and pins."""
+        ctx = self.config.context
+        return frozenset(
+            [
+                *(ctx.boot_files or []),
+                *(ctx.boot_files_as_tool or []),
+                *list_pinned_paths(self.agent_os_dir),
+            ]
+        )
 
     def run_manual_compact(self) -> ContextCompactionResult:
         return self._compaction().run_manual_compact()
@@ -1378,7 +1390,11 @@ class AgentCore:
                 except Exception as e:
                     logger.warning("Maintenance temp-memory curation failed: %s", e)
                 try:
-                    curate_queue_via_worker(self.worker_runner, self.agent_os_dir)
+                    curate_queue_via_worker(
+                        self.worker_runner,
+                        self.agent_os_dir,
+                        loaded_paths=self._loaded_context_paths(),
+                    )
                 except Exception as e:
                     logger.warning("Maintenance queued file curation failed: %s", e)
             elif cfg.curate.enabled:

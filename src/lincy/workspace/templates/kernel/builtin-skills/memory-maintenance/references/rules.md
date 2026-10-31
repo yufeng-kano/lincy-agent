@@ -17,6 +17,24 @@ if needed to understand context for the target file.**
   shell commands. write_file cannot overwrite a non-empty file — use
   edit_file for existing content.
 
+## Loaded Files (boot and pinned)
+
+Some files are injected into the brain's prompt on every turn:
+`context.boot_files`, `context.boot_files_as_tool` (for example
+`memory/agent/long-term.md`, `memory/agent/temp-memory.md`) and every
+path registered in `state/pinned_context.json`. A rule moved out of
+such a file into a side file stops shaping behavior, because nothing
+loads the side file. The task prompt tells you when the target is one
+of them.
+
+- Never split a loaded file into new files; do not create
+  `<name>-<topic>.md` side files for its content
+- Condense in place instead: merge same-theme entries into one, drop
+  case narration (the archive snapshot keeps it), keep every currently
+  effective rule and every existing pointer to other files
+- Long historical background may be reduced to a one-line pointer to
+  the archive snapshot; currently effective rules may not
+
 ## File Format Rules
 
 ### index.md

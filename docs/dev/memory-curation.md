@@ -52,6 +52,13 @@
 （或明示「已排入 curation，不要處理」），避免 brain 在對話中臨時起意派 worker 繞過快照保證。
 `possible_duplicates` 的 skill 用途不受影響。
 
+**載入檔只准原地濃縮，不准拆分**：`context.boot_files`、`context.boot_files_as_tool` 與 `state/pinned_context.json`
+裡的檔案每輪都進 prompt，規則一旦被拆到未載入的分檔就等於消失。實例：2026-09-14 `long-term.md` 的約定被拆成六個分檔，
+其後十一個 session 中 brain 只有一次讀過 `long-term-companion.md`，同型的「你都不理我」事件累計到第九次、每次都再往分檔補一條規則。
+`curate_queue_via_worker(loaded_paths=...)` 由 `AgentCore._loaded_context_paths()` 提供這組路徑，
+命中時 worker prompt 改為只准原地濃縮（合併同主題條目、去掉案例敘述、保留所有生效規則與指標），不得建新檔、不得改 index.md；
+規則同步寫在 `memory-maintenance/references/rules.md`。
+
 執行時機：maintenance 的 `archive` 之後、`context_refresh` 之前（讓 boot file reload 吃到蒸餾結果）：
 
 **a. temp-memory 蒸餾（取代原「歸檔即消失」）**

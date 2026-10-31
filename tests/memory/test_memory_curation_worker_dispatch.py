@@ -182,3 +182,39 @@ def test_curate_queue_skips_malformed_entry(tmp_path: Path):
     curate_queue_via_worker(runner, tmp_path)
 
     assert runner.calls == []
+
+
+def test_curate_queue_loaded_file_is_condensed_in_place_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "lincy.memory.curation.worker_dispatch.tz_now",
+        lambda: datetime(2030, 1, 10, tzinfo=timezone.utc),
+    )
+    _workspace_with_queue(tmp_path, "memory/agent/long-term.md", "# rules\n")
+    runner = FakeWorkerRunner(_ok_result())
+
+    curate_queue_via_worker(
+        runner, tmp_path, loaded_paths=frozenset({"memory/agent/long-term.md"})
+    )
+
+    prompt = runner.calls[0]["prompt"]
+    assert "do NOT split it" in prompt
+    assert "Do not create new files" in prompt
+    assert "split it by topic" not in prompt
+    assert load_queue(tmp_path) == []
+
+
+def test_curate_queue_unloaded_file_may_still_be_split(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "lincy.memory.curation.worker_dispatch.tz_now",
+        lambda: datetime(2030, 1, 10, tzinfo=timezone.utc),
+    )
+    _workspace_with_queue(tmp_path, "memory/people/alice.md", "# Alice\n")
+    runner = FakeWorkerRunner(_ok_result())
+
+    curate_queue_via_worker(
+        runner, tmp_path, loaded_paths=frozenset({"memory/agent/long-term.md"})
+    )
+
+    prompt = runner.calls[0]["prompt"]
+    assert "split it by topic" in prompt
+    assert "do NOT split it" not in prompt

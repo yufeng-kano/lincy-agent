@@ -193,6 +193,7 @@ from .m0180_worker_control_and_preempt import M0180WorkerControlAndPreempt
 from .m0181_audio_agent import M0181AudioAgent
 from .m0182_native_apple_app_tools import M0182NativeAppleAppTools
 from .m0183_agent_note_turn_overlay import M0183AgentNoteTurnOverlay
+from .m0184_companion_care_loaded_files import M0184CompanionCareLoadedFiles
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -376,4 +377,5 @@ ALL_MIGRATIONS = [
     M0181AudioAgent(),
     M0182NativeAppleAppTools(),
     M0183AgentNoteTurnOverlay(),
+    M0184CompanionCareLoadedFiles(),
 ]

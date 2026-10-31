@@ -39,6 +39,12 @@ def _save_registry(agent_os_dir: Path, data: dict) -> None:
     )
 
 
+def list_pinned_paths(agent_os_dir: Path) -> list[str]:
+    """Return registered pin paths (workspace-relative), skipping malformed entries."""
+    pins = _load_registry(agent_os_dir).get("pins", [])
+    return [p["path"] for p in pins if isinstance(p, dict) and p.get("path")]
+
+
 def pin_context(
     agent_os_dir: Path,
     *,

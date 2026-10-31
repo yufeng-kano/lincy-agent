@@ -631,3 +631,77 @@ def test_heartbeat_soft_over_no_accumulated_skips_sync(monkeypatch, tmp_path):
     )
 
     assert sync_called["count"] == 0  # no sync: counter=0
+
+
+def _core_with_boot_file(tmp_path, *, soft_limit: int):
+    core = _make_core(tmp_path, provider="openrouter", preserve_turns=2, soft_limit=soft_limit)
+    boot_file = tmp_path / "memory" / "agent" / "temp-memory.md"
+    boot_file.parent.mkdir(parents=True)
+    boot_file.write_text("- [2024-01-01 09:00] morning note\n", encoding="utf-8")
+    core.builder = ContextBuilder(
+        system_prompt="sys",
+        agent_os_dir=tmp_path,
+        boot_files_as_tool=["memory/agent/temp-memory.md"],
+        preserve_turns=2,
+    )
+    core.builder.reload_boot_files()
+    _seed_turns(core.conversation, 4)
+    return core, boot_file
+
+
+def _responder_that_appends_note(boot_file, *, prompt_tokens: int):
+    def _fake_run_responder(**kwargs):
+        # The brain appends to temp-memory during the turn; the in-memory boot
+        # snapshot keeps showing the stale content until something reloads it.
+        boot_file.write_text(
+            "- [2024-01-01 09:00] morning note\n- [2024-01-01 21:00] evening note\n",
+            encoding="utf-8",
+        )
+        response = LLMResponse(
+            content="ok",
+            tool_calls=[],
+            prompt_tokens=prompt_tokens,
+            completion_tokens=80,
+            total_tokens=prompt_tokens + 80,
+            usage_available=True,
+        )
+        cb = kwargs.get("on_model_response")
+        if cb is not None:
+            cb(response)
+        return response
+
+    return _fake_run_responder
+
+
+def _boot_tool_text(core) -> str:
+    return "\n".join(content for _path, content in core.builder._tool_boot_segments)
+
+
+def test_soft_limit_compaction_reloads_boot_files(monkeypatch, tmp_path):
+    from lincy.agent import core as core_module
+
+    core, boot_file = _core_with_boot_file(tmp_path, soft_limit=128_000)
+    monkeypatch.setattr(
+        core_module, "_run_responder", _responder_that_appends_note(boot_file, prompt_tokens=140_000)
+    )
+    monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
+
+    core.run_turn("new message", output_fn=lambda _text: None, channel="cli", sender="tester")
+
+    assert core.session_mgr.rewrite_messages.called
+    assert "evening note" in _boot_tool_text(core)
+
+
+def test_below_soft_limit_keeps_boot_snapshot(monkeypatch, tmp_path):
+    from lincy.agent import core as core_module
+
+    core, boot_file = _core_with_boot_file(tmp_path, soft_limit=128_000)
+    monkeypatch.setattr(
+        core_module, "_run_responder", _responder_that_appends_note(boot_file, prompt_tokens=50_000)
+    )
+    monkeypatch.setattr(core_module, "_run_memory_archive", lambda *args, **kwargs: None)
+
+    core.run_turn("new message", output_fn=lambda _text: None, channel="cli", sender="tester")
+
+    assert not core.session_mgr.rewrite_messages.called
+    assert "evening note" not in _boot_tool_text(core)
