@@ -179,7 +179,8 @@ class TestDiscordAdapterIngest:
 
         entry = history.get_channel_entry("123")
         assert entry is not None
-        assert entry["filter"] == "all"
+        assert entry["filter"] == "mention_only"
+        assert entry["source"] == "auto_mention"
         assert entry["alias"] == "#general @ MyGuild"
         # Mention review is debounce-triggered; flush directly for deterministic test.
         adapter._flush_mention_review("123")
@@ -702,6 +703,225 @@ def _guild_event(message_id, author_id, text):
         "reply_to_author_name": None,
         "reply_to_preview_text": None,
     }
+
+
+class _FakeHistoryChannel(_FakeInboundChannel):
+    """Guild channel whose REST history() serves earlier messages."""
+
+    def __init__(self, channel_id, name, guild, *, fail=False):
+        super().__init__(channel_id, name, guild)
+        self.server_messages = []
+        self.history_calls = 0
+        self._fail = fail
+
+    async def history(self, *, before, limit):
+        self.history_calls += 1
+        if self._fail:
+            raise RuntimeError("REST down")
+        older = [m for m in self.server_messages if m.id < before.id]
+        for msg in sorted(older, key=lambda m: m.id, reverse=True)[:limit]:
+            yield msg
+
+
+def _at(minute):
+    return datetime(2026, 11, 2, 12, minute, tzinfo=timezone.utc)
+
+
+_SELF = _FakeUser(id=999, name="agent", display_name="Lincy")
+_ALICE = _FakeUser(id=1, name="alice", display_name="Alice")
+_BOB = _FakeUser(id=2, name="bob", display_name="Bob")
+_SPAMMER = _FakeUser(id=666, name="spam", display_name="Spam")
+
+
+def _creates(history, channel_id):
+    return [e["message_id"] for e in history.read_events(channel_id) if e["event_type"] == "message_create"]
+
+
+@pytest.mark.asyncio
+class TestDiscordListenFilters:
+    def _adapter(self, tmp_path, **cfg):
+        adapter, _, history = _make_adapter(tmp_path, **cfg)
+        adapter._agent = _FakeAgent()
+        adapter._loop = asyncio.get_running_loop()
+        adapter._self_user_id = "999"
+        return adapter, history
+
+    def _register(self, history, filter_mode, channel_id="123"):
+        history.upsert_channel(
+            channel_id=channel_id,
+            guild_id="7",
+            guild_name="MyGuild",
+            channel_name="general",
+            alias="#general @ MyGuild",
+            filter_mode=filter_mode,
+            source="auto_mention",
+            review_interval_seconds=0,
+        )
+
+    async def test_first_tag_listens_to_tags_only(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+        await adapter._handle_message(
+            _FakeMessage(message_id=11, channel=ch, author=_BOB, content="chatter")
+        )
+
+        assert history.get_channel_entry("123")["filter"] == "mention_only"
+        assert _creates(history, "123") == ["10"]
+        adapter._run_periodic_review_tick()
+        assert adapter._agent.enqueued == []
+
+    async def test_tag_stores_lead_up_before_the_tag(self, tmp_path):
+        adapter, history = self._adapter(tmp_path, ignore_users=["666"])
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        ch.server_messages = [
+            _FakeMessage(
+                message_id=5, channel=ch, author=_ALICE, content="look at this", created_at=_at(1),
+                attachments=[_FakeAttachment(filename="pic.png", content_type="image/png")],
+            ),
+            _FakeMessage(message_id=6, channel=ch, author=_SPAMMER, content="spam", created_at=_at(2)),
+            _FakeMessage(message_id=7, channel=ch, author=_SELF, content="my earlier note", created_at=_at(3)),
+            _FakeMessage(message_id=8, channel=ch, author=_BOB, content="the one above", created_at=_at(4)),
+        ]
+        tag = _FakeMessage(
+            message_id=10, channel=ch, author=_ALICE, content="@agent what is it?",
+            mentions=[_SELF], created_at=_at(5),
+        )
+
+        await adapter._handle_message(tag)
+
+        assert _creates(history, "123") == ["5", "7", "8", "10"]
+        picture = history.read_events("123")[0]["attachments"][0]
+        assert picture["local_path"]
+        assert picture["needs_summary"] is False
+
+        adapter._flush_mention_review("123")
+        content = adapter._agent.enqueued[0].content
+        assert content.index("look at this") < content.index("the one above") < content.index("@agent what is it?")
+        assert "spam" not in content
+
+    async def test_next_tag_does_not_store_lead_up_twice(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        first = _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent a", mentions=[_SELF], created_at=_at(2))
+        ch.server_messages = [
+            _FakeMessage(message_id=8, channel=ch, author=_BOB, content="before", created_at=_at(1)),
+            first,
+            _FakeMessage(message_id=11, channel=ch, author=_BOB, content="between", created_at=_at(3)),
+        ]
+        await adapter._handle_message(first)
+        second = _FakeMessage(message_id=12, channel=ch, author=_ALICE, content="@agent b", mentions=[_SELF], created_at=_at(4))
+        await adapter._handle_message(second)
+
+        assert _creates(history, "123") == ["8", "10", "11", "12"]
+
+    async def test_tag_in_all_channel_fetches_nothing(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        self._register(history, "all")
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+
+        assert ch.history_calls == 0
+        assert _creates(history, "123") == ["10"]
+
+    async def test_lead_up_fetch_failure_still_stores_the_tag(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"), fail=True)
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+
+        assert ch.history_calls == 1
+        assert _creates(history, "123") == ["10"]
+
+    async def test_lead_up_fetch_can_be_turned_off(self, tmp_path):
+        adapter, history = self._adapter(tmp_path, mention_context_messages=0)
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        ch.server_messages = [_FakeMessage(message_id=8, channel=ch, author=_BOB, content="before")]
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+
+        assert ch.history_calls == 0
+        assert _creates(history, "123") == ["10"]
+
+    async def test_muted_channel_ignores_tags(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        self._register(history, "mute")
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+
+        assert history.read_events("123") == []
+        assert ch.history_calls == 0
+        assert "123" not in adapter._mention_buffers
+
+    async def test_legacy_from_contacts_entry_acts_as_mention_only(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        self._register(history, "from_contacts")
+        ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
+
+        await adapter._handle_message(_FakeMessage(message_id=10, channel=ch, author=_BOB, content="chatter"))
+        await adapter._handle_message(
+            _FakeMessage(message_id=11, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+
+        assert _creates(history, "123") == ["11"]
+
+    async def test_edits_follow_the_channel_filter(self, tmp_path):
+        adapter, history = self._adapter(tmp_path, ignore_users=["666"])
+        self._register(history, "mention_only", channel_id="123")
+        self._register(history, "mute", channel_id="124")
+        self._register(history, "all", channel_id="125")
+        guild = _FakeGuild(7, "MyGuild")
+        quiet = _FakeInboundChannel(123, "general", guild)
+        muted = _FakeInboundChannel(124, "muted", guild)
+        busy = _FakeInboundChannel(125, "busy", guild)
+
+        await adapter._handle_message_edit(_FakeMessage(message_id=1, channel=quiet, author=_BOB, content="edited"))
+        await adapter._handle_message_edit(
+            _FakeMessage(message_id=2, channel=quiet, author=_ALICE, content="@agent edited", mentions=[_SELF])
+        )
+        await adapter._handle_message_edit(
+            _FakeMessage(message_id=3, channel=muted, author=_ALICE, content="@agent edited", mentions=[_SELF])
+        )
+        await adapter._handle_message_edit(_FakeMessage(message_id=4, channel=busy, author=_SPAMMER, content="edited"))
+        await adapter._handle_message_edit(_FakeMessage(message_id=5, channel=busy, author=_BOB, content="edited"))
+
+        assert [e["message_id"] for e in history.read_events("123")] == ["2"]
+        assert history.read_events("124") == []
+        assert [e["message_id"] for e in history.read_events("125")] == ["5"]
+
+    async def test_edit_outside_hard_allowlist_is_dropped(self, tmp_path):
+        adapter, history = self._adapter(tmp_path, listen_channels=[{"channel_id": "777", "filter": "all"}])
+        adapter._hard_allowlist_filters = {"777": "all"}
+        self._register(history, "all", channel_id="123")
+        ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
+
+        await adapter._handle_message_edit(_FakeMessage(message_id=1, channel=ch, author=_BOB, content="edited"))
+
+        assert history.read_events("123") == []
+
+    async def test_edit_never_registers_a_channel(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
+
+        await adapter._handle_message_edit(
+            _FakeMessage(message_id=1, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+
+        assert history.get_channel_entry("123") is None
+        assert history.read_events("123") == []
 
 
 @pytest.mark.asyncio

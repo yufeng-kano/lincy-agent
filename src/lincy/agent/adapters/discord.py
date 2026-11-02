@@ -115,6 +115,18 @@ def _message_mentions_user(message: Any, user_id: str | None) -> bool:
     return False
 
 
+def _filter_allows(filter_mode: str, mentions_self: bool) -> bool:
+    """Channel filter shared by new messages and edits.
+
+    Unknown values (the old from_contacts) fall through to mention_only.
+    """
+    if filter_mode == "mute":
+        return False
+    if mentions_self:
+        return True
+    return filter_mode == "all"
+
+
 def _safe_text(value: Any) -> str:
     if value is None:
         return ""
@@ -673,6 +685,11 @@ class DiscordAdapter:
         else:
             alias = snapshot["channel_alias"]
             self._contact_map.update("discord", channel_id, alias)
+            # A channel that does not store everything gets the lead-up to a
+            # tag, stored before the tag so history stays in order.
+            entry = self._history.get_channel_entry(channel_id) or {}
+            if mentions_self and entry.get("filter") != "all":
+                await self._store_mention_context(message, channel_id)
 
         event = self._event_from_snapshot(snapshot)
         seq = self._history.append_message_create(channel_id=channel_id, event=event)
@@ -706,16 +723,23 @@ class DiscordAdapter:
             return
         if self._self_user_id and author_id == self._self_user_id:
             return
+        if author_id in set(self._config.ignore_users):
+            return
         channel_id = _channel_id(channel)
         if not channel_id:
             return
+        mentions_self = _message_mentions_user(message, self._self_user_id)
         if _is_dm_channel(channel):
             if not self._config.listen_dms:
                 return
         else:
-            if self._history.get_channel_entry(channel_id) is None:
+            # Same gate as new messages, so an edit cannot slip past mute,
+            # mention_only or the hard allowlist. Edits never register a channel.
+            if self._hard_allowlist_filters and channel_id not in self._hard_allowlist_filters:
                 return
-        mentions_self = _message_mentions_user(message, self._self_user_id)
+            entry = self._history.get_channel_entry(channel_id)
+            if entry is None or not _filter_allows(entry.get("filter", "mention_only"), mentions_self):
+                return
         snapshot = await self._snapshot_message(message, mentions_self=mentions_self)
         if snapshot is None:
             return
@@ -787,29 +811,62 @@ class DiscordAdapter:
                 guild_name=_guild_name(channel),
                 channel_name=_channel_name(channel),
                 alias=alias,
-                filter_mode="all",
+                filter_mode="mention_only",
                 source="auto_mention",
                 review_interval_seconds=self._config.guild_review_interval_seconds,
             )
 
-        filter_mode = entry.get("filter", "mention_only")
-        if filter_mode == "mute":
-            return False
-        if mentions_self:
-            return True
-        if filter_mode == "all":
-            return True
-        if filter_mode == "mention_only":
-            return False
-        if filter_mode == "from_contacts":
-            author = getattr(message, "author", None)
-            author_id = str(getattr(author, "id", "")) if author is not None else ""
-            return bool(author_id and self._contact_map.resolve("discord", author_id))
-        return False
+        return _filter_allows(entry.get("filter", "mention_only"), mentions_self)
+
+    async def _store_mention_context(self, message: Any, channel_id: str) -> None:
+        """Store up to mention_context_messages messages before a tag.
+
+        Attachments are downloaded but get no auto-read hint: whether the
+        lead-up is worth looking at is the agent's call.
+        """
+        limit = self._config.mention_context_messages
+        history_fn = getattr(getattr(message, "channel", None), "history", None)
+        if limit <= 0 or not callable(history_fn):
+            return
+        fetched: list[Any] = []
+        try:
+            async for ctx in history_fn(before=message, limit=limit):
+                fetched.append(ctx)
+        except Exception:
+            logger.debug("Discord mention context fetch failed: ch=%s", channel_id, exc_info=True)
+            return
+        stored_ids = {
+            str(e.get("message_id"))
+            for e in self._history.read_events(channel_id)
+            if e.get("event_type") == "message_create"
+        }
+        ignored = set(self._config.ignore_users)
+        for ctx in sorted(fetched, key=lambda m: int(getattr(m, "id", 0))):
+            ctx_author = getattr(ctx, "author", None)
+            if ctx_author is None or str(getattr(ctx_author, "id", "")) in ignored:
+                continue
+            if str(getattr(ctx, "id", "")) in stored_ids:
+                continue
+            snapshot = await self._snapshot_message(
+                ctx,
+                mentions_self=_message_mentions_user(ctx, self._self_user_id),
+                auto_read=False,
+            )
+            if snapshot is None:
+                continue
+            self._history.append_message_create(
+                channel_id=channel_id, event=self._event_from_snapshot(snapshot),
+            )
 
     # -- Snapshot / normalization ------------------------------------
 
-    async def _snapshot_message(self, message: Any, *, mentions_self: bool) -> dict[str, Any] | None:
+    async def _snapshot_message(
+        self,
+        message: Any,
+        *,
+        mentions_self: bool,
+        auto_read: bool = True,
+    ) -> dict[str, Any] | None:
         channel = getattr(message, "channel", None)
         author = getattr(message, "author", None)
         if channel is None or author is None:
@@ -849,6 +906,7 @@ class DiscordAdapter:
             message_id=msg_id,
             attachments=getattr(message, "attachments", None) or [],
             is_dm=is_dm,
+            auto_read=auto_read,
         )
 
         channel_alias = _build_channel_alias(channel)
@@ -982,6 +1040,7 @@ class DiscordAdapter:
         message_id: str,
         attachments: list[Any],
         is_dm: bool,
+        auto_read: bool = True,
     ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         max_download_bytes = self._config.auto_download_attachment_max_mb * 1024 * 1024
@@ -1014,7 +1073,8 @@ class DiscordAdapter:
             }
 
             should_auto_read = (
-                self._config.auto_read_images
+                auto_read
+                and self._config.auto_read_images
                 and item["is_image"]
                 and (
                     (is_dm and self._config.auto_read_images_in_dm)
@@ -1022,7 +1082,8 @@ class DiscordAdapter:
                 )
             )
             should_auto_listen = (
-                self._config.auto_read_audio
+                auto_read
+                and self._config.auto_read_audio
                 and item["is_audio"]
                 and (
                     (is_dm and self._config.auto_read_audio_in_dm)

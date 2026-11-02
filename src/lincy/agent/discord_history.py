@@ -162,6 +162,20 @@ class DiscordHistoryStore:
             self._ensure_cursor(channel_id)
             return dict(entry)
 
+    def set_channel_filter(self, channel_id: str, filter_mode: str) -> dict[str, Any] | None:
+        """Change a registered channel's filter, keeping every other field.
+
+        Returns the updated entry, or None when the channel is not registered.
+        """
+        with self._lock:
+            entry = self._registry.get(channel_id)
+            if entry is None:
+                return None
+            entry["filter"] = filter_mode
+            entry["updated_at"] = _utc_now().isoformat()
+            self._persist_registry()
+            return dict(entry)
+
     def update_channel_last_seen(
         self,
         channel_id: str,

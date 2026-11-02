@@ -1912,3 +1912,26 @@ class TestM0183AgentNoteTurnOverlay:
     def test_keeps_custom_cap(self, tmp_path: Path):
         config = self._run(tmp_path, 30)
         assert config["tools"]["agent_note"]["max_notes"] == 30
+
+
+class TestM0185DiscordListenTool:
+    """Tests for the discord_listen prompt migration."""
+
+    def test_copies_brain_prompt_and_discord_skill(self, tmp_path: Path):
+        kernel_dir = tmp_path / "kernel"
+        kernel_dir.mkdir()
+        templates = tmp_path / "templates"
+        for rel, text in (
+            ("agents/brain/prompts/system.md", "brain prompt"),
+            ("builtin-skills/discord-messaging/SKILL.md", "discord skill"),
+        ):
+            path = templates / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+        from lincy.workspace.migrations.m0185_discord_listen_tool import M0185DiscordListenTool
+
+        M0185DiscordListenTool().upgrade(kernel_dir, templates)
+
+        assert (kernel_dir / "agents/brain/prompts/system.md").read_text() == "brain prompt"
+        assert (kernel_dir / "builtin-skills/discord-messaging/SKILL.md").read_text() == "discord skill"

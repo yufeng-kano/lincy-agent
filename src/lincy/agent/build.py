@@ -961,6 +961,21 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             GET_CHANNEL_HISTORY_DEFINITION,
         )
 
+        from ..tools.builtin.discord_listen import (
+            DISCORD_LISTEN_DEFINITION,
+            create_discord_listen,
+        )
+
+        registry.register(
+            "discord_listen",
+            create_discord_listen(
+                discord_history_store,
+                contact_map,
+                turn_context,
+            ),
+            DISCORD_LISTEN_DEFINITION,
+        )
+
     # === gui_task tool (synchronous; serialized by gui_lock) ===
     if gui_manager_instance is not None:
         from ..gui.tool_adapter import GUI_TASK_DEFINITION, create_gui_task

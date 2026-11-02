@@ -53,7 +53,7 @@ def _registered_entries(history_store: "DiscordHistoryStore") -> list[dict]:
     return [e for e in history_store.list_registered_channels() if isinstance(e, dict)]
 
 
-def _resolve_contact_channel_id(
+def resolve_contact_channel_id(
     history_store: "DiscordHistoryStore",
     contact_map: "ContactMap",
     to: str,
@@ -90,7 +90,7 @@ def _resolve_contact_channel_id(
     return None
 
 
-def _known_aliases(history_store: "DiscordHistoryStore", cap: int = 20) -> str:
+def known_aliases(history_store: "DiscordHistoryStore", cap: int = 20) -> str:
     aliases = sorted(
         {str(e.get("alias") or "").strip() for e in _registered_entries(history_store)}
         - {""}
@@ -120,11 +120,11 @@ def create_get_channel_history(
         target = to
         resolved_channel_id = channel_id
         if resolved_channel_id is None and to:
-            resolved_channel_id = _resolve_contact_channel_id(
+            resolved_channel_id = resolve_contact_channel_id(
                 history_store, contact_map, to
             )
             if resolved_channel_id is None:
-                known = _known_aliases(history_store)
+                known = known_aliases(history_store)
                 hint = f" Known targets: {known}." if known else ""
                 return (
                     f"Error: no discord channel/contact mapping found for '{to}'."
@@ -165,7 +165,7 @@ def create_get_channel_history(
             history_store.get_channel_entry(resolved_channel_id) is None
             and not history_store.read_events(resolved_channel_id)
         ):
-            known = _known_aliases(history_store)
+            known = known_aliases(history_store)
             hint = f" Known targets: {known}." if known else ""
             return (
                 f"Error: no discord history recorded for channel id "

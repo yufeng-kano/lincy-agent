@@ -107,6 +107,7 @@ channels:
     listen_channels: [] # optional hard allowlist / bootstrap seeds
     ignore_users: []
     guild_review_interval_seconds: 60
+    mention_context_messages: 20 # messages fetched before each tag in a mention_only channel; 0 = off
     presence_mode: auto # off | auto | keep_online (auto only bumps online)
     presence_refresh_seconds: 90 # refresh Discord presence periodically
     presence_idle_after_seconds: 300 # reserved (auto currently does not force idle)
