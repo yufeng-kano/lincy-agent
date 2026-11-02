@@ -1,7 +1,7 @@
 """Discord runtime history/registry store.
 
 Stores Discord channel policies, cursors, and append-only message history under:
-    .agent/state/discord/
+    <agent_os_dir>/state/discord/
 """
 
 from __future__ import annotations
@@ -189,13 +189,17 @@ class DiscordHistoryStore:
         *,
         seq: int,
         immediate: bool = False,
+        record_review_time: bool = True,
     ) -> None:
         with self._lock:
             cursor = self._ensure_cursor(channel_id)
             cursor["last_reviewed_seq"] = max(int(cursor["last_reviewed_seq"]), seq)
             if immediate:
                 cursor["last_immediate_seq"] = max(int(cursor["last_immediate_seq"]), seq)
-            cursor["last_review_at"] = _utc_now().isoformat()
+            # last_review_at throttles periodic reviews, so only a review that
+            # actually reached the agent should move it.
+            if record_review_time:
+                cursor["last_review_at"] = _utc_now().isoformat()
             self._persist_cursors()
 
     def _history_path(self, channel_id: str) -> Path:
@@ -214,10 +218,12 @@ class DiscordHistoryStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
-            # Update cursor last seen fields if present
+            # Update cursor last seen fields if present. An edit points at an
+            # older message, so it must not move the backfill cursor backwards;
+            # otherwise the next startup backfill replays already-stored messages.
             msg_id = payload.get("message_id")
             evt_time = payload.get("event_time")
-            if msg_id is not None:
+            if msg_id is not None and payload.get("event_type") != "message_edit":
                 cursor["last_seen_message_id"] = msg_id
             if evt_time is not None:
                 cursor["last_seen_at"] = evt_time

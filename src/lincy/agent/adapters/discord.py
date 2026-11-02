@@ -1344,6 +1344,10 @@ class DiscordAdapter:
             except (TypeError, ValueError):
                 interval_i = self._config.guild_review_interval_seconds
             cursor = self._history.get_cursor(channel_id)
+            # This tick runs every second; check the cursor before reading the
+            # whole history file so idle channels cost nothing.
+            if int(cursor.get("next_event_seq", 1)) - 1 <= int(cursor.get("last_reviewed_seq", 0)):
+                continue
             last_review_at = _parse_iso(cursor.get("last_review_at"))
             if last_review_at is not None and (now - last_review_at).total_seconds() < interval_i:
                 continue
@@ -1356,6 +1360,17 @@ class DiscordAdapter:
         after_seq = int(cursor.get("last_reviewed_seq", 0))
         events = self._history.get_events_after_seq(channel_id, after_seq)
         if not events:
+            return
+        # Our own sends are stored as context, but a batch of nothing else has
+        # nothing to review. Skip it without touching last_review_at, so the
+        # next message from someone else is not held back by the throttle.
+        if self._self_user_id and all(
+            str(e.get("author_id") or "") == self._self_user_id for e in events
+        ):
+            max_seq = max(int(e.get("seq", 0)) for e in events)
+            self._history.mark_reviewed(
+                channel_id, seq=max_seq, immediate=immediate, record_review_time=False,
+            )
             return
         folded = self._history.fold_latest_messages(events)
         if not folded:

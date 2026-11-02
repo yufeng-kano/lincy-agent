@@ -519,6 +519,122 @@ class TestDiscordAdapterIngest:
         assert len(adapter._agent.enqueued) == 1
         assert adapter._agent.enqueued[0].metadata["source"] == "guild_review"
 
+    async def test_periodic_review_skips_batch_of_own_messages(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        adapter._self_user_id = "999"
+        _register_all_channel(history, review_interval_seconds=60)
+        history.append_message_create(channel_id="123", event=_guild_event("1", "999", "my reply"))
+
+        adapter._run_periodic_review_tick()
+
+        assert adapter._agent.enqueued == []
+        cursor = history.get_cursor("123")
+        assert cursor["last_reviewed_seq"] == 1
+        # Skipping must not start the 60s throttle, or the next human
+        # message would wait a full interval for nothing.
+        assert cursor["last_review_at"] is None
+
+        history.append_message_create(channel_id="123", event=_guild_event("2", "u1", "nice"))
+        adapter._run_periodic_review_tick()
+
+        assert len(adapter._agent.enqueued) == 1
+        assert "nice" in adapter._agent.enqueued[0].content
+        assert "my reply" not in adapter._agent.enqueued[0].content
+
+    async def test_periodic_review_keeps_own_messages_as_context(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        adapter._self_user_id = "999"
+        _register_all_channel(history, review_interval_seconds=60)
+        history.append_message_create(channel_id="123", event=_guild_event("1", "999", "my reply"))
+        history.append_message_create(channel_id="123", event=_guild_event("2", "u1", "nice"))
+
+        adapter._run_periodic_review_tick()
+
+        assert len(adapter._agent.enqueued) == 1
+        content = adapter._agent.enqueued[0].content
+        assert "my reply" in content and "nice" in content
+
+    async def test_periodic_review_does_not_read_history_when_idle(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        adapter._self_user_id = "999"
+        _register_all_channel(history, review_interval_seconds=0)
+        history.append_message_create(channel_id="123", event=_guild_event("1", "u1", "hello"))
+        adapter._run_periodic_review_tick()
+        assert len(adapter._agent.enqueued) == 1
+
+        with patch.object(history, "read_events", wraps=history.read_events) as read_events:
+            adapter._run_periodic_review_tick()
+            adapter._run_periodic_review_tick()
+
+        read_events.assert_not_called()
+        assert len(adapter._agent.enqueued) == 1
+
+    async def test_backfill_after_edit_does_not_replay_stored_messages(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        adapter._self_user_id = "999"
+        _register_all_channel(history, review_interval_seconds=60)
+        history.append_message_create(channel_id="123", event=_guild_event("100", "u1", "first"))
+        history.append_message_create(channel_id="123", event=_guild_event("200", "u1", "second"))
+        history.append_message_edit(channel_id="123", event=_guild_event("100", "u1", "first, edited"))
+
+        guild = _FakeGuild(7, "MyGuild")
+        channel = _FakeInboundChannel(123, "general", guild)
+        author = _FakeUser(id=1, name="u1")
+        server_messages = [
+            _FakeMessage(message_id=100, channel=channel, author=author, content="first, edited"),
+            _FakeMessage(message_id=200, channel=channel, author=author, content="second"),
+        ]
+
+        async def history_fn(*, after, limit):
+            for msg in server_messages:
+                if msg.id > after.id:
+                    yield msg
+
+        channel.history = history_fn
+        adapter._client = SimpleNamespace(get_channel=lambda cid: channel if cid == 123 else None)
+
+        await adapter._backfill_missed_messages()
+
+        creates = [e for e in history.read_events("123") if e["event_type"] == "message_create"]
+        assert [e["message_id"] for e in creates] == ["100", "200"]
+
+
+def _register_all_channel(history, *, review_interval_seconds):
+    history.upsert_channel(
+        channel_id="123",
+        guild_id="7",
+        guild_name="MyGuild",
+        channel_name="general",
+        alias="#general @ MyGuild",
+        filter_mode="all",
+        source="auto_mention",
+        review_interval_seconds=review_interval_seconds,
+    )
+
+
+def _guild_event(message_id, author_id, text):
+    return {
+        "event_time": "2026-02-24T10:00:00+00:00",
+        "message_id": message_id,
+        "message_time": "2026-02-24T10:00:00+00:00",
+        "author_id": author_id,
+        "author_name": author_id,
+        "author_display_name": author_id,
+        "raw_content": text,
+        "embeds": [],
+        "stickers": [],
+        "attachments": [],
+        "normalized_text": text,
+        "reply_to_message_id": None,
+        "reply_to_author_id": None,
+        "reply_to_author_name": None,
+        "reply_to_preview_text": None,
+    }
+
 
 @pytest.mark.asyncio
 class TestDiscordAdapterSend:

@@ -97,6 +97,24 @@ class TestDiscordHistoryStore:
         assert folded[0]["content"] == "new"
         assert folded[0]["edited"] is True
 
+    def test_edit_of_older_message_keeps_backfill_cursor(self, tmp_path):
+        store = DiscordHistoryStore(tmp_path)
+        base = {
+            "event_time": "2026-02-24T10:00:00+00:00",
+            "message_time": "2026-02-24T10:00:00+00:00",
+            "author_id": "u1",
+            "raw_content": "x",
+            "normalized_text": "x",
+        }
+        store.append_message_create(channel_id="c1", event={**base, "message_id": "100"})
+        store.append_message_create(channel_id="c1", event={**base, "message_id": "200"})
+
+        store.append_message_edit(channel_id="c1", event={**base, "message_id": "100"})
+        assert store.get_cursor("c1")["last_seen_message_id"] == "200"
+
+        store.append_message_create(channel_id="c1", event={**base, "message_id": "300"})
+        assert store.get_cursor("c1")["last_seen_message_id"] == "300"
+
     def test_image_summary_cache_put_get(self, tmp_path):
         store = DiscordHistoryStore(tmp_path)
         store.put_image_summary("abc", {"summary": "cat", "tool": "read_image_by_subagent"})
