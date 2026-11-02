@@ -44,6 +44,22 @@ def _safe_name(name: str) -> str:
     return cleaned or "file"
 
 
+def _is_later_message(candidate: Any, current: Any) -> bool:
+    """Discord message ids are snowflakes, so a larger id is a later message.
+
+    The backfill cursor must only move forward: edits point at older messages,
+    and concurrent handlers (attachment downloads) can finish out of order.
+    """
+    try:
+        current_id = int(current)
+    except (TypeError, ValueError):
+        return True  # no usable cursor yet
+    try:
+        return int(candidate) > current_id
+    except (TypeError, ValueError):
+        return False
+
+
 class DiscordHistoryStore:
     """Persistent runtime store for Discord channel state and history."""
 
@@ -161,7 +177,7 @@ class DiscordHistoryStore:
                 self._persist_registry()
             cursor = self._ensure_cursor(channel_id)
             cursor["last_seen_at"] = now
-            if message_id is not None:
+            if message_id is not None and _is_later_message(message_id, cursor.get("last_seen_message_id")):
                 cursor["last_seen_message_id"] = message_id
             self._persist_cursors()
 
@@ -218,12 +234,10 @@ class DiscordHistoryStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
-            # Update cursor last seen fields if present. An edit points at an
-            # older message, so it must not move the backfill cursor backwards;
-            # otherwise the next startup backfill replays already-stored messages.
+            # Update cursor last seen fields if present
             msg_id = payload.get("message_id")
             evt_time = payload.get("event_time")
-            if msg_id is not None and payload.get("event_type") != "message_edit":
+            if msg_id is not None and _is_later_message(msg_id, cursor.get("last_seen_message_id")):
                 cursor["last_seen_message_id"] = msg_id
             if evt_time is not None:
                 cursor["last_seen_at"] = evt_time

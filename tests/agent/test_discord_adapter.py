@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -601,6 +602,73 @@ class TestDiscordAdapterIngest:
 
         creates = [e for e in history.read_events("123") if e["event_type"] == "message_create"]
         assert [e["message_id"] for e in creates] == ["100", "200"]
+
+    async def test_backfill_skips_stored_messages_behind_an_old_cursor(self, tmp_path):
+        # cursors.json written by older code can point behind stored messages.
+        _, _, history = _make_adapter(tmp_path)
+        _register_all_channel(history, review_interval_seconds=60)
+        history.append_message_create(channel_id="123", event=_guild_event("100", "u1", "first"))
+        history.append_message_create(channel_id="123", event=_guild_event("200", "u1", "second"))
+        cursors_path = history.base_dir / "cursors.json"
+        cursors = json.loads(cursors_path.read_text(encoding="utf-8"))
+        cursors["123"]["last_seen_message_id"] = "100"
+        cursors_path.write_text(json.dumps(cursors), encoding="utf-8")
+
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        adapter._self_user_id = "999"
+        guild = _FakeGuild(7, "MyGuild")
+        channel = _FakeInboundChannel(123, "general", guild)
+        author = _FakeUser(id=1, name="u1")
+        server_messages = [
+            _FakeMessage(message_id=200, channel=channel, author=author, content="second"),
+            _FakeMessage(message_id=300, channel=channel, author=author, content="third"),
+        ]
+
+        async def history_fn(*, after, limit):
+            for msg in server_messages:
+                if msg.id > after.id:
+                    yield msg
+
+        channel.history = history_fn
+        adapter._client = SimpleNamespace(get_channel=lambda cid: channel if cid == 123 else None)
+
+        await adapter._backfill_missed_messages()
+
+        creates = [e for e in history.read_events("123") if e["event_type"] == "message_create"]
+        assert [e["message_id"] for e in creates] == ["100", "200", "300"]
+
+    async def test_periodic_review_waits_for_own_user_id(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        _register_all_channel(history, review_interval_seconds=60)
+        history.append_message_create(channel_id="123", event=_guild_event("1", "999", "my reply"))
+
+        adapter._run_periodic_review_tick()
+        assert adapter._agent.enqueued == []
+        assert history.get_cursor("123")["last_reviewed_seq"] == 0
+
+        adapter._self_user_id = "999"
+        adapter._run_periodic_review_tick()
+        assert adapter._agent.enqueued == []
+        assert history.get_cursor("123")["last_reviewed_seq"] == 1
+
+    async def test_periodic_review_moves_past_lost_history_line(self, tmp_path):
+        adapter, _, history = _make_adapter(tmp_path)
+        adapter._agent = _FakeAgent()
+        adapter._self_user_id = "999"
+        _register_all_channel(history, review_interval_seconds=0)
+        history.append_message_create(channel_id="123", event=_guild_event("1", "u1", "hello"))
+        # A partial write leaves a line that cannot be parsed.
+        (history.history_dir / "123.jsonl").write_text('{"seq": 1, "message_id": "1"\n', encoding="utf-8")
+
+        adapter._run_periodic_review_tick()
+        assert adapter._agent.enqueued == []
+        assert history.get_cursor("123")["last_reviewed_seq"] == 1
+
+        with patch.object(history, "read_events", wraps=history.read_events) as read_events:
+            adapter._run_periodic_review_tick()
+        read_events.assert_not_called()
 
 
 def _register_all_channel(history, *, review_interval_seconds):
