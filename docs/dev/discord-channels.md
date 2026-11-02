@@ -40,6 +40,7 @@ Thread 與論壇貼文有自己的 channel id，各自登記，不繼承上層�
 
 - 已存過的 message id 跳過；`ignore_users` 的訊息跳過；agent 自己的舊訊息保留，當作上下文。
 - 正在處理中的 message id（`_handling_ids`，例如還在下載附件）也跳過，由它自己的 handler 存。`_handle_message` 同一個 id 同時只跑一次，gateway、backfill 與補抓前文撞到同一則時不會重複存。
+- 補抓前文挑好要存的訊息後，先把它們的 id 加進 `_handling_ids` 再開始下載，存完才移除。挑選與保留之間沒有 await，所以兩個 tag 同時補抓同一段前文時，每則只存一次。
 - 附件照常下載（有 `local_path`），但不加自動判讀提示，要不要看由 brain 決定。
 - 抓取失敗只記 debug log，tag 照常送出。
 - `all` 頻道不補抓，因為前文本來就存著。
@@ -49,6 +50,7 @@ Thread 與論壇貼文有自己的 channel id，各自登記，不繼承上層�
 ## 巡看細節
 
 - 定時巡看每秒 tick，只看 `filter: all` 的 guild 頻道；cursor 顯示沒有新事件時不讀 history 檔。
+- 硬白名單外的頻道不巡看。白名單可能在重啟時縮小，留在 history 裡沒送的訊息就不再送出。
 - 等 `on_ready` 拿到 agent 自己的 user id 後才開始巡看。
 - 一批裡只有 agent 自己送出的訊息時，標記已看、不送 brain，也不重設巡看間隔。
 - 巡看與被 tag 的批次都帶 `evict_if_noop`：brain 沉默的那一輪會從對話裡移除。成功的 `discord_listen set` 算有效果（`turn_effects.had_listen_mutation`），那一輪會保留，agent 之後記得自己改過。
@@ -65,7 +67,7 @@ Thread 與論壇貼文有自己的 channel id，各自登記，不繼承上層�
 啟動時對每個已登記頻道，從 `last_seen_message_id` 之後抓最多 100 則，再走一次 `_handle_message`。`last_seen_message_id` 只往較新的 snowflake 移動；已存成 `message_create` 的 id 一律跳過。
 
 - 被過濾掉的訊息（`mute`、`mention_only` 裡沒 tag 的）不存，但仍用 `advance_seen_cursor()` 推進 `last_seen_message_id`。否則重啟時會重抓舊閒聊，100 則的窗口也可能擠掉較新的 tag。
-- backfill 之前先跑 `_catchup_unreviewed_mentions()`：`mention_only` 頻道裡有已存、但還沒送 brain 的 tag（例如 debounce 期間程式中斷），立即送一批。`all` 頻道交給定時巡看，`mute` 不送。
+- backfill 之前先跑 `_catchup_unreviewed_mentions()`：`mention_only` 頻道裡有已存、但還沒送 brain 的 tag（例如 debounce 期間程式中斷），立即送一批。`all` 頻道交給定時巡看，`mute` 與硬白名單外的頻道不送。
 
 ## `discord_listen` 工具
 

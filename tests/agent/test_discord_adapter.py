@@ -962,6 +962,34 @@ class TestDiscordListenFilters:
         assert ch.history_calls == 1
         assert _creates(history, "123") == ["10"]
 
+    async def test_concurrent_lead_up_fetches_store_each_message_once(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        before = _FakeMessage(message_id=8, channel=ch, author=_BOB, content="before", created_at=_at(1))
+        first = _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent a", mentions=[_SELF], created_at=_at(2))
+        second = _FakeMessage(message_id=11, channel=ch, author=_ALICE, content="@agent b", mentions=[_SELF], created_at=_at(3))
+        ch.server_messages = [before, first]
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = adapter._snapshot_message
+
+        async def slow_snapshot(message, **kwargs):
+            # Hold the first fetch on message 8, as a slow attachment would;
+            # any later snapshot of it goes straight through.
+            if str(message.id) == "8" and not entered.is_set():
+                entered.set()
+                await release.wait()
+            return await original(message, **kwargs)
+
+        adapter._snapshot_message = slow_snapshot
+        first_task = asyncio.create_task(adapter._handle_message(first))
+        await entered.wait()
+        await adapter._handle_message(second)
+        release.set()
+        await first_task
+
+        assert sorted(_creates(history, "123")) == ["10", "11", "8"]
+        assert "8" not in adapter._handling_ids
+
     async def test_startup_catchup_reviews_an_unflushed_tag(self, tmp_path):
         adapter, history = self._adapter(tmp_path)
         ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
@@ -991,6 +1019,21 @@ class TestDiscordListenFilters:
         )
 
         adapter._catchup_unreviewed_mentions()
+
+        assert adapter._agent.enqueued == []
+
+    async def test_stored_history_of_a_channel_now_outside_the_allowlist_is_not_replayed(self, tmp_path):
+        # listen_channels can shrink across a restart; leftovers stay unsent.
+        adapter, history = self._adapter(tmp_path)
+        self._register(history, "mention_only", channel_id="123")
+        self._register(history, "all", channel_id="125")
+        base = {"event_time": "2026-11-02T12:00:00+00:00", "author_id": "1", "mentions_self": True}
+        history.append_message_create(channel_id="123", event={**base, "message_id": "1"})
+        history.append_message_create(channel_id="125", event={**base, "message_id": "2"})
+        adapter._hard_allowlist_filters = {"777": "all"}
+
+        adapter._catchup_unreviewed_mentions()
+        adapter._run_periodic_review_tick()
 
         assert adapter._agent.enqueued == []
 

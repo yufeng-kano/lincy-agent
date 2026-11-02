@@ -753,7 +753,7 @@ class DiscordAdapter:
         else:
             # Same gate as new messages, so an edit cannot slip past mute,
             # mention_only or the hard allowlist. Edits never register a channel.
-            if self._hard_allowlist_filters and channel_id not in self._hard_allowlist_filters:
+            if self._blocked_by_allowlist(channel_id):
                 return
             entry = self._history.get_channel_entry(channel_id)
             if entry is None or not _filter_allows(entry.get("filter", "mention_only"), mentions_self):
@@ -794,6 +794,14 @@ class DiscordAdapter:
 
     # -- Filtering / registration ------------------------------------
 
+    def _blocked_by_allowlist(self, channel_id: str) -> bool:
+        """listen_channels, once non-empty, is a hard allowlist for guild channels.
+
+        Checked on ingestion and again before replaying stored history, since
+        the list can shrink across a restart.
+        """
+        return bool(self._hard_allowlist_filters) and channel_id not in self._hard_allowlist_filters
+
     def _guild_ingestion_allowed(self, message: Any, mentions_self: bool) -> bool:
         channel = getattr(message, "channel", None)
         if channel is None:
@@ -802,7 +810,7 @@ class DiscordAdapter:
         if not channel_id:
             return False
 
-        if self._hard_allowlist_filters and channel_id not in self._hard_allowlist_filters:
+        if self._blocked_by_allowlist(channel_id):
             return False
 
         entry = self._history.get_channel_entry(channel_id)
@@ -859,25 +867,35 @@ class DiscordAdapter:
             if e.get("event_type") == "message_create"
         }
         ignored = set(self._config.ignore_users)
+        # Pick and reserve ids with no await in between. A message already in
+        # _handling_ids is stored by its own handler (or another tag's fetch);
+        # reserving ours keeps a concurrent fetch or the gateway from storing
+        # the same message while our snapshots await downloads.
+        picked: list[Any] = []
         for ctx in sorted(fetched, key=lambda m: int(getattr(m, "id", 0))):
             ctx_author = getattr(ctx, "author", None)
             if ctx_author is None or str(getattr(ctx_author, "id", "")) in ignored:
                 continue
             ctx_id = str(getattr(ctx, "id", ""))
-            # A message still being handled is stored by its own handler,
-            # with auto-read hints; storing it here too would duplicate it.
             if ctx_id in stored_ids or ctx_id in self._handling_ids:
                 continue
-            snapshot = await self._snapshot_message(
-                ctx,
-                mentions_self=_message_mentions_user(ctx, self._self_user_id),
-                auto_read=False,
-            )
-            if snapshot is None:
-                continue
-            self._history.append_message_create(
-                channel_id=channel_id, event=self._event_from_snapshot(snapshot),
-            )
+            picked.append(ctx)
+        reserved = {str(getattr(ctx, "id", "")) for ctx in picked}
+        self._handling_ids.update(reserved)
+        try:
+            for ctx in picked:
+                snapshot = await self._snapshot_message(
+                    ctx,
+                    mentions_self=_message_mentions_user(ctx, self._self_user_id),
+                    auto_read=False,
+                )
+                if snapshot is None:
+                    continue
+                self._history.append_message_create(
+                    channel_id=channel_id, event=self._event_from_snapshot(snapshot),
+                )
+        finally:
+            self._handling_ids.difference_update(reserved)
 
     # -- Snapshot / normalization ------------------------------------
 
@@ -1422,7 +1440,7 @@ class DiscordAdapter:
             if entry.get("filter") != "all":
                 continue
             channel_id = str(entry.get("channel_id") or "")
-            if not channel_id:
+            if not channel_id or self._blocked_by_allowlist(channel_id):
                 continue
             interval = entry.get("review_interval_seconds")
             try:
@@ -1685,7 +1703,7 @@ class DiscordAdapter:
             if not entry.get("guild_id") or entry.get("filter") in ("all", "mute"):
                 continue
             channel_id = str(entry.get("channel_id") or "")
-            if not channel_id:
+            if not channel_id or self._blocked_by_allowlist(channel_id):
                 continue
             cursor = self._history.get_cursor(channel_id)
             last_reviewed = int(cursor.get("last_reviewed_seq", 0))
