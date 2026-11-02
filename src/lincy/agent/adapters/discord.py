@@ -1418,6 +1418,16 @@ class DiscordAdapter:
         buf = self._mention_buffers.pop(channel_id, None)
         if buf is None:
             return
+        entry = self._history.get_channel_entry(channel_id) or {}
+        if entry.get("filter") == "mute":
+            # Muted while the tag waited for its debounce: mute means nothing
+            # from here reaches the brain, so drop the batch instead of
+            # holding it for a later unmute.
+            last_seq = int(self._history.get_cursor(channel_id).get("next_event_seq", 1)) - 1
+            self._history.mark_reviewed(
+                channel_id, seq=last_seq, immediate=True, record_review_time=False,
+            )
+            return
         self._enqueue_review_from_history(channel_id, source="guild_mention_review", immediate=True)
 
     async def _periodic_review_loop(self) -> None:

@@ -990,6 +990,25 @@ class TestDiscordListenFilters:
         assert sorted(_creates(history, "123")) == ["10", "11", "8"]
         assert "8" not in adapter._handling_ids
 
+    async def test_mute_drops_a_tag_still_waiting_for_review(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF])
+        )
+        assert "123" in adapter._mention_buffers
+
+        history.set_channel_filter("123", "mute")
+        adapter._flush_mention_review("123")
+
+        assert adapter._agent.enqueued == []
+        cursor = history.get_cursor("123")
+        assert cursor["last_reviewed_seq"] == cursor["next_event_seq"] - 1
+        # Unmuting later does not resend the dropped tag.
+        history.set_channel_filter("123", "mention_only")
+        adapter._catchup_unreviewed_mentions()
+        assert adapter._agent.enqueued == []
+
     async def test_startup_catchup_reviews_an_unflushed_tag(self, tmp_path):
         adapter, history = self._adapter(tmp_path)
         ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))

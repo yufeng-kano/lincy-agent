@@ -20,7 +20,7 @@ store 只在啟動時讀一次檔，之後每個事件都用記憶體內容覆�
 |----------|--------|----------------|
 | `all` | 這個頻道每則訊息 | 定時巡看：有新訊息時，最多每 `review_interval_seconds` 整批送一次。每批都是一次 brain 呼叫，沉默也算 |
 | `mention_only` | 只有 tag agent 的訊息，加上每次被 tag 時補抓的前文 | 被 tag 時，debounce 後送一批 |
-| `mute` | 不存，tag 也不收 | 不送 |
+| `mute` | 不存，tag 也不收 | 不送。設成 `mute` 時還在 debounce 的 tag 直接標記已看、丟掉，之後解除也不補送 |
 
 判斷在 `_filter_allows()`：`mute` 一律擋；有 tag 就收；其餘只有 `all` 收。registry 裡不認得的值（例如舊版的 `from_contacts`）照 `mention_only` 處理。
 
