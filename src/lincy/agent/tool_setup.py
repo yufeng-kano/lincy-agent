@@ -503,9 +503,13 @@ def setup_tools(
     return registry, allowed_paths, executor
 
 
-# Registered only when GUI / vision settings enable them, so excluding them
-# must not abort startup on a config that turns those features off.
-_CONDITIONAL_TOOLS = frozenset({"gui_task", "screenshot", "screenshot_by_subagent"})
+# Registered only when their feature is on (GUI / vision settings, Discord
+# enabled with a token), so excluding them must not abort startup on a config
+# that turns those features off.
+_CONDITIONAL_TOOLS = frozenset({
+    "gui_task", "screenshot", "screenshot_by_subagent",
+    "get_channel_history", "discord_listen",
+})
 
 
 def validate_excluded_tools(

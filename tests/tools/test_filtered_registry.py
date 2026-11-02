@@ -107,6 +107,13 @@ class TestValidateExcludedTools:
 
         validate_excluded_tools(_source_registry(), agents)
 
+    def test_discord_tools_pass_when_discord_is_off(self):
+        # The shipped worker config excludes discord_listen; with Discord
+        # disabled it is never registered and startup must still succeed.
+        agents = {"worker": _agent_config(["discord_listen", "get_channel_history"])}
+
+        validate_excluded_tools(_source_registry(), agents)
+
     def test_worker_may_exclude_its_own_extra_tool(self):
         agents = {"worker": _agent_config(["worker_note"])}
         validate_excluded_tools(

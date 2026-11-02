@@ -536,7 +536,7 @@ class DiscordListenChannel(StrictConfigModel):
     channel_id: str
     filter: str = Field(
         default="mention_only",
-        pattern=r"^(mention_only|all|from_contacts)$",
+        pattern=r"^(mention_only|all)$",
     )
 
 
@@ -555,6 +555,9 @@ class DiscordChannelConfig(StrictConfigModel):
     listen_channels: list[DiscordListenChannel] = Field(default_factory=list)
     ignore_users: list[str] = Field(default_factory=list)
     guild_review_interval_seconds: int = Field(default=60, ge=5, le=3600)
+    # Messages fetched before a tag in a channel that does not store everything,
+    # so the agent sees what the tag refers to. 0 turns the fetch off.
+    mention_context_messages: int = Field(default=20, ge=0, le=100)
     send_typing_refresh_seconds: int = Field(default=7, ge=2, le=30)
     send_typing_cps_min: float = Field(default=14.0, gt=0)
     send_typing_cps_max: float = Field(default=26.0, gt=0)

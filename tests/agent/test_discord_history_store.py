@@ -126,6 +126,46 @@ class TestDiscordHistoryStore:
 
         assert store.get_cursor("c1")["last_seen_message_id"] == "200"
 
+    def test_set_channel_filter_keeps_fields_and_survives_later_events(self, tmp_path):
+        store = DiscordHistoryStore(tmp_path)
+        created = store.upsert_channel(
+            channel_id="c1",
+            guild_id="g1",
+            guild_name="Guild",
+            channel_name="general",
+            alias="#general @ Guild",
+            filter_mode="all",
+            source="auto_mention",
+            review_interval_seconds=60,
+        )
+
+        updated = store.set_channel_filter("c1", "mute")
+        assert updated is not None
+        assert updated["filter"] == "mute"
+        assert updated["source"] == "auto_mention"
+        assert updated["created_at"] == created["created_at"]
+
+        store.append_message_create(
+            channel_id="c1",
+            event={"event_time": "2026-02-24T10:00:00+00:00", "message_id": "1", "author_id": "u1"},
+        )
+        assert DiscordHistoryStore(tmp_path).get_channel_entry("c1")["filter"] == "mute"
+
+    def test_set_channel_filter_unknown_channel(self, tmp_path):
+        store = DiscordHistoryStore(tmp_path)
+        assert store.set_channel_filter("nope", "all") is None
+        assert store.list_registered_channels() == []
+
+    def test_advance_seen_cursor_only_moves_forward(self, tmp_path):
+        store = DiscordHistoryStore(tmp_path)
+        store.advance_seen_cursor("c1", "200")
+        store.advance_seen_cursor("c1", "100")
+        assert store.get_cursor("c1")["last_seen_message_id"] == "200"
+        assert store.get_cursor("c1")["next_event_seq"] == 1
+
+        store.advance_seen_cursor("c1", "300")
+        assert DiscordHistoryStore(tmp_path).get_cursor("c1")["last_seen_message_id"] == "300"
+
     def test_image_summary_cache_put_get(self, tmp_path):
         store = DiscordHistoryStore(tmp_path)
         store.put_image_summary("abc", {"summary": "cat", "tool": "read_image_by_subagent"})

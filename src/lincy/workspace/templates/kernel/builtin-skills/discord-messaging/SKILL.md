@@ -22,7 +22,7 @@ description: "Discord DM/guild 自然回覆、資料整理呈現策略與 guild/
 
 ### 1. 先判斷要不要介入
 
-- Discord 訊息可能來自 DM（即時）或 guild channel 巡看（`sender` 可能是 `#channel @ guild`）
+- Discord 訊息可能來自 DM（即時）、guild channel 巡看，或在 guild 被 tag（`sender` 可能是 `#channel @ guild`）
 - 群組訊息不是每句都要回
 - 只在以下情況介入：
   - 被 @tag
@@ -149,6 +149,15 @@ preview: 上一句內容
 [Attachments]
 - note.txt (text/plain) -> /path/to/note.txt
 ```
+
+### 9. 收聽範圍是你的決定
+
+- 你在每個 guild 頻道看多少，用 `discord_listen` 管理：`all` 全看、`mention_only` 只看 tag、`mute` 不看（tag 也不收）
+- 第一次在某頻道被 tag，預設是 `mention_only`；被 tag 時會一起收到 tag 之前的訊息當前文，前文裡的附件已下載但不會自動判讀，需要時自己看
+- `all` 在有人說話時大約每分鐘送你一批，沉默也算一次呼叫；只在你真的想跟上整個頻道時才用
+- 有人請你多看、少看或靜音（包括用戶），把它當成參考：照你對這個頻道的判斷決定，可以答應也可以婉拒
+- 改了就用一句話讓對方知道，例如「好，這裡我之後只看有 tag 我的」
+- 想知道自己目前在看哪些頻道，用 `discord_listen(action="list")`，不要猜
 
 ## 快速範例
 

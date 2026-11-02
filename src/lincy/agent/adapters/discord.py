@@ -115,6 +115,18 @@ def _message_mentions_user(message: Any, user_id: str | None) -> bool:
     return False
 
 
+def _filter_allows(filter_mode: str, mentions_self: bool) -> bool:
+    """Channel filter shared by new messages and edits.
+
+    Unknown values (the old from_contacts) fall through to mention_only.
+    """
+    if filter_mode == "mute":
+        return False
+    if mentions_self:
+        return True
+    return filter_mode == "all"
+
+
 def _safe_text(value: Any) -> str:
     if value is None:
         return ""
@@ -199,6 +211,7 @@ class DiscordAdapter:
         self._presence_last_active_monotonic: float = time.monotonic()
         self._presence_last_status: str | None = None
         self._startup_catchup_done = False
+        self._handling_ids: set[str] = set()
 
     @property
     def attachments_dir(self) -> str:
@@ -621,6 +634,18 @@ class DiscordAdapter:
     # -- Discord event handlers --------------------------------------
 
     async def _handle_message(self, message: Any) -> None:
+        # A tag's context fetch and the startup backfill can reach a message
+        # whose own handler is still awaiting downloads; handle each id once.
+        msg_id = str(getattr(message, "id", ""))
+        if msg_id in self._handling_ids:
+            return
+        self._handling_ids.add(msg_id)
+        try:
+            await self._ingest_message(message)
+        finally:
+            self._handling_ids.discard(msg_id)
+
+    async def _ingest_message(self, message: Any) -> None:
         if self._agent is None:
             return
         author = getattr(message, "author", None)
@@ -649,6 +674,11 @@ class DiscordAdapter:
                 return
         else:
             if not self._guild_ingestion_allowed(message, mentions_self):
+                # Registered channels that drop messages (mute, untagged in
+                # mention_only) still move the backfill cursor; otherwise a
+                # restart re-reads old chatter and can miss newer tags.
+                if self._history.get_channel_entry(channel_id) is not None:
+                    self._history.advance_seen_cursor(channel_id, str(getattr(message, "id", "")))
                 return
 
         self._mark_presence_active()
@@ -673,6 +703,11 @@ class DiscordAdapter:
         else:
             alias = snapshot["channel_alias"]
             self._contact_map.update("discord", channel_id, alias)
+            # A channel that does not store everything gets the lead-up to a
+            # tag, stored before the tag so history stays in order.
+            entry = self._history.get_channel_entry(channel_id) or {}
+            if mentions_self and entry.get("filter") != "all":
+                await self._store_mention_context(message, channel_id)
 
         event = self._event_from_snapshot(snapshot)
         seq = self._history.append_message_create(channel_id=channel_id, event=event)
@@ -706,16 +741,23 @@ class DiscordAdapter:
             return
         if self._self_user_id and author_id == self._self_user_id:
             return
+        if author_id in set(self._config.ignore_users):
+            return
         channel_id = _channel_id(channel)
         if not channel_id:
             return
+        mentions_self = _message_mentions_user(message, self._self_user_id)
         if _is_dm_channel(channel):
             if not self._config.listen_dms:
                 return
         else:
-            if self._history.get_channel_entry(channel_id) is None:
+            # Same gate as new messages, so an edit cannot slip past mute,
+            # mention_only or the hard allowlist. Edits never register a channel.
+            if self._blocked_by_allowlist(channel_id):
                 return
-        mentions_self = _message_mentions_user(message, self._self_user_id)
+            entry = self._history.get_channel_entry(channel_id)
+            if entry is None or not _filter_allows(entry.get("filter", "mention_only"), mentions_self):
+                return
         snapshot = await self._snapshot_message(message, mentions_self=mentions_self)
         if snapshot is None:
             return
@@ -752,6 +794,14 @@ class DiscordAdapter:
 
     # -- Filtering / registration ------------------------------------
 
+    def _blocked_by_allowlist(self, channel_id: str) -> bool:
+        """listen_channels, once non-empty, is a hard allowlist for guild channels.
+
+        Checked on ingestion and again before replaying stored history, since
+        the list can shrink across a restart.
+        """
+        return bool(self._hard_allowlist_filters) and channel_id not in self._hard_allowlist_filters
+
     def _guild_ingestion_allowed(self, message: Any, mentions_self: bool) -> bool:
         channel = getattr(message, "channel", None)
         if channel is None:
@@ -760,7 +810,7 @@ class DiscordAdapter:
         if not channel_id:
             return False
 
-        if self._hard_allowlist_filters and channel_id not in self._hard_allowlist_filters:
+        if self._blocked_by_allowlist(channel_id):
             return False
 
         entry = self._history.get_channel_entry(channel_id)
@@ -787,29 +837,75 @@ class DiscordAdapter:
                 guild_name=_guild_name(channel),
                 channel_name=_channel_name(channel),
                 alias=alias,
-                filter_mode="all",
+                filter_mode="mention_only",
                 source="auto_mention",
                 review_interval_seconds=self._config.guild_review_interval_seconds,
             )
 
-        filter_mode = entry.get("filter", "mention_only")
-        if filter_mode == "mute":
-            return False
-        if mentions_self:
-            return True
-        if filter_mode == "all":
-            return True
-        if filter_mode == "mention_only":
-            return False
-        if filter_mode == "from_contacts":
-            author = getattr(message, "author", None)
-            author_id = str(getattr(author, "id", "")) if author is not None else ""
-            return bool(author_id and self._contact_map.resolve("discord", author_id))
-        return False
+        return _filter_allows(entry.get("filter", "mention_only"), mentions_self)
+
+    async def _store_mention_context(self, message: Any, channel_id: str) -> None:
+        """Store up to mention_context_messages messages before a tag.
+
+        Attachments are downloaded but get no auto-read hint: whether the
+        lead-up is worth looking at is the agent's call.
+        """
+        limit = self._config.mention_context_messages
+        history_fn = getattr(getattr(message, "channel", None), "history", None)
+        if limit <= 0 or not callable(history_fn):
+            return
+        fetched: list[Any] = []
+        try:
+            async for ctx in history_fn(before=message, limit=limit):
+                fetched.append(ctx)
+        except Exception:
+            logger.debug("Discord mention context fetch failed: ch=%s", channel_id, exc_info=True)
+            return
+        stored_ids = {
+            str(e.get("message_id"))
+            for e in self._history.read_events(channel_id)
+            if e.get("event_type") == "message_create"
+        }
+        ignored = set(self._config.ignore_users)
+        # Pick and reserve ids with no await in between. A message already in
+        # _handling_ids is stored by its own handler (or another tag's fetch);
+        # reserving ours keeps a concurrent fetch or the gateway from storing
+        # the same message while our snapshots await downloads.
+        picked: list[Any] = []
+        for ctx in sorted(fetched, key=lambda m: int(getattr(m, "id", 0))):
+            ctx_author = getattr(ctx, "author", None)
+            if ctx_author is None or str(getattr(ctx_author, "id", "")) in ignored:
+                continue
+            ctx_id = str(getattr(ctx, "id", ""))
+            if ctx_id in stored_ids or ctx_id in self._handling_ids:
+                continue
+            picked.append(ctx)
+        reserved = {str(getattr(ctx, "id", "")) for ctx in picked}
+        self._handling_ids.update(reserved)
+        try:
+            for ctx in picked:
+                snapshot = await self._snapshot_message(
+                    ctx,
+                    mentions_self=_message_mentions_user(ctx, self._self_user_id),
+                    auto_read=False,
+                )
+                if snapshot is None:
+                    continue
+                self._history.append_message_create(
+                    channel_id=channel_id, event=self._event_from_snapshot(snapshot),
+                )
+        finally:
+            self._handling_ids.difference_update(reserved)
 
     # -- Snapshot / normalization ------------------------------------
 
-    async def _snapshot_message(self, message: Any, *, mentions_self: bool) -> dict[str, Any] | None:
+    async def _snapshot_message(
+        self,
+        message: Any,
+        *,
+        mentions_self: bool,
+        auto_read: bool = True,
+    ) -> dict[str, Any] | None:
         channel = getattr(message, "channel", None)
         author = getattr(message, "author", None)
         if channel is None or author is None:
@@ -849,6 +945,7 @@ class DiscordAdapter:
             message_id=msg_id,
             attachments=getattr(message, "attachments", None) or [],
             is_dm=is_dm,
+            auto_read=auto_read,
         )
 
         channel_alias = _build_channel_alias(channel)
@@ -982,6 +1079,7 @@ class DiscordAdapter:
         message_id: str,
         attachments: list[Any],
         is_dm: bool,
+        auto_read: bool = True,
     ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         max_download_bytes = self._config.auto_download_attachment_max_mb * 1024 * 1024
@@ -1014,7 +1112,8 @@ class DiscordAdapter:
             }
 
             should_auto_read = (
-                self._config.auto_read_images
+                auto_read
+                and self._config.auto_read_images
                 and item["is_image"]
                 and (
                     (is_dm and self._config.auto_read_images_in_dm)
@@ -1022,7 +1121,8 @@ class DiscordAdapter:
                 )
             )
             should_auto_listen = (
-                self._config.auto_read_audio
+                auto_read
+                and self._config.auto_read_audio
                 and item["is_audio"]
                 and (
                     (is_dm and self._config.auto_read_audio_in_dm)
@@ -1318,6 +1418,16 @@ class DiscordAdapter:
         buf = self._mention_buffers.pop(channel_id, None)
         if buf is None:
             return
+        entry = self._history.get_channel_entry(channel_id) or {}
+        if entry.get("filter") == "mute":
+            # Muted while the tag waited for its debounce: mute means nothing
+            # from here reaches the brain, so drop the batch instead of
+            # holding it for a later unmute.
+            last_seq = int(self._history.get_cursor(channel_id).get("next_event_seq", 1)) - 1
+            self._history.mark_reviewed(
+                channel_id, seq=last_seq, immediate=True, record_review_time=False,
+            )
+            return
         self._enqueue_review_from_history(channel_id, source="guild_mention_review", immediate=True)
 
     async def _periodic_review_loop(self) -> None:
@@ -1340,7 +1450,7 @@ class DiscordAdapter:
             if entry.get("filter") != "all":
                 continue
             channel_id = str(entry.get("channel_id") or "")
-            if not channel_id:
+            if not channel_id or self._blocked_by_allowlist(channel_id):
                 continue
             interval = entry.get("review_interval_seconds")
             try:
@@ -1539,6 +1649,11 @@ class DiscordAdapter:
         except Exception:
             logger.exception("DM startup catchup failed")
 
+        try:
+            self._catchup_unreviewed_mentions()
+        except Exception:
+            logger.exception("Mention startup catchup failed")
+
         # Brief pause to let gateway deliver any pending messages before REST
         # backfill, reducing duplicate processing.
         await asyncio.sleep(3)
@@ -1556,7 +1671,7 @@ class DiscordAdapter:
         """
         for entry in self._history.list_registered_channels():
             if entry.get("guild_id"):
-                continue  # Guild channels covered by periodic review
+                continue  # Guild channels: periodic review or _catchup_unreviewed_mentions
             channel_id = str(entry.get("channel_id") or "")
             if not channel_id:
                 continue
@@ -1587,6 +1702,33 @@ class DiscordAdapter:
             self._enqueue_review_from_history(
                 channel_id, source="dm_startup_catchup", immediate=True,
             )
+
+    def _catchup_unreviewed_mentions(self) -> None:
+        """Enqueue tags stored before a crash whose mention review never ran.
+
+        Periodic review covers only 'all' channels; in any other channel a
+        stored but unflushed tag would otherwise wait for the next tag.
+        """
+        for entry in self._history.list_registered_channels():
+            if not entry.get("guild_id") or entry.get("filter") in ("all", "mute"):
+                continue
+            channel_id = str(entry.get("channel_id") or "")
+            if not channel_id or self._blocked_by_allowlist(channel_id):
+                continue
+            cursor = self._history.get_cursor(channel_id)
+            last_reviewed = int(cursor.get("last_reviewed_seq", 0))
+            if int(cursor.get("next_event_seq", 1)) - 1 <= last_reviewed:
+                continue
+            if any(
+                e.get("event_type") == "message_create"
+                and e.get("mentions_self")
+                and str(e.get("author_id") or "") != self._self_user_id
+                for e in self._history.get_events_after_seq(channel_id, last_reviewed)
+            ):
+                logger.info("Mention startup catchup: ch=%s", channel_id)
+                self._enqueue_review_from_history(
+                    channel_id, source="guild_mention_review", immediate=True,
+                )
 
     async def _backfill_missed_messages(self) -> None:
         """Fetch messages via REST API that arrived while process was down.

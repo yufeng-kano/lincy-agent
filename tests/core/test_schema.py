@@ -520,6 +520,17 @@ def test_discord_channel_config_validates_ranges():
         )
 
 
+def test_discord_listen_channels_reject_from_contacts():
+    from lincy.core.schema import DiscordChannelConfig
+
+    assert DiscordChannelConfig().mention_context_messages == 20
+    DiscordChannelConfig(listen_channels=[{"channel_id": "1", "filter": "all"}])
+    with pytest.raises(ValidationError):
+        DiscordChannelConfig(listen_channels=[{"channel_id": "1", "filter": "from_contacts"}])
+    with pytest.raises(ValidationError):
+        DiscordChannelConfig(listen_channels=[{"channel_id": "1", "filter": "mute"}])
+
+
 @pytest.mark.parametrize("value", ["UTC+8", "UTC+08:00", "Asia/Taipei"])
 def test_app_config_accepts_timezone_formats(value: str):
     config = AppConfig.model_validate(
