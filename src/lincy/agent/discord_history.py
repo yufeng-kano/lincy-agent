@@ -1,7 +1,7 @@
 """Discord runtime history/registry store.
 
 Stores Discord channel policies, cursors, and append-only message history under:
-    .agent/state/discord/
+    <agent_os_dir>/state/discord/
 """
 
 from __future__ import annotations
@@ -42,6 +42,22 @@ def _parse_iso(dt: str | None) -> datetime | None:
 def _safe_name(name: str) -> str:
     cleaned = _BAD_FILENAME_RE.sub("_", name).strip("._")
     return cleaned or "file"
+
+
+def _is_later_message(candidate: Any, current: Any) -> bool:
+    """Discord message ids are snowflakes, so a larger id is a later message.
+
+    The backfill cursor must only move forward: edits point at older messages,
+    and concurrent handlers (attachment downloads) can finish out of order.
+    """
+    try:
+        current_id = int(current)
+    except (TypeError, ValueError):
+        return True  # no usable cursor yet
+    try:
+        return int(candidate) > current_id
+    except (TypeError, ValueError):
+        return False
 
 
 class DiscordHistoryStore:
@@ -161,7 +177,7 @@ class DiscordHistoryStore:
                 self._persist_registry()
             cursor = self._ensure_cursor(channel_id)
             cursor["last_seen_at"] = now
-            if message_id is not None:
+            if message_id is not None and _is_later_message(message_id, cursor.get("last_seen_message_id")):
                 cursor["last_seen_message_id"] = message_id
             self._persist_cursors()
 
@@ -189,13 +205,17 @@ class DiscordHistoryStore:
         *,
         seq: int,
         immediate: bool = False,
+        record_review_time: bool = True,
     ) -> None:
         with self._lock:
             cursor = self._ensure_cursor(channel_id)
             cursor["last_reviewed_seq"] = max(int(cursor["last_reviewed_seq"]), seq)
             if immediate:
                 cursor["last_immediate_seq"] = max(int(cursor["last_immediate_seq"]), seq)
-            cursor["last_review_at"] = _utc_now().isoformat()
+            # last_review_at throttles periodic reviews, so only a review that
+            # actually reached the agent should move it.
+            if record_review_time:
+                cursor["last_review_at"] = _utc_now().isoformat()
             self._persist_cursors()
 
     def _history_path(self, channel_id: str) -> Path:
@@ -217,7 +237,7 @@ class DiscordHistoryStore:
             # Update cursor last seen fields if present
             msg_id = payload.get("message_id")
             evt_time = payload.get("event_time")
-            if msg_id is not None:
+            if msg_id is not None and _is_later_message(msg_id, cursor.get("last_seen_message_id")):
                 cursor["last_seen_message_id"] = msg_id
             if evt_time is not None:
                 cursor["last_seen_at"] = evt_time

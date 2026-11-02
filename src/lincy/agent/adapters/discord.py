@@ -1329,6 +1329,10 @@ class DiscordAdapter:
             await asyncio.sleep(1.0)
 
     def _run_periodic_review_tick(self) -> None:
+        # Until on_ready sets our user id we cannot tell our own stored sends
+        # apart from other people's, so hold guild reviews until then.
+        if not self._self_user_id:
+            return
         now = tz_now()
         for entry in self._history.list_registered_channels():
             if not entry.get("guild_id"):
@@ -1344,6 +1348,10 @@ class DiscordAdapter:
             except (TypeError, ValueError):
                 interval_i = self._config.guild_review_interval_seconds
             cursor = self._history.get_cursor(channel_id)
+            # This tick runs every second; check the cursor before reading the
+            # whole history file so idle channels cost nothing.
+            if int(cursor.get("next_event_seq", 1)) - 1 <= int(cursor.get("last_reviewed_seq", 0)):
+                continue
             last_review_at = _parse_iso(cursor.get("last_review_at"))
             if last_review_at is not None and (now - last_review_at).total_seconds() < interval_i:
                 continue
@@ -1356,6 +1364,25 @@ class DiscordAdapter:
         after_seq = int(cursor.get("last_reviewed_seq", 0))
         events = self._history.get_events_after_seq(channel_id, after_seq)
         if not events:
+            # The cursor counted events the file does not hold (a failed or
+            # partial write). Move past them, or the periodic tick re-reads the
+            # whole file every second.
+            last_seq = int(cursor.get("next_event_seq", 1)) - 1
+            if last_seq > after_seq:
+                self._history.mark_reviewed(
+                    channel_id, seq=last_seq, immediate=immediate, record_review_time=False,
+                )
+            return
+        # Our own sends are stored as context, but a batch of nothing else has
+        # nothing to review. Skip it without touching last_review_at, so the
+        # next message from someone else is not held back by the throttle.
+        if self._self_user_id and all(
+            str(e.get("author_id") or "") == self._self_user_id for e in events
+        ):
+            max_seq = max(int(e.get("seq", 0)) for e in events)
+            self._history.mark_reviewed(
+                channel_id, seq=max_seq, immediate=immediate, record_review_time=False,
+            )
             return
         folded = self._history.fold_latest_messages(events)
         if not folded:
@@ -1600,11 +1627,20 @@ class DiscordAdapter:
                     "Discord backfill: ch=%s, %d missed messages",
                     channel_id, len(messages),
                 )
+                # Older versions could leave the cursor behind messages that
+                # are already stored; never store the same message twice.
+                stored_ids = {
+                    str(e.get("message_id"))
+                    for e in self._history.read_events(channel_id)
+                    if e.get("event_type") == "message_create"
+                }
                 for msg in messages:
+                    msg_id = str(getattr(msg, "id", ""))
+                    if msg_id in stored_ids:
+                        continue
                     # Skip if gateway already delivered this message
                     cur = self._history.get_cursor(channel_id)
                     cur_last = cur.get("last_seen_message_id")
-                    msg_id = str(getattr(msg, "id", ""))
                     if cur_last and msg_id:
                         try:
                             if int(msg_id) <= int(cur_last):
