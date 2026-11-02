@@ -156,6 +156,16 @@ class TestDiscordHistoryStore:
         assert store.set_channel_filter("nope", "all") is None
         assert store.list_registered_channels() == []
 
+    def test_advance_seen_cursor_only_moves_forward(self, tmp_path):
+        store = DiscordHistoryStore(tmp_path)
+        store.advance_seen_cursor("c1", "200")
+        store.advance_seen_cursor("c1", "100")
+        assert store.get_cursor("c1")["last_seen_message_id"] == "200"
+        assert store.get_cursor("c1")["next_event_seq"] == 1
+
+        store.advance_seen_cursor("c1", "300")
+        assert DiscordHistoryStore(tmp_path).get_cursor("c1")["last_seen_message_id"] == "300"
+
     def test_image_summary_cache_put_get(self, tmp_path):
         store = DiscordHistoryStore(tmp_path)
         store.put_image_summary("abc", {"summary": "cat", "tool": "read_image_by_subagent"})

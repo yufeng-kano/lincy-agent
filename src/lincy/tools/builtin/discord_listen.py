@@ -12,7 +12,7 @@ import json
 from typing import TYPE_CHECKING
 
 from ...llm.schema import ToolDefinition, ToolParameter
-from .get_channel_history import known_aliases, resolve_contact_channel_id
+from .get_channel_history import resolve_contact_channel_id
 
 if TYPE_CHECKING:
     from ...agent.contact_map import ContactMap
@@ -61,8 +61,21 @@ def create_discord_listen(
     history_store: "DiscordHistoryStore",
     contact_map: "ContactMap",
     turn_context: "TurnContext",
+    allowlist_ids: frozenset[str] = frozenset(),
 ) -> Callable[..., str]:
-    """Create discord_listen bound to the Discord registry."""
+    """Create discord_listen bound to the Discord registry.
+
+    allowlist_ids is channels.discord.listen_channels: when non-empty the
+    adapter drops every other channel, so the tool must not pretend a filter
+    change there has any effect.
+    """
+
+    def blocked(channel_id: str) -> bool:
+        return bool(allowlist_ids) and channel_id not in allowlist_ids
+
+    def effective(filter_mode: object) -> str:
+        # Unknown stored values (the old from_contacts) behave as mention_only.
+        return filter_mode if filter_mode in _FILTERS else "mention_only"
 
     def discord_listen(
         action: str,
@@ -80,9 +93,10 @@ def create_discord_listen(
                     {
                         "channel_id": e.get("channel_id"),
                         "alias": e.get("alias"),
-                        "filter": e.get("filter"),
+                        "filter": effective(e.get("filter")),
                         "source": e.get("source"),
                         "last_seen_at": e.get("last_seen_at"),
+                        "blocked_by_config": blocked(str(e.get("channel_id") or "")),
                     }
                     for e in guild_entries
                 ),
@@ -99,8 +113,8 @@ def create_discord_listen(
         if target_id is None and to:
             target_id = resolve_contact_channel_id(history_store, contact_map, to)
             if target_id is None:
-                known = known_aliases(history_store)
-                hint = f" Known targets: {known}." if known else ""
+                known = sorted({str(e.get("alias") or "") for e in guild_entries} - {""})
+                hint = f" Known channels: {', '.join(known[:20])}." if known else ""
                 return f"Error: no followed Discord channel matches '{to}'.{hint}"
         if (
             target_id is None
@@ -114,10 +128,17 @@ def create_discord_listen(
             return "Error: provide 'to' or 'channel_id' (or call from a Discord server channel)"
 
         entry = history_store.get_channel_entry(target_id)
-        if entry is None or not entry.get("guild_id"):
+        if entry is not None and not entry.get("guild_id"):
+            return f"Error: '{to or target_id}' is a DM; discord_listen covers server channels only."
+        if blocked(target_id):
             return (
-                f"Error: '{target_id}' is not a server channel you follow yet. "
-                "Someone has to tag you there once first; DMs are not covered."
+                f"Error: '{to or target_id}' is outside channels.discord.listen_channels, "
+                "so nothing from it reaches you whatever its filter."
+            )
+        if entry is None:
+            return (
+                f"Error: '{to or target_id}' is not a server channel you follow yet. "
+                "Someone has to tag you there once first."
             )
 
         updated = history_store.set_channel_filter(target_id, filter)
@@ -127,7 +148,7 @@ def create_discord_listen(
             {
                 "channel_id": target_id,
                 "alias": updated.get("alias"),
-                "previous_filter": entry.get("filter"),
+                "previous_filter": effective(entry.get("filter")),
                 "filter": updated.get("filter"),
             },
             ensure_ascii=False,

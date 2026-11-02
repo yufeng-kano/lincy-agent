@@ -75,10 +75,10 @@ Worker 與 brain 共用 `src/lincy/context/cache_breakpoints.py`：
   - 是 **live view** 不是快照：startup 之後才註冊的工具（`send_message`、`worker` 等）也看得到
 - Worker：`WorkerRunner` 仍然拿 **raw registry** 自行 clone（`_build_filtered_registry`），兩邊的排除清單互相獨立
 - 啟動驗證：所有 `registry.register()` 跑完後呼叫 `validate_excluded_tools()`（`src/lincy/agent/tool_setup.py`），排除清單裡有未註冊的工具名就 `SystemExit`
-  - `gui_task` / `screenshot` / `screenshot_by_subagent` 是條件式註冊（關掉 GUI 或改 vision 設定就不存在），驗證時對這三個名稱略過未註冊檢查；其他名稱仍維持 typo 保護
+  - `gui_task` / `screenshot` / `screenshot_by_subagent` / `get_channel_history` / `discord_listen` 是條件式註冊（關掉 GUI、改 vision 設定或關掉 Discord 就不存在），驗證時對這些名稱略過未註冊檢查；其他名稱仍維持 typo 保護
   - 不在共用 registry 的 agent 專屬工具由呼叫端以 `extra_tools_by_agent` 傳入（`agent/build.py` 傳 `{"worker": worker_extra_tools}`），只對該 agent 視為已知；例如 worker 可排除 `worker_note`，brain 排除它仍會被擋
 
-目前設定：brain 排除 `execute_shell`、`shell_task`、`gui_task`；worker 排除 `screenshot`、`shell_task`（保留 `execute_shell` 與 `gui_task`）。
+目前設定：brain 排除 `execute_shell`、`shell_task`、`gui_task`；worker 排除 `screenshot`、`shell_task`、`discord_listen`（保留 `execute_shell` 與 `gui_task`）。`discord_listen` 只給 brain，見 [discord-channels.md](discord-channels.md)。
 
 `screenshot_by_subagent` 不在排除清單內：brain 目前的 LLM chain 全為 vision 模型，`adaptive_own_vision` 不成立，該工具不會被註冊。若日後把 non-vision fallback 加回 brain chain，需同步補回排除項。
 

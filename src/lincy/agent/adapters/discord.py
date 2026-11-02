@@ -211,6 +211,7 @@ class DiscordAdapter:
         self._presence_last_active_monotonic: float = time.monotonic()
         self._presence_last_status: str | None = None
         self._startup_catchup_done = False
+        self._handling_ids: set[str] = set()
 
     @property
     def attachments_dir(self) -> str:
@@ -633,6 +634,18 @@ class DiscordAdapter:
     # -- Discord event handlers --------------------------------------
 
     async def _handle_message(self, message: Any) -> None:
+        # A tag's context fetch and the startup backfill can reach a message
+        # whose own handler is still awaiting downloads; handle each id once.
+        msg_id = str(getattr(message, "id", ""))
+        if msg_id in self._handling_ids:
+            return
+        self._handling_ids.add(msg_id)
+        try:
+            await self._ingest_message(message)
+        finally:
+            self._handling_ids.discard(msg_id)
+
+    async def _ingest_message(self, message: Any) -> None:
         if self._agent is None:
             return
         author = getattr(message, "author", None)
@@ -661,6 +674,11 @@ class DiscordAdapter:
                 return
         else:
             if not self._guild_ingestion_allowed(message, mentions_self):
+                # Registered channels that drop messages (mute, untagged in
+                # mention_only) still move the backfill cursor; otherwise a
+                # restart re-reads old chatter and can miss newer tags.
+                if self._history.get_channel_entry(channel_id) is not None:
+                    self._history.advance_seen_cursor(channel_id, str(getattr(message, "id", "")))
                 return
 
         self._mark_presence_active()
@@ -845,7 +863,10 @@ class DiscordAdapter:
             ctx_author = getattr(ctx, "author", None)
             if ctx_author is None or str(getattr(ctx_author, "id", "")) in ignored:
                 continue
-            if str(getattr(ctx, "id", "")) in stored_ids:
+            ctx_id = str(getattr(ctx, "id", ""))
+            # A message still being handled is stored by its own handler,
+            # with auto-read hints; storing it here too would duplicate it.
+            if ctx_id in stored_ids or ctx_id in self._handling_ids:
                 continue
             snapshot = await self._snapshot_message(
                 ctx,
@@ -1600,6 +1621,11 @@ class DiscordAdapter:
         except Exception:
             logger.exception("DM startup catchup failed")
 
+        try:
+            self._catchup_unreviewed_mentions()
+        except Exception:
+            logger.exception("Mention startup catchup failed")
+
         # Brief pause to let gateway deliver any pending messages before REST
         # backfill, reducing duplicate processing.
         await asyncio.sleep(3)
@@ -1617,7 +1643,7 @@ class DiscordAdapter:
         """
         for entry in self._history.list_registered_channels():
             if entry.get("guild_id"):
-                continue  # Guild channels covered by periodic review
+                continue  # Guild channels: periodic review or _catchup_unreviewed_mentions
             channel_id = str(entry.get("channel_id") or "")
             if not channel_id:
                 continue
@@ -1648,6 +1674,33 @@ class DiscordAdapter:
             self._enqueue_review_from_history(
                 channel_id, source="dm_startup_catchup", immediate=True,
             )
+
+    def _catchup_unreviewed_mentions(self) -> None:
+        """Enqueue tags stored before a crash whose mention review never ran.
+
+        Periodic review covers only 'all' channels; in any other channel a
+        stored but unflushed tag would otherwise wait for the next tag.
+        """
+        for entry in self._history.list_registered_channels():
+            if not entry.get("guild_id") or entry.get("filter") in ("all", "mute"):
+                continue
+            channel_id = str(entry.get("channel_id") or "")
+            if not channel_id:
+                continue
+            cursor = self._history.get_cursor(channel_id)
+            last_reviewed = int(cursor.get("last_reviewed_seq", 0))
+            if int(cursor.get("next_event_seq", 1)) - 1 <= last_reviewed:
+                continue
+            if any(
+                e.get("event_type") == "message_create"
+                and e.get("mentions_self")
+                and str(e.get("author_id") or "") != self._self_user_id
+                for e in self._history.get_events_after_seq(channel_id, last_reviewed)
+            ):
+                logger.info("Mention startup catchup: ch=%s", channel_id)
+                self._enqueue_review_from_history(
+                    channel_id, source="guild_mention_review", immediate=True,
+                )
 
     async def _backfill_missed_messages(self) -> None:
         """Fetch messages via REST API that arrived while process was down.

@@ -176,6 +176,14 @@ class DiscordHistoryStore:
             self._persist_registry()
             return dict(entry)
 
+    def advance_seen_cursor(self, channel_id: str, message_id: str) -> None:
+        """Move the backfill cursor past a message that was seen but not stored."""
+        with self._lock:
+            cursor = self._ensure_cursor(channel_id)
+            if _is_later_message(message_id, cursor.get("last_seen_message_id")):
+                cursor["last_seen_message_id"] = message_id
+                self._persist_cursors()
+
     def update_channel_last_seen(
         self,
         channel_id: str,

@@ -972,6 +972,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 discord_history_store,
                 contact_map,
                 turn_context,
+                allowlist_ids=frozenset(c.channel_id for c in discord_cfg.listen_channels),
             ),
             DISCORD_LISTEN_DEFINITION,
         )

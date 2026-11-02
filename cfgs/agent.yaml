@@ -320,6 +320,7 @@ agents:
     excluded_tools: # gui_task stays: worker escalates to it (synchronous, shared registry)
       - screenshot
       - shell_task
+      - discord_listen # which channels to follow is the brain's own decision
     cache:
       enabled: true
       ttl: "1h"

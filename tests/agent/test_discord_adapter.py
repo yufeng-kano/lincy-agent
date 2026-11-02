@@ -923,6 +923,77 @@ class TestDiscordListenFilters:
         assert history.get_channel_entry("123") is None
         assert history.read_events("123") == []
 
+    async def test_dropped_messages_still_move_the_backfill_cursor(self, tmp_path):
+        # Otherwise a restart re-reads old chatter and its newest tag can be
+        # pushed out of the backfill window.
+        adapter, history = self._adapter(tmp_path)
+        self._register(history, "mention_only", channel_id="123")
+        self._register(history, "mute", channel_id="124")
+        guild = _FakeGuild(7, "MyGuild")
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=11, channel=_FakeInboundChannel(123, "general", guild), author=_BOB, content="chatter")
+        )
+        await adapter._handle_message(
+            _FakeMessage(
+                message_id=12, channel=_FakeInboundChannel(124, "muted", guild), author=_ALICE,
+                content="@agent hi", mentions=[_SELF],
+            )
+        )
+
+        assert history.read_events("123") == [] and history.read_events("124") == []
+        assert history.get_cursor("123")["last_seen_message_id"] == "11"
+        assert history.get_cursor("124")["last_seen_message_id"] == "12"
+
+    async def test_message_in_flight_is_handled_once(self, tmp_path):
+        # The gateway event, the startup backfill and a tag's lead-up fetch can
+        # all reach the same message while its handler awaits downloads.
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeHistoryChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        slow = _FakeMessage(message_id=8, channel=ch, author=_BOB, content="slow one", created_at=_at(1))
+        ch.server_messages = [slow]
+        adapter._handling_ids.add("8")
+
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent hi", mentions=[_SELF], created_at=_at(2))
+        )
+        await adapter._handle_message(slow)
+
+        assert ch.history_calls == 1
+        assert _creates(history, "123") == ["10"]
+
+    async def test_startup_catchup_reviews_an_unflushed_tag(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        ch = _FakeInboundChannel(123, "general", _FakeGuild(7, "MyGuild"))
+        await adapter._handle_message(
+            _FakeMessage(message_id=10, channel=ch, author=_ALICE, content="@agent still there?", mentions=[_SELF])
+        )
+        # Simulate a crash before the mention debounce fired.
+        adapter._mention_buffers.clear()
+        adapter._agent.enqueued.clear()
+
+        adapter._catchup_unreviewed_mentions()
+
+        assert len(adapter._agent.enqueued) == 1
+        assert "still there?" in adapter._agent.enqueued[0].content
+        adapter._agent.enqueued.clear()
+        adapter._catchup_unreviewed_mentions()
+        assert adapter._agent.enqueued == []
+
+    async def test_startup_catchup_skips_channels_without_a_pending_tag(self, tmp_path):
+        adapter, history = self._adapter(tmp_path)
+        self._register(history, "mention_only", channel_id="123")
+        self._register(history, "all", channel_id="125")
+        base = {"event_time": "2026-11-02T12:00:00+00:00", "author_id": "1", "mentions_self": True}
+        history.append_message_create(channel_id="125", event={**base, "message_id": "1"})
+        history.append_message_create(
+            channel_id="123", event={**base, "message_id": "2", "author_id": "999"},
+        )
+
+        adapter._catchup_unreviewed_mentions()
+
+        assert adapter._agent.enqueued == []
+
 
 @pytest.mark.asyncio
 class TestDiscordAdapterSend:

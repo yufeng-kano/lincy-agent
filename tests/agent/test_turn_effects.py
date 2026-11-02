@@ -198,3 +198,41 @@ class TestAnalyzeTurnEffects:
         effects = analyze_turn_effects(msgs, had_send_message=False)
         assert effects.had_note_mutation is True
         assert effects.is_scheduled_noop is False
+
+    def test_discord_listen_set_counts_as_mutation(self):
+        msgs = _build_turn(
+            tool_calls=[
+                ToolCall(
+                    id="c1",
+                    name="discord_listen",
+                    arguments={"action": "set", "filter": "mute", "channel_id": "1"},
+                )
+            ],
+            results={
+                "c1": json.dumps(
+                    {"channel_id": "1", "alias": "#a", "previous_filter": "all", "filter": "mute"}
+                )
+            },
+        )
+        effects = analyze_turn_effects(msgs, had_send_message=False)
+        assert effects.had_listen_mutation is True
+        assert effects.is_scheduled_noop is False
+
+    def test_discord_listen_list_or_error_is_not_mutation(self):
+        msgs = _build_turn(
+            tool_calls=[
+                ToolCall(id="c1", name="discord_listen", arguments={"action": "list"}),
+                ToolCall(
+                    id="c2",
+                    name="discord_listen",
+                    arguments={"action": "set", "filter": "all", "channel_id": "404"},
+                ),
+            ],
+            results={
+                "c1": json.dumps({"channels": []}),
+                "c2": "Error: '404' is not a server channel you follow yet.",
+            },
+        )
+        effects = analyze_turn_effects(msgs, had_send_message=False)
+        assert effects.had_listen_mutation is False
+        assert effects.is_scheduled_noop is True

@@ -8,11 +8,11 @@ from lincy.agent.turn_context import TurnContext
 from lincy.tools.builtin.discord_listen import DISCORD_LISTEN_DEFINITION, create_discord_listen
 
 
-def _make_tool(tmp_path):
+def _make_tool(tmp_path, allowlist_ids=frozenset()):
     contact_map = ContactMap(tmp_path / "cache")
     history = DiscordHistoryStore(tmp_path / "cache")
     turn_context = TurnContext()
-    fn = create_discord_listen(history, contact_map, turn_context)
+    fn = create_discord_listen(history, contact_map, turn_context, allowlist_ids=allowlist_ids)
     return fn, history, contact_map, turn_context
 
 
@@ -50,6 +50,7 @@ def test_list_shows_server_channels_only_sorted_by_alias(tmp_path):
         "filter": "all",
         "source": "auto_mention",
         "last_seen_at": None,
+        "blocked_by_config": False,
     }
 
 
@@ -97,9 +98,45 @@ def test_set_rejects_unregistered_channel_and_dm(tmp_path):
     fn, history, _, _ = _make_tool(tmp_path)
     _register(history, "9", "Alice", "all", guild_id=None)
 
-    assert fn(action="set", filter="all", channel_id="404").startswith("Error:")
-    assert fn(action="set", filter="mute", channel_id="9").startswith("Error:")
+    assert "tag you there once" in fn(action="set", filter="all", channel_id="404")
+    assert "is a DM" in fn(action="set", filter="mute", channel_id="9")
     assert history.get_channel_entry("9")["filter"] == "all"
+
+
+def test_unknown_alias_hint_lists_server_channels_only(tmp_path):
+    fn, history, _, _ = _make_tool(tmp_path)
+    _register(history, "1", "#abyss @ Guild", "all")
+    _register(history, "9", "Alice", "all", guild_id=None)
+
+    result = fn(action="set", filter="mute", to="#nowhere @ Guild")
+
+    assert "#abyss @ Guild" in result
+    assert "Alice" not in result
+
+
+def test_legacy_filter_shows_as_mention_only(tmp_path):
+    # from_contacts is no longer a filter; the adapter treats it as mention_only.
+    fn, history, _, _ = _make_tool(tmp_path)
+    _register(history, "1", "#abyss @ Guild", "from_contacts")
+
+    assert json.loads(fn(action="list"))["channels"][0]["filter"] == "mention_only"
+    payload = json.loads(fn(action="set", filter="all", channel_id="1"))
+    assert payload["previous_filter"] == "mention_only"
+
+
+def test_allowlist_marks_and_blocks_other_channels(tmp_path):
+    # With listen_channels set, the adapter drops every other channel, so a
+    # filter change there would do nothing.
+    fn, history, _, _ = _make_tool(tmp_path, allowlist_ids=frozenset({"1"}))
+    _register(history, "1", "#abyss @ Guild", "all")
+    _register(history, "2", "#lounge @ Guild", "mention_only")
+
+    blocked = {c["channel_id"]: c["blocked_by_config"] for c in json.loads(fn(action="list"))["channels"]}
+    assert blocked == {"1": False, "2": True}
+
+    assert "listen_channels" in fn(action="set", filter="all", channel_id="2")
+    assert history.get_channel_entry("2")["filter"] == "mention_only"
+    assert json.loads(fn(action="set", filter="mute", channel_id="1"))["filter"] == "mute"
 
 
 def test_set_rejects_unknown_alias_with_known_targets(tmp_path):

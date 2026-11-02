@@ -18,6 +18,7 @@ class TurnEffects:
     had_memory_edit_applied: bool = False
     had_task_mutation: bool = False
     had_note_mutation: bool = False
+    had_listen_mutation: bool = False
 
     @property
     def is_scheduled_noop(self) -> bool:
@@ -28,6 +29,7 @@ class TurnEffects:
             or self.had_memory_edit_applied
             or self.had_task_mutation
             or self.had_note_mutation
+            or self.had_listen_mutation
         )
 
 
@@ -77,6 +79,15 @@ def analyze_turn_effects(
                 ):
                     if _is_ok_tool_result(result_msg):
                         effects.had_note_mutation = True
+            # Changing which Discord channels it follows is the agent's own
+            # decision; keep the turn so it remembers making it.
+            if (
+                tool_call.name == "discord_listen"
+                and tool_call.arguments.get("action") == "set"
+                and result_msg is not None
+                and content_to_text(result_msg.content).strip().startswith("{")
+            ):
+                effects.had_listen_mutation = True
 
     return effects
 
