@@ -55,11 +55,11 @@ side-channel 回傳 bool：只有 memory_edit 的結果 JSON（`status: ok`、`a
 | 元件 | 位置 | 說明 |
 |------|------|------|
 | `RecallAgent` | `src/lincy/tools/builtin/recall.py` | `recall(question, sender, channel, context_tail, exclude_paths, max_tool_calls, deadline_seconds) -> str \| None`；request 內寫 `Asked by: <sender> via <channel>`，第一人稱的問題指這個人；context tail 的 user 行帶 `channel/sender`；私有 `ToolRegistry` + 自己的 capped tool loop（`run_simple_tool_loop` 沒有上限所以不用）；達上限後多出來的呼叫回「limit reached」，再送一次 finalization prompt 拿最終文字；超過 `deadline_seconds` 時改送「time budget reached」要模型直接作答（`RecallRun.timed_out`）；assistant 回合連同 `reasoning_content` / `reasoning_details` / `served_by` 一起重放，與 brain 的 side-channel 相同；`NONE` 或空字串回 None；結果截到 `max_result_chars`；request 內寫明工具呼叫與字數預算 |
-| 私有工具 `grep` | 同上 | 不分大小寫 regex；`.md` 回 `path:line: text` 加前後文；`.jsonl` 逐行 parse `SessionEntry` 渲染成 `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] 文字`（`send_message` 顯示 body，tool result 截 200 字），regex 只跑在渲染後的整行上，所以 pattern 可以同時限定日期、sender 與內文；超過 300 字的行以第一個命中為中心節錄，保留開頭的時間戳與 sender，要看全文再 `read_file(limit=1)`；`count_only` 回每檔命中數；總輸出 6000 字、`max_matches` 上限 200。結果順序：live 檔（`people/`、`agent/`）先、`archive/temp-memory/` 新到舊、其他 archive 新到舊、session 新到舊，所以截斷時先留現行事實 |
+| 私有工具 `grep` | 同上 | 不分大小寫 regex；`.md` 回 `path:line: text` 加前後文；`.jsonl` 逐行 parse `SessionEntry` 渲染成 `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] 文字`（`send_message` 顯示 body，tool result 截 200 字），regex 只跑在渲染後的整行上，所以 pattern 可以同時限定日期、sender 與內文；超過 300 字的行以第一個命中為中心節錄，保留開頭的時間戳與 sender，要看全文再 `read_file(limit=1)`；`count_only` 回每檔命中數；總輸出 6000 字、`max_matches` 上限 200。`path_glob` 支援 `{a,b}` 大括號，展開成多個 glob 後合併（最多 32 個）。pattern 若只是字面詞用 `|` 串接（沒有 regex 符號、沒有引號），每個選項先拆成原子詞（以空白、`/`、`-`、`:`、`>`、`,` 切開，丟掉純數字與渲染器自己加的星期縮寫、`unknown time`），原始 JSON 行要包含該選項的全部原子詞才會解析；含 `\u` 轉義或 list content 的行一律解析。渲染器只會在原文外加時間戳、分隔符與固定標記（`render_transcript_entry` docstring 寫明這個契約，有測試守著），所以預篩是必要條件，結果與全量解析相同。結果順序：live 檔（`people/`、`agent/`）先、`archive/temp-memory/` 新到舊、其他 archive 新到舊、session 新到舊，所以截斷時先留現行事實 |
 | 私有工具 `list_dir` / `read_file` | 同上 | `read_file` 對 `.jsonl` 逐條渲染帶行號，`limit=1` 回該筆完整內容（上限 12000 字），多筆時每筆截 1200 字；`.md` 走 `create_read_file` |
 | 路徑守門 | `_allowed_relative` / `_expand_glob` | glob 必須以 `memory/` 或 `session/brain/` 開頭、不可含 `..`、resolve 後須在 agent_os_dir 內；`memory/` 下只讀 `.md`；session 下只讀 `transcript.jsonl` / `messages.jsonl`。`requests.jsonl`、`responses.jsonl`、`events.jsonl`、`turns.jsonl`、`checkpoints/`、`state/` 一律不可見。session 路徑新到舊排序，截斷時先留最近的 |
 | 搜尋文字 | `_grep_transcript` | 只搜渲染後的文字，**不含 metadata 與 JSON 欄位名**：否則 `turn_overlay` 裡的 `[Recall]` 會被下一次 recall 搜到，形成迴圈 |
-| prompt | `kernel/agents/recall/prompts/system.md` | 英文指令、繁中輸出；語料地圖、先 `count_only` 再縮日期 glob、3-6 次呼叫內收手；輸出 `- [YYYY-MM-DD HH:MM][來源路徑] 事實`、衝突列「不確定」、沒有超出已載入檔案的內容就只回 `NONE` |
+| prompt | `kernel/agents/recall/prompts/system.md` | 英文指令、繁中輸出；語料地圖、第一輪直接 grep 記憶檔與當月 transcript（不先對全部 session 做 `count_only`）、3-6 次呼叫內收手、答案最多 5 條；輸出 `- [YYYY-MM-DD HH:MM][來源路徑] 事實`、衝突列「不確定」、沒有超出已載入檔案的內容就只回 `NONE` |
 | 設定 | `cfgs/agent.yaml` `agents.recall` + `RecallAgentConfig`（`core/schema.py`） | `prefetch`、`prefetch_min_chars`（4）、`prefetch_max_tool_calls`（6）、`prefetch_deadline_seconds`（20）、`max_tool_calls`（12）、`max_result_chars`（1500）；LLM profile `cfgs/llm/kano-proxy/recall.yaml`（model `recall-agent`，30 秒 timeout，0 transient retry） |
 | 組裝 | `agent/build.py` + `tool_setup.py` | `agents.recall` enabled 且 prompt 存在才建；`session_debug_label="recall"`；同一個實例給 `AgentCore.recall_agent`（預抓）與 `recall` 工具 |
 
@@ -117,5 +117,6 @@ group `lincy` 新增 group model `recall-agent`，targets 依序 `claude-code/cl
 
 - 每則用戶訊息多一次 Haiku 子代理呼叫，目前平均約 10 秒，疊在 brain 本身的回應時間上；`prefetch_deadline_seconds`（20）是上限，超過就逼模型用手上的結果作答。可調：`prefetch_max_tool_calls`（降到 4 約省 2 到 4 秒、漏題會增加）、`output_config.effort: low`（省約 1.5 秒、12 題少中 1 題）、關 `recall.prefetch` 退回純工具。
 - `[Recall]` 是子代理的搜尋結果，可信度中等；prompt 要求 brain 對關鍵事實先用 `recall` 或 `read_file` 確認。
-- grep 是 Python regex 掃檔，15MB 語料約 0.03 秒；ripgrep / `find` 暫不引入，日期 glob 已覆蓋 find 的用途。
+- grep 是 Python regex 掃檔。正式機（4 核 Skylake VM）全量掃 139 個 transcript（173 MB）字面詞預篩後約 2 秒，當月約 0.3 秒；本機快 5 倍。ripgrep / `find` 暫不引入，日期 glob 已覆蓋 find 的用途。
+- 2026-11-08 正式機第一次預抓花 22 秒：Haiku 4 輪 12.6 秒、grep 約 10 秒（第一輪對全部 session 做 `count_only` 3.3 秒、一輪浪費在不支援的大括號 glob、最後一輪寫 7 條答案 6.3 秒）。0.86.1 針對這三點修正：大括號 glob、字面詞預篩、prompt 改第一輪直接 grep 當月並限制 5 條。
 - curation 的「對照 transcript 驗證再刪」（dreaming）與退役 `memory_search` 不在本次範圍。

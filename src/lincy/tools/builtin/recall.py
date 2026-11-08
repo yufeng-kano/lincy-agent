@@ -40,6 +40,16 @@ _MAX_LINE_CHARS = 300
 _MAX_READ_LINE_CHARS = 1200
 _MAX_READ_OUTPUT_CHARS = 12000
 _MAX_LIST_ENTRIES = 200
+_MAX_GLOB_ALTERNATIVES = 32
+# Innermost shell-style {a,b} group; expanded one level per pass.
+_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+# Anything that makes a pattern more than a plain list of literal terms.
+_REGEX_META_RE = re.compile(r'[\\.^$*+?{}\[\]()"]')
+# Separators render_transcript_entry puts between fields and markers.
+_ATOM_SPLIT_RE = re.compile(r"[\s/\-:>,]+")
+# Words render_transcript_entry adds on its own; everything else it emits is
+# taken verbatim from the entry (see its docstring).
+_RENDERER_TOKENS = frozenset({"mon", "tue", "wed", "thu", "fri", "sat", "sun", "unknown", "time"})
 _LIMIT_TOOL_RESULT = (
     "Tool call limit reached. Do not call tools. Answer now from what you have found."
 )
@@ -86,9 +96,36 @@ def _allowed_relative(agent_os_dir: Path, target: Path) -> Path | None:
     return None
 
 
+def _expand_braces(pattern: str) -> list[str] | None:
+    """Expand shell-style ``{a,b}`` alternatives into plain glob patterns.
+
+    pathlib has no brace support and the model writes
+    ``{memory/archive/temp-memory/2026-11-*.md,session/brain/202611*/transcript.jsonl}``
+    naturally; rejecting it used to cost a whole search round. Returns None
+    as soon as the expansion exceeds _MAX_GLOB_ALTERNATIVES, so a pathological
+    pattern costs bounded work.
+    """
+    expanded = [pattern]
+    while True:
+        pending = [(candidate, _BRACE_RE.search(candidate)) for candidate in expanded]
+        if all(match is None for _, match in pending):
+            return expanded
+        expanded = []
+        for candidate, match in pending:
+            if match is None:
+                expanded.append(candidate)
+                continue
+            head, tail = candidate[: match.start()], candidate[match.end():]
+            for alternative in match.group(1).split(","):
+                expanded.append(f"{head}{alternative.strip()}{tail}")
+                if len(expanded) > _MAX_GLOB_ALTERNATIVES:
+                    return None
+
+
 def _expand_glob(agent_os_dir: Path, path_glob: str) -> list[tuple[Path, Path]] | str:
     """Expand a glob under the agent dir into (absolute, relative) pairs.
 
+    ``{a,b}`` alternatives expand into several globs whose matches are merged.
     Returns an error string for globs that leave the searchable corpus.
     Live memory files sort first (ascending); daily snapshots, other archive
     copies and session files follow newest first, so a capped result keeps
@@ -103,16 +140,22 @@ def _expand_glob(agent_os_dir: Path, path_glob: str) -> list[tuple[Path, Path]] 
             pattern = str(candidate.resolve().relative_to(agent_os_dir.resolve()))
         except ValueError:
             return f"Error: path is outside the agent directory: {path_glob}"
-    pattern = pattern.removeprefix("./")
-    if ".." in Path(pattern).parts:
-        return "Error: '..' is not allowed in path_glob."
-    if not (pattern == "memory" or pattern.startswith("memory/")
-            or pattern == "session/brain" or pattern.startswith("session/brain/")):
-        return "Error: path_glob must start with memory/ or session/brain/."
-    try:
-        matches = list(agent_os_dir.glob(pattern))
-    except (ValueError, NotImplementedError) as exc:
-        return f"Error: invalid path_glob: {exc}"
+    patterns = _expand_braces(pattern)
+    if patterns is None:
+        return f"Error: path_glob expands to more than {_MAX_GLOB_ALTERNATIVES} globs."
+    matches: dict[Path, None] = {}
+    for one in patterns:
+        one = one.removeprefix("./")
+        if ".." in Path(one).parts:
+            return "Error: '..' is not allowed in path_glob."
+        if not (one == "memory" or one.startswith("memory/")
+                or one == "session/brain" or one.startswith("session/brain/")):
+            return "Error: path_glob must start with memory/ or session/brain/."
+        try:
+            for target in agent_os_dir.glob(one):
+                matches.setdefault(target, None)
+        except (ValueError, NotImplementedError) as exc:
+            return f"Error: invalid path_glob: {exc}"
 
     live_paths: list[tuple[Path, Path]] = []
     daily_paths: list[tuple[Path, Path]] = []
@@ -177,6 +220,11 @@ def render_transcript_entry(entry: SessionEntry) -> str:
     Format: ``[<local stamp> <channel>/<sender> <role>] <text>``. Tool calls
     are summarised after the text; send_message shows its body because that is
     what the user actually received.
+
+    Contract relied on by the grep prefilter (``_literal_terms``): apart from
+    the stamp, the separators in ``_ATOM_SPLIT_RE``, the words in
+    ``_RENDERER_TOKENS`` and punctuation, every token in the output is copied
+    verbatim from the entry's own fields.
     """
     stamp = format_local_stamp(entry.timestamp) if entry.timestamp else "unknown time"
     who = entry.role
@@ -245,8 +293,8 @@ _GREP_DEFINITION = ToolDefinition(
         "files return matching lines with context; transcript .jsonl files "
         "return rendered conversation entries with context. Long lines are "
         "excerpted around the first match; read_file with limit=1 returns "
-        "the whole entry. Use count_only first to see which files match "
-        "before reading their lines."
+        "the whole entry. count_only returns per-file match counts; over "
+        "every session it is the slowest call, so prefer a dated glob."
     ),
     parameters={
         "pattern": ToolParameter(
@@ -258,7 +306,9 @@ _GREP_DEFINITION = ToolDefinition(
             description=(
                 "Glob under the agent directory, e.g. 'memory/**/*.md', "
                 "'memory/archive/temp-memory/2026-11-*.md', "
-                "'session/brain/202611*/transcript.jsonl'. Defaults to memory/**/*.md."
+                "'session/brain/202611*/transcript.jsonl'. Braces search several "
+                "globs at once: '{memory/**/*.md,session/brain/202611*/transcript.jsonl}'. "
+                "Defaults to memory/**/*.md."
             ),
         ),
         "context_lines": ToolParameter(
@@ -344,38 +394,79 @@ def _grep_markdown(
     return blocks
 
 
+def _literal_terms(pattern: str) -> list[list[str]] | None:
+    """Return, per ``|`` alternative of a plain literal pattern, the lowercase
+    atoms a raw transcript line must contain for its rendering to match.
+
+    render_transcript_entry only wraps text copied from the entry in stamps,
+    separators and fixed markers, so a literal term can only match when every
+    one of its other tokens occurs somewhere in the raw JSON line. That lets
+    grep skip parsing lines that cannot match. Patterns with regex syntax or
+    quotes (escaped in JSON) get no prefilter, and neither does a pattern with
+    an alternative made only of digits and renderer words (``Sat``, ``11:44``):
+    those come from the re-rendered local stamp.
+    """
+    if _REGEX_META_RE.search(pattern):
+        return None
+    alternatives: list[list[str]] = []
+    for term in pattern.lower().split("|"):
+        atoms = [
+            atom for atom in _ATOM_SPLIT_RE.split(term)
+            if atom and not atom.isdigit() and atom not in _RENDERER_TOKENS
+        ]
+        if not atoms:
+            return None
+        alternatives.append(atoms)
+    return alternatives
+
+
 def _grep_transcript(
     target: Path,
     rel: Path,
     regex: re.Pattern[str],
     *,
     context_lines: int,
+    prefilter: list[list[str]] | None = None,
 ) -> list[tuple[int, list[str]]]:
     """Like _grep_markdown, but each line is a rendered SessionEntry.
 
     Only the rendered text is searched: a pattern that spans the stamp, the
     sender and the body must match the line the way the model sees it, and
     entry metadata (overlay blocks, earlier [Recall] output) never matches.
+    Entries are parsed and rendered lazily; *prefilter* (see
+    ``_literal_terms``) skips lines whose raw text rules a match out. Lines
+    with ``\\u`` escapes (another writer) or list content (text parts are
+    concatenated when rendered) are always parsed.
     """
     try:
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    rendered: list[str | None] = []
-    for raw in raw_lines:
-        entry = _parse_entry(raw)
-        rendered.append(render_transcript_entry(entry) if entry else None)
+    rendered: dict[int, str | None] = {}
+
+    def render(index: int) -> str | None:
+        if index not in rendered:
+            entry = _parse_entry(raw_lines[index])
+            rendered[index] = render_transcript_entry(entry) if entry else None
+        return rendered[index]
 
     blocks: list[tuple[int, list[str]]] = []
-    for index, text in enumerate(rendered):
-        match = regex.search(text) if text is not None else None
-        if text is None or not match:
+    for index, raw in enumerate(raw_lines):
+        if prefilter is not None and "\\u" not in raw and '"content":[' not in raw:
+            lowered = raw.lower()
+            if not any(all(atom in lowered for atom in atoms) for atoms in prefilter):
+                continue
+        text = render(index)
+        if text is None:
+            continue
+        match = regex.search(text)
+        if not match:
             continue
         start = max(0, index - context_lines)
-        end = min(len(rendered), index + context_lines + 1)
+        end = min(len(raw_lines), index + context_lines + 1)
         block = []
         for j in range(start, end):
-            line_text = rendered[j]
+            line_text = render(j)
             if line_text is None:
                 continue
             if j == index:
@@ -405,6 +496,7 @@ def _make_grep(agent_os_dir: Path) -> Callable[..., str]:
             regex = re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
             return f"Error: invalid pattern: {exc}"
+        prefilter = _literal_terms(pattern)
         files = _expand_glob(agent_os_dir, path_glob or "memory/**/*.md")
         if isinstance(files, str):
             return files
@@ -421,7 +513,9 @@ def _make_grep(agent_os_dir: Path) -> Callable[..., str]:
         truncated = False
         for target, rel in files:
             if rel.suffix == ".jsonl":
-                blocks = _grep_transcript(target, rel, regex, context_lines=context_lines)
+                blocks = _grep_transcript(
+                    target, rel, regex, context_lines=context_lines, prefilter=prefilter,
+                )
             else:
                 blocks = _grep_markdown(target, rel, regex, context_lines=context_lines)
             if not blocks:
