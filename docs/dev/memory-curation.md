@@ -11,7 +11,7 @@
 ## 設計原則
 
 1. **零記憶損失**：任何改寫前，原文必先成功落地 `memory/archive/`；LLM 失敗時不動原檔，下次 maintenance 重試（fail = no change）
-2. **距離越遠、解析度越低**：近期全文在場、中期蒸餾為 digest 在場、遠期靠 BM25 檢索 archive
+2. **距離越遠、解析度越低**：今天的現況在場（`temp-memory.md`）、長期規則在場（`long-term.md`、pinned）、其餘靠 recall 子代理從每日快照與對話 transcript 檢索（見 `memory-recall.md`）
 3. **度量用字元數**：遵循 `token-only-context-policy.md`，不做 tokenizer 預估、不呼叫 count API；字元數對治理觸發已足夠（中文約 1–1.5 token/字，預算保守抓）
 4. **自動閉環**：超標 → 排入佇列 → 每日 maintenance 蒸餾，全程無人工介入
 
@@ -20,7 +20,7 @@
 ### 1. 字元預算警告（memory_edit 寫入端）
 
 - `MemoryEditWarningsConfig` 的 `max_lines` 改為 `max_chars`（預設 10000）
-- 支援 per-pattern 覆蓋（`budgets`），`ignore` 清單語意不變（temp-memory.md 有自己的蒸餾機制，仍在 ignore 內）
+- 支援 per-pattern 覆蓋（`budgets`），`ignore` 清單語意不變（temp-memory.md 的長度由現況檔驗證 `temp_memory_max_chars` 管，仍在 ignore 內）
 - 掛點：`src/lincy/memory/editor/service.py` 的 `_check_file_warnings`，每次寫入成功後量測
 
 ### 2. 超標佇列（結構化事件）
@@ -59,24 +59,13 @@
 命中時 worker prompt 改為只准原地濃縮（合併同主題條目、去掉案例敘述、保留所有生效規則與指標），不得建新檔、不得改 index.md；
 規則同步寫在 `memory-maintenance/references/rules.md`。
 
-執行時機：maintenance 的 `archive` 之後、`context_refresh` 之前（讓 boot file reload 吃到蒸餾結果）：
+執行時機：maintenance 的現況檔快照之後、`context_refresh` 之前（讓 boot file reload 吃到整理結果）：
 
-**a. temp-memory 蒸餾（取代原「歸檔即消失」）**
+**a. 現況檔每日快照（取代 digest）**
 
-三層時間窗：
-
-| 窗口 | 內容 | 依據設定 |
-|------|------|----------|
-| 近 `retain_days` 天 | 全文留在 temp-memory | `maintenance.archive.retain_days`（現 3） |
-| 之後 `digest_retain_days` 天 | 原文歸檔 + 每日 digest 寫回 temp-memory | `maintenance.curate.digest_retain_days` |
-| 更早 | digest 移除（原文永在 archive，BM25 可搜） | 同上 |
-
-- digest 格式：`- [digest YYYY-MM-DD] ...（全文：memory/archive/temp-memory/YYYY-MM-DD.md）`
-- digest 行不得匹配歸檔 parser 的日期正則（`[digest ` 前綴天然不匹配 `\[\d{4}-`），避免被重複歸檔；到期由 curate 步驟明確移除
-- digest 由 worker 產生，目標長度 `digest_max_chars`；須保留教訓、約定、情感脈絡與待追事項，不只是流水帳壓縮
-- **marker 去重**：實測 LLM 會自行輸出 `- [digest YYYY-MM-DD] ` 前綴導致重複
-  （實際寫出 `- [digest 2026-08-08] - [digest 2026-08-08] ...`）。
-  程式端必須剝除輸出開頭既有的 marker 再組裝，不可只靠 prompt 交代
+`temp-memory.md` 是整份改寫的今日現況檔，沒有舊條目可歸檔。維護時 `snapshot_state_file()` 把整檔原樣寫到
+`memory/archive/temp-memory/<昨天>.md`（已存在就附加、不改寫），並重建該目錄 `index.md`。
+沒有 digest、沒有 LLM：過去的事由 recall 子代理直接 grep 快照與 `transcript.jsonl`，不再把摘要寫回現況檔。
 
 **b. 超標檔案整理（消化佇列）**
 
@@ -91,7 +80,7 @@
 
 1. 改寫任何檔案前，原文必先成功寫入 archive
 2. 治理流程永不修改或刪除 `memory/archive/` 下任何檔案
-3. 每個 digest 必附全文的 archive 路徑
+3. 現況檔快照只追加，不改寫既有快照
 4. LLM 失敗的唯一後果是「今天沒瘦身」，絕不是「記憶消失」
 
 ## 可觀測性
@@ -105,6 +94,7 @@ curator/治理流程過去未掛 session debug log，導致「memory_curator 零
 ```yaml
 tools:
   memory_edit:
+    temp_memory_max_chars: 6000   # 現況檔整檔上限，超過即拒絕並還原
     warnings:
       max_chars: 10000        # 取代 max_lines
       budgets: []             # 選配 per-pattern 覆蓋：[{pattern, max_chars}]
@@ -113,9 +103,12 @@ tools:
 maintenance:
   curate:
     enabled: true
-    digest_retain_days: 14
-    digest_max_chars: 1200
+  session_file_cleanup:
+    retention_days: 30
+    debug_retention_days: 7   # requests/responses.jsonl 提前刪除
 ```
+
+`maintenance.archive`、`curate.digest_*` 與 `tools.memory_sync.every_n_turns` 已移除（m0186）。
 
 `agents.memory_curator` 已移除；檔案治理改用既有 `agents.worker`。
 
@@ -145,13 +138,13 @@ maintenance:
 ## 相關檔案
 
 - `src/lincy/memory/editor/service.py`：`_check_file_warnings`（元件 1、2 掛點）
-- `src/lincy/memory/hooks.py`：`check_and_archive_buffers`、`_format_digest`（元件 3a 擴充點 + marker 去重）
+- `src/lincy/memory/hooks.py`：`snapshot_state_file`（現況檔每日快照）
 - `src/lincy/memory/curation/`：確定性骨架 + worker 派工（無專屬 curator agent）
   - `queue.py`：佇列讀寫去重（元件 2）
   - `budget.py`：字元預算 + ignore 規則，`_check_file_warnings` 與定期全掃共用
   - `scan.py`：`scan_over_budget_files`（元件 2b 定期全掃）
   - `snapshot.py`：`resolve_curation_target` / `write_verified_snapshot`（零損失快照保證，archive 路徑拒絕）
-  - `worker_dispatch.py`：`digest_day_via_worker` / `curate_queue_via_worker`（驅動既有 `agents.worker`）
+  - `worker_dispatch.py`：`curate_queue_via_worker`（驅動既有 `agents.worker`）
 - `src/lincy/agent/core.py`：`_perform_maintenance`（curate 步驟插入點，持有 `worker_runner`）
 - `src/lincy/core/schema.py`：`MemoryEditWarningsConfig`、`MaintenanceConfig`
 - `src/lincy/agent/compaction.py`：`ContextCompactor.compact`（兩層路由）、`compact_via_compactor_agent`（第 1 層）

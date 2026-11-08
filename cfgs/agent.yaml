@@ -53,13 +53,10 @@ maintenance:
   daily_hour: 3 # 03:00 local time
   latest_hour: 6 # must complete by 06:00
   retry_interval_minutes: 10 # retry if queue busy
-  # Steps in execution order: archive → context_refresh → backup → session_file_cleanup
-  archive:
-    retain_days: 3
+  # Steps in execution order:
+  # state-file sync + snapshot → curate → context_refresh → backup → session_file_cleanup
   curate:
-    enabled: true
-    digest_retain_days: 14
-    digest_max_chars: 1200
+    enabled: true # worker condenses over-budget memory files
   context_refresh:
     preserve_turns: 4
   backup:
@@ -69,6 +66,7 @@ maintenance:
   session_file_cleanup:
     enabled: true
     retention_days: 90
+    debug_retention_days: 7 # requests.jsonl / responses.jsonl dumps; transcript.jsonl stays
 
 # Feature flags
 features:
@@ -197,6 +195,7 @@ tools:
   memory_edit:
     allow_failure: true
     turn_retry_limit: 3 # responder turn-level retry when memory_edit tool result is failed
+    temp_memory_max_chars: 6000 # state file cap; a write that leaves it larger is rolled back
     warnings:
       max_chars: 10000
       ignore:
@@ -214,6 +213,7 @@ tools:
         - "memory/agent/temp-memory.md"
         - "memory/agent/persona.md"
         - "memory/agent/long-term.md"
+        - "memory/archive/curation/" # stale pre-condense snapshots; the live file wins
   apple_apps:
     enabled: true
     timeout_seconds: 30
@@ -240,8 +240,7 @@ tools:
     invert: false
     max_amount: 7
   memory_sync:
-    every_n_turns: 9  # rarer forced rollups; still pre-compact sync when debt > 0
-    max_retries: 1
+    max_retries: 1 # state-file refresh runs pre-compaction, pre-sleep and at maintenance only
   skill_governance:
     external_skills_dir: "~/.agents/skills"
     rules:
@@ -300,6 +299,21 @@ agents:
     llm_request_timeout: 180
     llm_transient_retries: 1
     warn_on_failure: true
+
+  # Recall sub-agent: grep over memory files and session transcripts before
+  # each user turn ([Recall] overlay) and on demand via the recall tool.
+  recall:
+    enabled: true
+    llm: cfgs/llm/kano-proxy/recall.yaml
+    llm_request_timeout: 30
+    llm_transient_retries: 0
+    warn_on_failure: true
+    recall:
+      prefetch: true
+      prefetch_min_chars: 4
+      prefetch_max_tool_calls: 6
+      max_tool_calls: 12
+      max_result_chars: 1500
 
   worker:
     enabled: true

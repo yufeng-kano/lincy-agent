@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import logging
 from pathlib import Path
 import threading
+import time
 from uuid import uuid4
 from typing import TYPE_CHECKING, Literal
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from .scope import ScopeResolver
     from .shared_state import SharedStateStore
     from ..brain_prompt_policy import BrainPromptPolicy
+    from ..tools.builtin.recall import RecallAgent
     from ..worker.runner import WorkerRunner
 
 from ..context import ContextBuilder, Conversation
@@ -34,12 +36,12 @@ from ..llm.schema import (
 )
 from ..memory import (
     ARTIFACT_REGISTRY_TARGET,
-    check_and_archive_buffers,
+    MEMORY_SYNC_TARGETS,
     curate_queue_via_worker,
-    digest_day_via_worker,
     find_missing_artifact_registry_paths,
     find_missing_memory_sync_targets,
     scan_over_budget_files,
+    snapshot_state_file,
 )
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
@@ -63,7 +65,8 @@ from .requeue import RequeuePolicy, TurnFailureCategory, classify_turn_failure, 
 from .token_telemetry import LatestTokenStatus, TokenTelemetry, TurnTokenUsage
 from .queue import PersistentPriorityQueue, QueueItem
 from .responder import _CommonGroundTurnDebug, _build_common_ground_text
-from .turn_overlay import build_turn_overlay_metadata
+from ..tools.builtin.recall import format_context_tail
+from .turn_overlay import RECALL_PREFETCH_METADATA_KEY, build_turn_overlay_metadata
 from .run_helpers import (
     _resolve_final_content,
     _surface_error_message,
@@ -95,7 +98,7 @@ from .turn_runtime import (
     _inject_brain_failure_record,
     _patch_interrupted_tool_calls,
     _rollback_turn_memory_changes,
-    _run_memory_archive,
+    _build_memory_sync_reminder,
     _run_memory_sync_side_channel,
 )
 from .ui_event_console import AgentUiPort, UiEventConsole
@@ -180,6 +183,7 @@ class _PreparedTurn:
     messages: list[Message]
     turn_memory_snapshot: _TurnMemorySnapshot
     turn_anchor: int
+    inbound_kind: str = "user_message"
 
 
 class AgentCore:
@@ -213,6 +217,7 @@ class AgentCore:
         memory_sync_client: LLMClient | None = None,
         worker_runner: "WorkerRunner | None" = None,
         compactor_agent: "CompactorAgent | None" = None,
+        recall_agent: "RecallAgent | None" = None,
         brain_prompt_policy: "BrainPromptPolicy | None" = None,
         ui_debug: bool = False,
         ui_show_tool_use: bool = False,
@@ -255,6 +260,7 @@ class AgentCore:
         self.shared_state_store = shared_state_store
         self.scope_resolver = scope_resolver or DEFAULT_SCOPE_RESOLVER
         self.compactor_agent = compactor_agent
+        self.recall_agent = recall_agent
         self.brain_prompt_policy = brain_prompt_policy
         self.skill_registry = SkillGovernanceRegistry.load(
             agent_os_dir,
@@ -409,6 +415,12 @@ class AgentCore:
             common_ground=common_ground,
             debug=debug,
         )
+        recall_text = self._prefetch_recall(
+            user_input,
+            channel=channel,
+            turn_metadata=turn_metadata,
+            debug=debug,
+        )
         # Timing blocks read the entry's metadata and timestamp; build them
         # from an identical provisional entry because add() persists at once.
         overlay_metadata = build_turn_overlay_metadata(
@@ -422,6 +434,7 @@ class AgentCore:
             note_store=getattr(self, "note_store", None),
             history=self.conversation.get_messages(),
             common_ground=common_ground,
+            recall=recall_text,
         )
         self.conversation.add(
             "user",
@@ -431,6 +444,54 @@ class AgentCore:
             timestamp=timestamp,
             metadata={**(turn_metadata or {}), **overlay_metadata} or None,
         )
+
+    def _prefetch_recall(
+        self,
+        user_input: str,
+        *,
+        channel: str,
+        turn_metadata: dict[str, object] | None,
+        debug: bool,
+    ) -> str | None:
+        """Run the recall sub-agent once for a user-message turn.
+
+        The result is cached on the turn metadata (even when empty) so the
+        overflow retry renders the same [Recall] block instead of searching
+        again. Internal turns never prefetch.
+        """
+        recall_agent = getattr(self, "recall_agent", None)
+        if recall_agent is None or turn_metadata is None:
+            return None
+        cached = turn_metadata.get(RECALL_PREFETCH_METADATA_KEY)
+        if isinstance(cached, str):
+            return cached or None
+        if _classify_inbound_kind(channel=channel, metadata=turn_metadata) != "user_message":
+            return None
+        recall_cfg = recall_agent.config
+        if not recall_cfg.prefetch:
+            return None
+        if len(user_input.strip()) < recall_cfg.prefetch_min_chars:
+            return None
+
+        started = time.monotonic()
+        try:
+            result = recall_agent.recall(
+                user_input,
+                context_tail=format_context_tail(self.conversation.get_messages()),
+                exclude_paths=self._loaded_context_paths(),
+                max_tool_calls=recall_cfg.prefetch_max_tool_calls,
+            )
+        except Exception as exc:
+            logger.warning("Recall prefetch failed: %s", exc)
+            result = None
+        turn_metadata[RECALL_PREFETCH_METADATA_KEY] = result or ""
+        if debug:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            self.console.print_debug(
+                "recall-prefetch",
+                f"elapsed_ms={elapsed_ms} chars={len(result or '')}",
+            )
+        return result
 
     def _prepare_turn_attempt(
         self,
@@ -464,6 +525,7 @@ class AgentCore:
             messages=messages,
             turn_memory_snapshot=turn_memory_snapshot,
             turn_anchor=turn_anchor,
+            inbound_kind=_classify_inbound_kind(channel=channel, metadata=turn_metadata),
         )
 
     def _prepare_retry_turn_attempt(
@@ -502,6 +564,7 @@ class AgentCore:
             messages=messages,
             turn_memory_snapshot=turn_memory_snapshot,
             turn_anchor=turn_anchor,
+            inbound_kind=_classify_inbound_kind(channel=channel, metadata=turn_metadata),
         )
 
     def _debug_common_ground_turn(
@@ -694,12 +757,7 @@ class AgentCore:
         )
 
         if enable_memory_sync:
-            self._maybe_run_turn_memory_sync(
-                prepared=prepared,
-                tools=tools,
-                is_cancel_requested=is_cancel_requested,
-                on_cancel_pending=on_cancel_pending,
-            )
+            self._track_state_file_debt(prepared=prepared)
 
         if final_content and not used_fallback_content:
             self.conversation.add("assistant", final_content)
@@ -732,6 +790,12 @@ class AgentCore:
     ) -> None:
         """Run memory sync with the configured side-channel client."""
         sync_client = getattr(self, "memory_sync_client", None) or self.client
+        if reminder_text is None:
+            reminder_text = _build_memory_sync_reminder(
+                missing_targets,
+                turns_accumulated,
+                max_chars=self.config.tools.memory_edit.temp_memory_max_chars,
+            )
         _run_memory_sync_side_channel(
             sync_client,
             self.conversation,
@@ -794,69 +858,31 @@ class AgentCore:
             if prepared.debug:
                 self.console.print_debug("artifact-sync", "side-channel failed")
 
-    def _maybe_run_turn_memory_sync(
-        self,
-        *,
-        prepared: _PreparedTurn,
-        tools: list[ToolDefinition],
-        is_cancel_requested: Callable[[], bool] | None,
-        on_cancel_pending: Callable[[], None] | None,
-    ) -> None:
-        """Run the scheduled side-channel memory sync for a normal turn."""
-        is_system_heartbeat = (
-            self.turn_context is not None and self.turn_context.metadata.get("system")
-        )
-        sync_cfg = self.config.tools.memory_sync
-        should_sync = False
-        if not is_system_heartbeat and sync_cfg.every_n_turns is not None:
-            sync_turn_messages = self.conversation.get_messages()[
-                prepared.turn_anchor :
-            ]
-            missing = find_missing_memory_sync_targets(sync_turn_messages)
-            if not missing:
-                self._turns_since_memory_sync = 0
-            else:
-                self._turns_since_memory_sync += 1
-                if self._turns_since_memory_sync >= sync_cfg.every_n_turns:
-                    should_sync = True
+    def _track_state_file_debt(self, *, prepared: _PreparedTurn) -> None:
+        """Count user-message turns since the brain last wrote the state file.
+
+        Internal turns (heartbeat, scheduled, task due, worker reports) do not
+        count: they rarely change what temp-memory.md should say, and counting
+        them is what used to force bookkeeping entries into it. The debt is
+        paid by the pre-compaction, pre-sleep and maintenance syncs.
+        """
+        if prepared.inbound_kind != "user_message":
             if prepared.debug:
                 self.console.print_debug(
-                    "memory-sync",
-                    f"missing={bool(missing)}, "
-                    f"counter={self._turns_since_memory_sync}/{sync_cfg.every_n_turns}",
+                    "state-file", f"skipped: {prepared.inbound_kind}"
                 )
-        elif prepared.debug:
-            reason = "heartbeat" if is_system_heartbeat else "disabled"
-            self.console.print_debug("memory-sync", f"skipped: {reason}")
-
-        if not should_sync:
             return
-
-        try:
-            sync_client = getattr(self, "memory_sync_client", None) or self.client
-            if prepared.debug:
-                dispatch = "memory_sync" if sync_client is not self.client else "brain"
-                self.console.print_debug("memory-sync", f"dispatch client={dispatch}")
-            self._run_memory_sync(
-                tools=tools,
-                missing_targets=missing,  # type: ignore[possibly-undefined]
-                turns_accumulated=self._turns_since_memory_sync,
-                on_before_tool_call=prepared.turn_memory_snapshot.capture_from_tool_call,
-                is_cancel_requested=is_cancel_requested,
-                on_cancel_pending=on_cancel_pending,
-            )
+        sync_turn_messages = self.conversation.get_messages()[prepared.turn_anchor :]
+        missing = find_missing_memory_sync_targets(sync_turn_messages)
+        if missing:
+            self._turns_since_memory_sync += 1
+        else:
             self._turns_since_memory_sync = 0
-            if prepared.debug:
-                self.console.print_debug("memory-sync", "done")
-        except ContextLengthExceededError:
-            if prepared.debug:
-                self.console.print_debug(
-                    "memory-sync",
-                    "skipped: context length exceeded",
-                )
-        except Exception:
-            if prepared.debug:
-                self.console.print_debug("memory-sync", "side-channel failed")
+        if prepared.debug:
+            self.console.print_debug(
+                "state-file",
+                f"written={not missing}, debt={self._turns_since_memory_sync}",
+            )
 
     def _flush_pending_outbound(self) -> None:
         """Print and clear buffered outbound messages from send_message."""
@@ -925,11 +951,6 @@ class AgentCore:
         )
         self.conversation.truncate_to(prepared.pre_turn_anchor)
 
-        _run_memory_archive(
-            self.agent_os_dir,
-            self.config.maintenance.archive,
-            self.console,
-        )
         self.builder.reload_boot_files()
         keep_turns = self.config.context.preserve_turns
         result = self._compact_context(
@@ -1205,18 +1226,11 @@ class AgentCore:
     def graceful_exit(self) -> None:
         """Handle graceful exit.
 
-        Keeps finalize + archive only; backup and session cleanup are
+        Only finalizes the session; snapshot, backup and session cleanup are
         handled by the daily maintenance window.
         """
         if self.session_mgr is not None:
             self.session_mgr.finalize("completed")
-
-        if self.agent_os_dir and self.config:
-            _run_memory_archive(
-                self.agent_os_dir,
-                self.config.maintenance.archive,
-                self.console,
-            )
 
         self.console.print_goodbye()
 
@@ -1296,18 +1310,14 @@ class AgentCore:
         self.session_mgr.finalize("refreshed")
         self.session_mgr.create(self.user_id, self.display_name)
         self.conversation.set_on_message(self.session_mgr.append_message)
+        # Retained history is already in the previous session's transcript.
         for entry in self.conversation.get_messages():
-            self.session_mgr.append_message(entry)
+            self.session_mgr.append_message(entry, transcript=False)
         self.session_mgr.write_checkpoint(self.conversation.get_messages())
 
     def _perform_new_session(self) -> None:
-        """Archive memory and rotate into a fresh empty session."""
+        """Rotate into a fresh empty session."""
         try:
-            _run_memory_archive(
-                self.agent_os_dir,
-                self.config.maintenance.archive,
-                self.console,
-            )
             self._turns_since_memory_sync = 0
             self.conversation.clear()
             if self.turn_context is not None:
@@ -1315,7 +1325,7 @@ class AgentCore:
             self._reload_system_prompt()
             self.builder.reload_boot_files()
             self._rotate_session()
-            self.console.print_info("Started a new session after archive.")
+            self.console.print_info("Started a new session.")
         except Exception as e:
             logger.warning("New session rotation failed: %s", e)
 
@@ -1351,15 +1361,36 @@ class AgentCore:
             logger.warning("Context refresh failed: %s", e)
 
     def _perform_maintenance(self) -> None:
-        """Run daily maintenance: archive -> curate -> context refresh -> backup -> cleanup."""
+        """Run daily maintenance: state file -> curate -> context refresh -> backup -> cleanup."""
         cfg = self.config.maintenance if self.config else None
         if cfg is None or not cfg.enabled:
             return
 
         logger.info("Daily maintenance started")
         try:
-            # Curation owns temp-memory archival so a full day only leaves with
-            # its digest committed in the same maintenance run.
+            # The state file is rewritten in place, so settle any refresh debt
+            # first, then snapshot it for the day that just ended before the
+            # context refresh below starts a new session.
+            if self._turns_since_memory_sync > 0:
+                try:
+                    self._run_memory_sync(
+                        tools=self.registry.get_definitions(),
+                        missing_targets=list(MEMORY_SYNC_TARGETS),
+                        turns_accumulated=self._turns_since_memory_sync,
+                    )
+                    self._turns_since_memory_sync = 0
+                except Exception as e:
+                    logger.warning("Maintenance state-file sync failed: %s", e)
+            try:
+                snapshot = snapshot_state_file(
+                    self.agent_os_dir,
+                    day=(tz_now() - timedelta(days=1)).date(),
+                )
+                if snapshot is not None:
+                    self.console.print_info(f"State file snapshot: {snapshot.name}")
+            except Exception as e:
+                logger.warning("Maintenance state-file snapshot failed: %s", e)
+
             if cfg.curate.enabled and self.worker_runner is not None:
                 try:
                     # Full scan before consuming the queue: memory_edit only
@@ -1377,19 +1408,6 @@ class AgentCore:
                 except Exception as e:
                     logger.warning("Maintenance curation scan failed: %s", e)
                 try:
-                    result = check_and_archive_buffers(
-                        self.agent_os_dir,
-                        cfg.archive,
-                        curate_config=cfg.curate,
-                        digest_day=lambda d, c, m: digest_day_via_worker(
-                            self.worker_runner, d, c, m
-                        ),
-                    )
-                    if result.archived:
-                        self.console.print_info(f"Memory archived: {result.summary}")
-                except Exception as e:
-                    logger.warning("Maintenance temp-memory curation failed: %s", e)
-                try:
                     curate_queue_via_worker(
                         self.worker_runner,
                         self.agent_os_dir,
@@ -1399,12 +1417,6 @@ class AgentCore:
                     logger.warning("Maintenance queued file curation failed: %s", e)
             elif cfg.curate.enabled:
                 logger.warning("Memory curation is enabled but no worker is available")
-            else:
-                _run_memory_archive(
-                    self.agent_os_dir,
-                    cfg.archive,
-                    self.console,
-                )
 
             # Context refresh (compact + reload + session rotate)
             self._perform_context_refresh(
@@ -1426,6 +1438,7 @@ class AgentCore:
                     cleanup_sessions(
                         self.agent_os_dir / "session",
                         retention_days=cfg.session_file_cleanup.retention_days,
+                        debug_retention_days=cfg.session_file_cleanup.debug_retention_days,
                     )
                 except Exception as e:
                     logger.warning("Maintenance session file cleanup failed: %s", e)
@@ -1605,8 +1618,6 @@ class AgentCore:
             if self._queue is not None and receipt is not None:
                 self._queue.ack(receipt)
             return
-
-        from ..memory.tool_analysis import MEMORY_SYNC_TARGETS
 
         tools = self.registry.get_definitions()
         try:

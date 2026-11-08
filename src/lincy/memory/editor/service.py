@@ -57,9 +57,10 @@ _LONG_TERM_RULE_LINE = re.compile(
 )
 _LONG_TERM_LIST_LINE = re.compile(r"^-\s*\[\d{4}-\d{2}-\d{2}\]\s+.+$")
 _LONG_TERM_RECORD_LINE = re.compile(r"^-\s*\[\d{4}-\d{2}-\d{2}\]\s+.+$")
-_TEMP_MEMORY_ENTRY_LINE = re.compile(
-    r"^-\s*\[\d{4}-\d{2}-\d{2}(?:\s+\([^)]+\))?\s+\d{2}:\d{2}\]\s+.+$"
-)
+# temp-memory.md is the rewritten-in-place state file: a title plus four fixed
+# sections, validated after every write (see docs/dev/memory-recall.md).
+_STATE_FILE_TITLE = "# 今日現況"
+_STATE_FILE_SECTIONS = ("## 最後互動", "## 今日時間線", "## 未閉環", "## 下一步")
 
 
 @dataclass
@@ -88,10 +89,12 @@ class MemoryEditor:
         commit_log: SessionCommitLog,
         planner: MemoryEditPlanner,
         warnings_config: MemoryEditWarningsConfig | None = None,
+        temp_memory_max_chars: int = 6000,
     ) -> None:
         self.commit_log = commit_log
         self.planner = planner
         self.warnings_config = warnings_config or MemoryEditWarningsConfig()
+        self.temp_memory_max_chars = temp_memory_max_chars
 
     def apply_batch(
         self,
@@ -301,21 +304,13 @@ class MemoryEditor:
             )
 
         file_exists = target.exists()
-        is_temp_memory = _is_temp_memory_path(req.target_path)
-        file_content = (
-            ""
-            if is_temp_memory
-            else target.read_text(encoding="utf-8")
-            if file_exists
-            else ""
-        )
+        file_content = target.read_text(encoding="utf-8") if file_exists else ""
         plan = self.planner.plan(
             request=req,
             as_of=batch.as_of,
             turn_id=batch.turn_id,
             file_exists=file_exists,
             file_content=file_content,
-            file_content_available=not is_temp_memory,
         )
         if plan.status != "ok":
             return ErrorItem(
@@ -329,27 +324,6 @@ class MemoryEditor:
             return AppliedItem(
                 request_id=req.request_id,
                 status="already_applied",
-                path=req.target_path,
-            )
-
-        if is_temp_memory:
-            original_size = target.stat().st_size if file_exists else None
-            temp_outcome = _apply_temp_memory_append_only(target, plan)
-            if temp_outcome.status == "error":
-                _rollback_temp_memory_append(
-                    target=target,
-                    existed=file_exists,
-                    original_size=original_size,
-                )
-                return ErrorItem(
-                    request_id=req.request_id,
-                    code=temp_outcome.code or "apply_failed",
-                    detail=temp_outcome.detail or "unknown_failure",
-                )
-            self.commit_log.mark_applied(batch.turn_id, req.request_id, payload_hash)
-            return AppliedItem(
-                request_id=req.request_id,
-                status="applied" if temp_outcome.status == "applied" else "noop",
                 path=req.target_path,
             )
 
@@ -383,6 +357,7 @@ class MemoryEditor:
             validation_outcome = _validate_target_file_after_apply(
                 target=target,
                 rel_path=req.target_path,
+                temp_memory_max_chars=self.temp_memory_max_chars,
             )
             if validation_outcome is not None:
                 _rollback_request_file(
@@ -411,79 +386,6 @@ class MemoryEditor:
             status="applied" if request_changed else "noop",
             path=req.target_path,
         )
-
-
-def _is_temp_memory_path(rel_path: str) -> bool:
-    return rel_path.strip().replace("\\", "/") == _TEMP_MEMORY_REL_PATH
-
-
-def _apply_temp_memory_append_only(target: Path, plan: MemoryEditPlan) -> ApplyOutcome:
-    """Append temp-memory payloads without reading existing file content."""
-    payloads: list[str] = []
-    for operation in plan.operations:
-        if operation.kind != "append_entry":
-            return ApplyOutcome(
-                status="error",
-                code="temp_memory_append_only",
-                detail="temp-memory.md only supports append_entry operations",
-            )
-        normalized = _normalize_temp_memory_payload(operation.payload_text or "")
-        validation = _validate_temp_memory_payload(normalized)
-        if validation is not None:
-            return validation
-        payloads.append(normalized)
-
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as f:
-            for payload in payloads:
-                f.write(payload)
-    except Exception as e:
-        return ApplyOutcome(status="error", code="apply_exception", detail=str(e))
-
-    return ApplyOutcome(status="applied")
-
-
-def _normalize_temp_memory_payload(payload: str) -> str:
-    text = payload.strip()
-    if not text:
-        return ""
-    return text + "\n"
-
-
-def _validate_temp_memory_payload(payload: str) -> ApplyOutcome | None:
-    lines = [line.strip() for line in payload.splitlines() if line.strip()]
-    if not lines:
-        return ApplyOutcome(
-            status="error",
-            code="temp_memory_format_invalid",
-            detail="append_entry payload_text must contain at least one entry",
-        )
-    for line in lines:
-        if not _TEMP_MEMORY_ENTRY_LINE.match(line):
-            return ApplyOutcome(
-                status="error",
-                code="temp_memory_format_invalid",
-                detail=(
-                    "append_entry for temp-memory.md must use "
-                    "'- [YYYY-MM-DD HH:MM] ...' lines"
-                ),
-            )
-    return None
-
-
-def _rollback_temp_memory_append(
-    *,
-    target: Path,
-    existed: bool,
-    original_size: int | None,
-) -> None:
-    if existed:
-        with target.open("r+b") as f:
-            f.truncate(original_size or 0)
-        return
-    if target.exists() and target.is_file():
-        target.unlink()
 
 
 def _sync_people_registry_after_batch(
@@ -552,10 +454,52 @@ def _validate_target_file_after_apply(
     *,
     target: Path,
     rel_path: str,
+    temp_memory_max_chars: int,
 ) -> ApplyOutcome | None:
     normalized = str(rel_path).strip().replace("\\", "/")
     if normalized == _LONG_TERM_REL_PATH:
         return _validate_long_term_file(target)
+    if normalized == _TEMP_MEMORY_REL_PATH:
+        return _validate_state_file(target, max_chars=temp_memory_max_chars)
+    return None
+
+
+def _validate_state_file(target: Path, *, max_chars: int) -> ApplyOutcome | None:
+    if not target.exists() or not target.is_file():
+        return None
+
+    content = target.read_text(encoding="utf-8")
+    if len(content) > max_chars:
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_too_large",
+            detail=(
+                f"temp-memory.md is {len(content)} chars, limit {max_chars}; "
+                "rewrite it shorter and keep only what matters now"
+            ),
+        )
+    if not content.lstrip().startswith(_STATE_FILE_TITLE):
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_structure_invalid",
+            detail=f"temp-memory.md must start with '{_STATE_FILE_TITLE}'",
+        )
+    positions: list[int] = []
+    for header in _STATE_FILE_SECTIONS:
+        index = content.find(header)
+        if index < 0:
+            return ApplyOutcome(
+                status="error",
+                code="temp_memory_structure_invalid",
+                detail=f"missing required section: {header}",
+            )
+        positions.append(index)
+    if positions != sorted(positions):
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_structure_invalid",
+            detail="required sections are out of order",
+        )
     return None
 
 

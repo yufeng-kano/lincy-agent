@@ -24,31 +24,22 @@ def _memory_edit_call(path: str) -> ToolCall:
     )
 
 
-def test_turn_memory_snapshot_does_not_read_temp_memory_bytes(tmp_path: Path, monkeypatch):
+def test_turn_memory_snapshot_restores_temp_memory_in_full(tmp_path: Path):
+    """The state file is rewritten in place, so rollback must restore its bytes."""
     target = tmp_path / "memory" / "agent" / "temp-memory.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(b"- [2026-05-17 10:00] existing\n")
-
-    original_read_bytes = Path.read_bytes
-
-    def guarded_read_bytes(self):  # noqa: ANN001
-        if self == target:
-            raise AssertionError("temp-memory.md snapshot must not read the full file")
-        return original_read_bytes(self)
-
-    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    original = "# \u4eca\u65e5\u73fe\u6cc1\n\n## \u6700\u5f8c\u4e92\u52d5\n\n- existing\n".encode("utf-8")
+    target.write_bytes(original)
 
     snapshot = _TurnMemorySnapshot(agent_os_dir=tmp_path)
     snapshot.capture_from_tool_call(_memory_edit_call("memory/agent/temp-memory.md"))
 
-    with target.open("ab") as f:
-        f.write(b"- [2026-05-17 20:05] appended\n")
+    target.write_bytes(b"# rewritten\n")
 
     restored = snapshot.rollback()
 
     assert restored == 1
-    with target.open("rb") as f:
-        assert f.read() == b"- [2026-05-17 10:00] existing\n"
+    assert target.read_bytes() == original
 
 
 def test_turn_memory_snapshot_still_restores_regular_memory_file(tmp_path: Path):

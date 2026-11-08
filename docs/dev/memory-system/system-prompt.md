@@ -55,7 +55,7 @@ v0.8.0 用單一平面表格，v0.30.0 改為 3 類別：
 
 針對「有提到關鍵字但抓到太舊事件」的問題，新增近時優先規則：
 - 若用戶語句含「今天／剛才／剛剛／到現在／從...到現在／剛回來」等線索
-- 先看同日、最接近當下的證據（`recent.md` + 當前對話）
+- 先看同日、最接近當下的證據（`temp-memory.md` 今日時間線 + `[Recall]` + 當前對話）
 - 舊事件只能作次要補充，不能蓋過同日上下文
 - 回覆語氣保持自然，不可像逐條朗讀記錄檔
 
@@ -65,7 +65,7 @@ v0.8.0 用單一平面表格，v0.30.0 改為 3 類別：
 - 禁止直接使用 `write_file` / `edit_file` 寫 `memory/`
 - 禁止用 shell 重導向、`tee`、`sed -i` 寫 `memory/`
 - Brain 只可輸出 instruction request（`request_id`、`target_path`、`instruction`）
-- 實際規劃改由 `memory_editor` 子代理產生 operations；一般目標會讀取目標檔全文，`memory/agent/temp-memory.md` 例外，只提供 request context，讓 editor 格式化成 append-only `append_entry`
+- 實際規劃改由 `memory_editor` 子代理產生 operations；所有目標（含 `memory/agent/temp-memory.md`）都讀取目標檔全文。現況檔寫入後由 service 驗證標題、四段順序與長度上限（`tools.memory_edit.temp_memory_max_chars`），不合就整檔還原並回 `temp_memory_structure_invalid` / `temp_memory_too_large`
 - 寫入由 deterministic `apply.py` 執行，失敗時 request 級回滾（atomic）
 
 ### 自我改進與習慣摸索
@@ -84,7 +84,7 @@ Brain prompt 明確要求 agent 主動改進 `persona.md`、`long-term.md` 與 `
 Prompt 不應告訴 agent「你只有一天記憶」。較準確的說法是：
 
 - 對話 context 可能在每日維護後清空；`maintenance.context_refresh.preserve_turns: 0` 代表每日 refresh 不保留對話輪次。
-- `temp-memory.md` 是近期工作記憶，會保留最近脈絡，但不是永久記憶，也不是提醒機制。
+- `temp-memory.md` 是今日現況檔（最後互動、今日時間線、未閉環、下一步），整份改寫；每天 03:00 快照到 `archive/temp-memory/`，過去靠 recall 子代理找回。它不是永久記憶，也不是提醒機制。
 - `persona.md`、`long-term.md`、`people/`、`personal-skills/` 是長期位置。隔天仍需可靠使用的規則、偏好、身份邊界與工具流程，要主動寫入這些位置。
 
 這樣能提醒 agent 不要依賴當前對話或 temp memory，又不會讓它誤以為所有記憶都只活一天。
@@ -136,6 +136,19 @@ v0.2.0 的問題：Agent 學到新工具（如 claude CLI）後下次就忘記�
 - **記憶寫入節流**：加入顯著性門檻與單輪 `memory_edit` batch 策略，降低低價值頻繁寫入
 - **狀態提交工具預算**：`agent_note`、`memory_edit`、`schedule_action` 的寫入每 turn 最多成功呼叫一次；單筆更新也必須使用 batch 欄位，只有失敗時才重試；`list` 不算提交，但連續重複相同 `list` 會被擋下
 - **`pending-thoughts.md` 最小格式**：補充最少區段與清理規則，避免成為未定義黑洞
+
+### 現況檔與 recall（v0.86.0）
+
+流水帳的三個來源都在 prompt 與 runtime 機制，所以這版只改記憶相關章節，不整份重寫：
+
+- 啟動流程：`temp-memory.md` 改稱今日現況檔；說明用戶訊息後的 `[Recall]` 區塊（系統用該訊息預抓的過去事實，附時間與來源，可信度中等，關鍵引用前用 `recall` 或 `read_file` 確認；沒有區塊代表沒抓到，不代表沒發生）
+- 回憶與查詢：`[Recall]` 不足時呼叫 `recall`（問題自包含：人、事、大約日期）；`memory_search` 退回「定位記憶檔與規則」；`archive/` 由 recall 代查
+- 每輪檢查：刪掉 Delta only / Pointer / Open loops 的追加規範，改為「現況有變就整份重寫」，固定四段、時間線最多 12 條、整檔 6000 字內；內部回合除非改變對使用者的下一步，否則不改現況檔；不寫 silent 決定、worker 回報、系統事件
+- 滾動緩衝區一節改為今日現況檔：整份改寫、每日 03:00 系統快照、過去交給 recall
+- 工具表新增 `recall` 列；`memory_edit` 契約補「現況檔 instruction 直接附整份新內容」
+- 鐵則 8 刪掉 reviewer 時代的審查欄位禁令，改為不可把 `[Recall]`、`[Runtime Context]` 等系統區塊抄進記憶檔
+
+runtime 端對應：每 9 回合的強制 rollup 移除，只剩 compaction 前、睡前與每日維護三個同步點，提醒文改為 `[MEMORY SYNC - STATE REFRESH]`（見 `../memory-recall.md`）。
 
 ### Heartbeat Reliability（v0.74.16）
 

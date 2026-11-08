@@ -1,4 +1,4 @@
-"""Per-turn overlay: runtime context, timing notice, agent notes, common ground.
+"""Per-turn overlay: runtime context, timing notice, agent notes, recall, common ground.
 
 The overlay is computed once when a turn's user entry is added (see
 AgentCore._add_turn_user_entry) and stored in that entry's metadata.
@@ -10,6 +10,10 @@ keeps the prompt cache prefix and replayed thinking blocks valid.
 with what the retained conversation already shows. That shown state is folded
 from the retained entries' metadata, so once compaction drops the turns that
 showed a note, the next turn shows it again.
+
+[Recall] is what the recall sub-agent found in memory files and transcripts
+for this message (docs/dev/memory-recall.md). It is frozen with the turn like
+every other block.
 
 Runtime-context time always comes from turn metadata (parse_turn_timing_info),
 never a wall-clock read -- see docs/dev/token-only-context-policy.md.
@@ -30,6 +34,9 @@ if TYPE_CHECKING:
 
 # Note lines this turn's overlay showed, by key; None marks a removed note.
 AGENT_NOTES_SHOWN_METADATA_KEY = "agent_notes_shown"
+# Recall prefetch text for this turn ("" when the recall found nothing), so an
+# overflow retry renders the same overlay instead of running the recall again.
+RECALL_PREFETCH_METADATA_KEY = "recall_prefetch"
 
 
 def build_latest_turn_runtime_context(
@@ -80,12 +87,13 @@ def build_turn_overlay_metadata(
     note_store: "NoteStore | None",
     history: list[SessionEntry],
     common_ground: str | None,
+    recall: str | None = None,
 ) -> dict[str, object]:
     """Return the metadata that stores this turn's overlay on its user entry.
 
-    Block order: Runtime Context, Timing Notice, Agent Notes, common ground.
-    ``history`` is the conversation before this entry. Returns {} when no
-    block has anything to say.
+    Block order: Runtime Context, Timing Notice, Agent Notes, Recall, common
+    ground. ``history`` is the conversation before this entry. Returns {} when
+    no block has anything to say.
     """
     notes_delta = diff_agent_notes(note_store, history) if note_store is not None else {}
     notes_block = None
@@ -94,10 +102,12 @@ def build_turn_overlay_metadata(
             line if line is not None else f"{key}: (removed)"
             for key, line in notes_delta.items()
         )
+    recall_block = f"[Recall]\n{recall.strip()}" if recall and recall.strip() else None
     blocks = [
         build_latest_turn_runtime_context(entry, agent_os_dir=agent_os_dir),
         build_turn_timing_notice(entry),
         notes_block,
+        recall_block,
         common_ground,
     ]
     metadata: dict[str, object] = {}

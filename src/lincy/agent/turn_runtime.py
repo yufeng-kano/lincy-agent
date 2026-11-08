@@ -8,13 +8,11 @@ import logging
 from pathlib import Path
 
 from ..context import ContextBuilder, Conversation
-from ..core.schema import MemoryArchiveConfig
 from ..llm import LLMResponse
 from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import extract_memory_edit_paths
-from ..memory.hooks import check_and_archive_buffers
 from ..tools import ToolRegistry
 from .side_channel import run_side_channel_tool_loop
 from .tool_setup import resolve_memory_path
@@ -35,7 +33,6 @@ class _MemoryFileSnapshot:
     existed: bool
     was_file: bool
     content: bytes | None = None
-    size: int | None = None
 
 
 class _TurnMemorySnapshot:
@@ -43,9 +40,6 @@ class _TurnMemorySnapshot:
 
     def __init__(self, *, agent_os_dir: Path):
         self._agent_os_dir = agent_os_dir
-        self._temp_memory_file = (
-            agent_os_dir / "memory" / "agent" / "temp-memory.md"
-        ).resolve()
         self._snapshots: dict[Path, _MemoryFileSnapshot] = {}
 
     def capture_from_tool_call(self, tool_call: ToolCall) -> None:
@@ -60,18 +54,11 @@ class _TurnMemorySnapshot:
 
             if resolved.exists():
                 if resolved.is_file():
-                    if resolved == self._temp_memory_file:
-                        self._snapshots[resolved] = _MemoryFileSnapshot(
-                            existed=True,
-                            was_file=True,
-                            size=resolved.stat().st_size,
-                        )
-                    else:
-                        self._snapshots[resolved] = _MemoryFileSnapshot(
-                            existed=True,
-                            was_file=True,
-                            content=resolved.read_bytes(),
-                        )
+                    self._snapshots[resolved] = _MemoryFileSnapshot(
+                        existed=True,
+                        was_file=True,
+                        content=resolved.read_bytes(),
+                    )
                 else:
                     self._snapshots[resolved] = _MemoryFileSnapshot(
                         existed=True,
@@ -95,12 +82,6 @@ class _TurnMemorySnapshot:
             if snapshot.existed:
                 if not snapshot.was_file:
                     continue
-                if snapshot.size is not None:
-                    if path.exists() and path.is_file():
-                        with path.open("r+b") as f:
-                            f.truncate(snapshot.size)
-                        restored += 1
-                    continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(snapshot.content or b"")
                 restored += 1
@@ -119,33 +100,31 @@ class _TurnMemorySnapshot:
 def _build_memory_sync_reminder(
     missing_targets: list[str],
     turns_accumulated: int = 1,
+    *,
+    max_chars: int = 6000,
 ) -> str:
-    """Build directive for the memory-sync side-channel LLM call."""
+    """Build the directive for the state-file refresh side-channel call."""
     targets = "\n".join(f"- {target}" for target in missing_targets)
-    turn_scope = "1 turn" if turns_accumulated == 1 else f"{turns_accumulated} turns"
+    turn_scope = (
+        "1 user turn" if turns_accumulated == 1 else f"{turns_accumulated} user turns"
+    )
     return (
-        "[MEMORY SYNC - ROLLUP]\n"
-        f"The following files have not been updated for {turn_scope}:\n{targets}\n\n"
-        "You must persist the missing interactions now.\n"
-        "For each listed target, write EXACTLY ONE rollup entry covering the\n"
-        "missing window in chronological order.\n"
-        "Do not skip any NEW fact from that window.\n\n"
-        "Format for temp-memory.md rollup:\n"
-        "- Prefix: `[YYYY-MM-DD HH:MM] ` (use the latest turn timestamp in scope)\n"
-        f"- Start entry body with `[rollup {turn_scope}]`\n"
-        "- Include real names for people when applicable\n"
-        "- DELTA ONLY: record facts new since the last successful temp-memory write\n"
-        "  (or the start of this missing window). Do NOT re-narrate the whole day\n"
-        "  or restate closed loops already written earlier in temp-memory.\n"
-        "- POINTER for durable homes: if a fact already lives in expenses DB,\n"
-        "  health.md, long-term.md, tasks, schedule_action, or people/* — write one\n"
-        "  short pointer line (ids/times only), not the full process narrative.\n"
-        "- End with an Open loops only section: unresolved items only; drop items\n"
-        "  that closed in this window. Do not paste a full day todo list.\n"
-        "- Optional brief reaction/emotion if it affects next actions; skip filler.\n"
-        "- FORBIDDEN boilerplate: fixed channel tags like '回覆走 DC', full daily\n"
-        "  ban lists restated every entry, re-copying long-term rules, or replaying\n"
-        "  already-logged expense/nutrition/med narratives.\n\n"
+        "[MEMORY SYNC - STATE REFRESH]\n"
+        f"The following state files have not been refreshed for {turn_scope}:\n"
+        f"{targets}\n\n"
+        "Refresh them now with ONE memory_edit call.\n\n"
+        "memory/agent/temp-memory.md is the current-state file, not a log. Put the\n"
+        "complete new file content in the instruction so the editor overwrites it:\n"
+        "- Keep the title `# 今日現況` and the four sections `## 最後互動`,\n"
+        "  `## 今日時間線`, `## 未閉環`, `## 下一步`, in that order.\n"
+        "- 最後互動: who, when, which channel, what it was about, how they felt.\n"
+        "- 今日時間線: at most 12 one-line bullets with HH:MM, today only.\n"
+        "- 未閉環: only still-open items, with schedule/task ids where they exist.\n"
+        "- 下一步: what to do at the next message or wake-up.\n"
+        "- Drop closed loops, internal bookkeeping (silent heartbeats, worker\n"
+        "  reports, bare scheduler ids) and anything already stored in long-term\n"
+        "  or people files. Do not add dated log entries.\n"
+        f"- Stay under {max_chars} characters.\n\n"
         "Call memory_edit now."
     )
 
@@ -361,17 +340,3 @@ def _run_empty_response_fallback(
     if response and response.strip():
         return response
     return ""
-
-
-def _run_memory_archive(
-    agent_os_dir: Path,
-    archive_config: MemoryArchiveConfig,
-    console: AgentUiPort,
-) -> None:
-    """Run memory archive and swallow non-fatal errors."""
-    try:
-        result = check_and_archive_buffers(agent_os_dir, archive_config)
-        if result.archived:
-            console.print_info(f"Memory archived: {result.summary}")
-    except Exception as error:
-        logger.warning("Memory archive failed: %s", error)

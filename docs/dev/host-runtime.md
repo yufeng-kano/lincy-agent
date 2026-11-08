@@ -152,7 +152,7 @@ check 呼叫 validate 時跳過 port 探測，並固定 `new_session=True`（不
 2. `configure_runtime_timezone(config.app.timezone)`。
 3. 解析使用者：`CHAT_AGENT_USER`（`.env` 優先，其次環境變數）。缺 → `ConfigInvalid`。
 4. workspace 已初始化，否則 `WorkspaceNotReady`（訊息帶 `Run: uv run lincy init`），exit 1。
-5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這與 GUI 權限檢查寫入的 `state/gui_permissions.json` 是 validate 裡僅有的兩個 workspace 寫入（另一個 repo 內的寫入是步驟 8 的 Web UI 重 build），理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。
+5. kernel migration：`WorkspaceInitializer.upgrade_kernel()`。這與 GUI 權限檢查寫入的 `state/gui_permissions.json` 是 validate 裡僅有的兩個 workspace 寫入（另一個 repo 內的寫入是步驟 8 的 Web UI 重 build），理由是 build 可能依賴 migration 帶進來的 prompt 檔。migration 是版本化、冪等、有 backup 的，允許在這裡執行。注意：開發機若 `cfgs/agent.yaml` 的 `agent_os_dir` 指向正式工作區（iCloud 同步目錄），`lincy check` 會直接把待套用的 migration 寫進正式資料（2026-11-08 m0186 即如此誤套用）；在開發機跑 check 前，先用 `cfgs/agent.override.yaml` 把 `agent_os_dir` 指到別處。
 6. `rebuild_personal_skills_index()`。
 7. 使用者 selector 解析（失敗 → `WorkspaceNotReady`），並確保使用者 memory 檔存在（`ensure_user_memory_file`）。
 8. 環境檢查（`host/check.py`），失敗 → `EnvironmentCheckFailed`：

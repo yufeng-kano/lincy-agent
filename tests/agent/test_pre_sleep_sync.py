@@ -37,7 +37,8 @@ def _make_core(tmp_path, *, turns_since_sync: int = 0):
     core.config = MagicMock(
         app=SimpleNamespace(timezone="UTC+8"),
         tools=SimpleNamespace(
-            memory_sync=SimpleNamespace(every_n_turns=5, max_retries=1),
+            memory_sync=SimpleNamespace(max_retries=1),
+            memory_edit=SimpleNamespace(temp_memory_max_chars=6000),
         ),
     )
     core.adapters = {}

@@ -29,7 +29,12 @@ def _generate_session_id() -> str:
 
 
 class SessionManager:
-    """Manage session directories with meta.json + messages.jsonl."""
+    """Manage session directories: meta.json, messages.jsonl, transcript.jsonl.
+
+    ``messages.jsonl`` mirrors the in-memory conversation and is rewritten by
+    compaction; ``transcript.jsonl`` is append-only and keeps the raw exchange
+    for the recall sub-agent (docs/dev/memory-recall.md).
+    """
 
     def __init__(self, sessions_dir: Path) -> None:
         self._sessions_dir = sessions_dir
@@ -68,16 +73,24 @@ class SessionManager:
         self.write_checkpoint([])
         return session_id
 
-    def append_message(self, entry: SessionEntry) -> None:
-        """Append a session entry to the current session's JSONL file."""
+    def append_message(self, entry: SessionEntry, *, transcript: bool = True) -> None:
+        """Append a session entry to the current session's JSONL files.
+
+        ``transcript=False`` is for replaying retained history into a rotated
+        session: that history already lives in the previous session's
+        transcript, so it is not a new exchange.
+        """
         if self._current_dir is None:
             return
 
-        jsonl_path = self._current_dir / "messages.jsonl"
         line = entry.model_dump_json() + "\n"
-        with open(jsonl_path, "a", encoding="utf-8") as f:
+        with open(self._current_dir / "messages.jsonl", "a", encoding="utf-8") as f:
             f.write(line)
             f.flush()
+        if transcript:
+            with open(self._current_dir / "transcript.jsonl", "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
 
         # Update meta.json (message_count + updated_at)
         meta = self._read_meta(self._current_dir)

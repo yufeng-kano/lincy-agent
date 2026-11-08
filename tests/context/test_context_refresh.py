@@ -295,7 +295,7 @@ class TestPerformReloadSystemPrompt:
 
 
 class TestPerformNewSession:
-    def test_archives_clears_conversation_and_rotates_session(self, tmp_path):
+    def test_clears_conversation_and_rotates_session(self, tmp_path):
         from lincy.agent.core import AgentCore
 
         core = AgentCore.__new__(AgentCore)
@@ -312,17 +312,10 @@ class TestPerformNewSession:
         core.user_id = "test_user"
         core.display_name = "Test"
         core.config = MagicMock()
-        core.config.maintenance.archive = MagicMock()
         core._turns_since_memory_sync = 3
 
-        with patch("lincy.agent.core._run_memory_archive") as mock_archive:
-            core._perform_new_session()
+        core._perform_new_session()
 
-        mock_archive.assert_called_once_with(
-            tmp_path,
-            core.config.maintenance.archive,
-            core.console,
-        )
         assert core.conversation.get_messages() == []
         core.turn_context.clear.assert_called_once()
         core.builder.update_system_prompt.assert_called_once_with(f"prompt {tmp_path}")
@@ -347,8 +340,6 @@ class TestPerformNewSession:
         core.user_id = "test_user"
         core.display_name = "Test"
         core.config = MagicMock()
-        core.config.maintenance.archive = MagicMock()
         core._turns_since_memory_sync = 1
 
-        with patch("lincy.agent.core._run_memory_archive"):
-            core._perform_new_session()
+        core._perform_new_session()

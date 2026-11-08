@@ -17,7 +17,6 @@ invisible there.
 
 from __future__ import annotations
 
-from datetime import date
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,33 +31,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAINTENANCE_RULES_REL_PATH = "kernel/builtin-skills/memory-maintenance/references/rules.md"
-
-
-def digest_day_via_worker(
-    runner: "WorkerRunner",
-    day: date,
-    content: str,
-    max_chars: int,
-) -> str:
-    """Ask the worker to distill one dated temp-memory partition into a digest.
-
-    Read-only task: this only produces the digest body text. Code (see
-    hooks._format_digest) assembles and writes the final digest line, and
-    is responsible for stripping any marker prefix the model echoes back.
-    """
-    prompt = (
-        "Summarize the memory entries below from "
-        f"{day.isoformat()} into a single digest of at most {max_chars} "
-        "characters. Preserve lessons learned, agreements, emotional "
-        "context, and open follow-ups -- do not just compress into a flat "
-        "log. Respond with ONLY the digest body text: no markers, no "
-        "headers, no leading date/bracket prefix, no file writes.\n\n"
-        f"{content}"
-    )
-    result = runner.run(prompt, worker_label="maintenance-digest")
-    if not result.success or not result.text.strip():
-        raise ValueError(f"worker digest failed: {result.error or 'empty output'}")
-    return result.text.strip()
 
 
 def curate_queue_via_worker(

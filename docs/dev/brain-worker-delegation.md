@@ -18,7 +18,7 @@ runner 實例同時給兩個呼叫者用：
   `excluded_tools` 完全相同，維護派工同樣要在 `prompt` 中明確指派記憶維護
   權限並用 `context_files` 帶入 `memory-maintenance` skill 的 `rules.md`
 - session debug log 掛點也共用（見 `session-debug-logs.md`），用
-  `worker_label`（`maintenance-digest`、`maintenance-curation`）在
+  `worker_label`（`maintenance-curation`）在
   `requests.jsonl` / `responses.jsonl` 區分
 
 ## 非同步派工

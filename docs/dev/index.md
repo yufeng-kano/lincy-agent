@@ -32,7 +32,8 @@
 | [gui-computer-use.md](gui-computer-use.md) | GUI Computer Use：pyobjc 原生後端（AX 樹 + 截圖 + 真實鍵鼠）、state 格式與座標、loop 治理與 PAUSED 續跑、權限與部署 |
 | [brain-worker-delegation.md](brain-worker-delegation.md) | Brain 無 shell 工具：per-agent `excluded_tools` 機制、任務單規則、worker fail-closed 協定 |
 | [worker-notes.md](worker-notes.md) | Worker 自由格式共用筆記：任務開頭注入、`worker_note` 補記、超過閾值由 compactor 壓縮 |
-| [memory-curation.md](memory-curation.md) | 記憶檔案自動化重量管理（字元預算警告、超標佇列、curator 蒸餾）與對話 compaction 三層架構（codex remote / compactor agent / local） |
+| [memory-curation.md](memory-curation.md) | 記憶檔案自動化重量管理（字元預算警告、超標佇列、worker 原地濃縮或拆檔、現況檔每日快照）與對話 compaction 兩層架構（compactor agent / local） |
+| [memory-recall.md](memory-recall.md) | Memory Recall：`temp-memory.md` 今日現況檔（整份改寫、狀態債）、recall 子代理（Haiku + grep 記憶檔與 `transcript.jsonl`）、`[Recall]` 預抓、`recall` 工具、transcript 與 debug dump 保留期、回填腳本 |
 | [local-config-override.md](local-config-override.md) | `cfgs/agent.override.yaml` 本機設定覆蓋：合併規則、統一讀取路徑 |
 | [inbound-preempt.md](inbound-preempt.md) | 同一對話的新訊息併入進行中的 turn：取消待執行 tool call、從 queue 取訊息接續、scope 規則、每輪上限 |
 | [audio-read.md](audio-read.md) | Audio Read：語音訊息交給 audio 子代理（`read_audio_by_subagent`）、`ContentPart` audio、provider 映射與拒絕規則、kano-proxy `/openai/v1` 路由、Discord 自動提示 |

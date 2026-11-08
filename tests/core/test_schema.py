@@ -161,8 +161,23 @@ def test_maintenance_curation_defaults_and_strict_validation():
     )
     curate = config.maintenance.curate
     assert curate.enabled is True
-    assert curate.digest_retain_days == 14
-    assert curate.digest_max_chars == 1200
+    assert config.maintenance.session_file_cleanup.debug_retention_days == 7
+    assert config.tools.memory_sync.max_retries == 1
+    assert config.tools.memory_edit.temp_memory_max_chars == 6000
+    recall = config.agents["brain"].recall
+    assert recall.prefetch is True
+    assert recall.prefetch_min_chars == 4
+    assert recall.prefetch_max_tool_calls == 6
+    assert recall.max_tool_calls == 12
+    assert recall.max_result_chars == 1500
+
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {
+                "maintenance": {"session_file_cleanup": {"retention_days": 3, "debug_retention_days": 7}},
+                "agents": {"brain": {"llm": _ollama_llm()}},
+            }
+        )
 
     with pytest.raises(ValidationError):
         AppConfig.model_validate(
