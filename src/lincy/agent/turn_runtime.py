@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import extract_memory_edit_paths
+from ..memory.tool_analysis import is_failed_memory_edit_result
 from ..memory.editor.service import STATE_FILE_SECTIONS, STATE_FILE_TITLE
 from ..tools import ToolRegistry
 from .side_channel import run_side_channel_tool_loop
@@ -239,6 +241,31 @@ def _inject_brain_failure_record(
     conversation.add("assistant", "\n".join(parts))
 
 
+def _memory_edit_applied_targets(result: str, targets: list[str]) -> bool:
+    """True when a memory_edit result reports one of *targets* as applied.
+
+    memory_edit returns JSON even when a request was rejected and rolled
+    back (``status: failed``); only the structured result says whether the
+    state file itself was written.
+    """
+    if not result.startswith("{"):
+        return False
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return False
+    wanted = {target.strip().replace("\\", "/") for target in targets}
+    for item in payload.get("applied") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip().replace("\\", "/")
+        if path in wanted:
+            return True
+    return False
+
+
 @llm_session("memory_sync")
 def _run_memory_sync_side_channel(
     client: LLMClient,
@@ -257,8 +284,10 @@ def _run_memory_sync_side_channel(
 ) -> bool:
     """Side-channel LLM call to sync missing memory targets.
 
-    Returns True when a memory_edit call ran without error, so callers can
-    tell a refresh that wrote something from one that did not.
+    Returns True only when a memory_edit result shows one of the missing
+    targets applied; a rejected edit (structured ``status: failed``) counts
+    as an error and is retried, and a run that wrote something else, or
+    nothing, returns False so callers keep the debt.
     """
     if not any(definition.name == "memory_edit" for definition in tools):
         return False
@@ -288,19 +317,21 @@ def _run_memory_sync_side_channel(
 
     for attempt in range(1 + max_retries):
         had_error = False
-        executed = False
+        synced = False
 
         def observe(response: LLMResponse) -> bool:
             _debug_print_responder_output(console, response, label="memory-sync")
             return False
 
         def execute_memory_edit_with_status(tool_call: ToolCall):
-            nonlocal had_error, executed
+            nonlocal had_error, synced
             result = execute_memory_edit(tool_call)
             if result is not None:
-                executed = True
-                if result.is_error:
+                content = result.content if isinstance(result.content, str) else ""
+                if result.is_error or is_failed_memory_edit_result(content):
                     had_error = True
+                elif _memory_edit_applied_targets(content, missing_targets):
+                    synced = True
             return result
 
         run_side_channel_tool_loop(
@@ -315,10 +346,10 @@ def _run_memory_sync_side_channel(
             ),
             on_response=observe,
         )
-        if executed and not had_error:
+        if synced and not had_error:
             return True
         if not had_error:
-            # The model made no memory_edit call; a retry would repeat that.
+            # No memory_edit touched the targets; a retry would repeat that.
             return False
         if attempt < max_retries:
             logger.info("memory-sync retry %d/%d after error", attempt + 1, max_retries)

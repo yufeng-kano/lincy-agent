@@ -438,3 +438,44 @@ def test_recall_agent_stops_at_the_deadline_and_replays_reasoning(tmp_path: Path
     assert replayed.reasoning_content == "looking"
     assert replayed.reasoning_details == [{"type": "thinking", "signature": "sig"}]
     assert replayed.reasoning_origin == "haiku-primary"
+
+
+def test_long_entries_are_excerpted_around_the_match_and_readable_in_full(tmp_path: Path):
+    ws = _workspace(tmp_path)
+    session = ws / "session" / "brain" / SESSION_ID
+    long_text = "開場白 " * 400 + "截止日是 11-20 交件"
+    entry = SessionEntry(
+        message=Message(
+            role="user", content=long_text,
+            timestamp=datetime.fromisoformat("2026-11-05T20:00:00+08:00"),
+        ),
+        channel="discord", sender="yufeng",
+    )
+    with (session / "transcript.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(entry.model_dump_json() + "\n")
+    registry = build_recall_registry(ws)
+    path = f"session/brain/{SESSION_ID}/transcript.jsonl"
+
+    # The excerpt keeps the stamp and speaker and shows the hit itself.
+    out = _run(registry, "grep", pattern="截止日", path_glob=path, context_lines=0)
+    assert f"{path}:5: [2026-11-05 (Thu) 20:00 discord/yufeng user] ..." in out
+    assert "截止日是 11-20 交件" in out
+    assert len(out) < 400
+
+    # A multi-entry read clips, a single-entry read does not.
+    clipped = _run(registry, "read_file", path=path, offset=5, limit=2)
+    assert "截止日" not in clipped
+    full = _run(registry, "read_file", path=path, offset=5, limit=1)
+    assert "截止日是 11-20 交件" in full
+
+
+def test_grep_markdown_excerpts_long_lines_around_the_match(tmp_path: Path):
+    ws = _workspace(tmp_path)
+    health = ws / "memory" / "people" / "yufeng" / "health.md"
+    health.write_text("# health\n\n- " + "舊紀錄 " * 200 + "回診日 11-21\n", encoding="utf-8")
+    registry = build_recall_registry(ws)
+
+    out = _run(registry, "grep", pattern="回診日", path_glob="memory/people/yufeng/health.md")
+
+    assert "memory/people/yufeng/health.md:3: ..." in out
+    assert "回診日 11-21" in out

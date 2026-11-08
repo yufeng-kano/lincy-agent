@@ -172,6 +172,14 @@ def test_maintenance_curation_defaults_and_strict_validation():
     assert recall.max_tool_calls == 12
     assert recall.max_result_chars == 1500
 
+    short = AppConfig.model_validate(
+        {
+            "maintenance": {"session_file_cleanup": {"retention_days": 3}},
+            "agents": {"brain": {"llm": _ollama_llm()}},
+        }
+    )
+    assert short.maintenance.session_file_cleanup.debug_retention_days == 3
+
     with pytest.raises(ValidationError):
         AppConfig.model_validate(
             {

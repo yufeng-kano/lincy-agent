@@ -7,7 +7,7 @@
 3. **curation**：全掃超標檔案補入佇列，再由 worker 依 `memory-maintenance` skill 原地濃縮或拆檔（見 `../memory-curation.md`）
 4. **context refresh**：清空對話、重載 system prompt 與 boot files、開新 session
 5. **backup**：kernel 備份
-6. **session cleanup**：`retention_days`（30）到期刪整個 session 目錄；`debug_retention_days`（7）到期先刪 `requests.jsonl`；`responses.jsonl`（dashboard 用量圖來源）、`messages.jsonl` 與 `transcript.jsonl` 留到 session 到期
+6. **session cleanup**：`retention_days`（30）到期刪整個 session 目錄；`debug_retention_days`（預設 `min(7, retention_days)`）到期先刪 `requests.jsonl`；`responses.jsonl`（dashboard 用量圖來源）、`messages.jsonl` 與 `transcript.jsonl` 留到 session 到期
 
 現況檔與 recall 的設計見 `../memory-recall.md`。以下為早期設計文件。
 

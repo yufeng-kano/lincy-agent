@@ -42,7 +42,7 @@ brain 只知道載入 context 的東西，其他記憶等於不存在；而 `tem
 | 結束或重啟 | `graceful_exit`（計數只在記憶體，不先清就會隨重啟消失） |
 | 開新 session（維護的 context refresh、手動 new session） | `_perform_new_session`，在清空對話前 |
 
-side-channel 回傳 bool：只有 memory_edit 真的執行且沒出錯才算清償（`_settle_state_file_debt` 歸零）；模型沒呼叫工具、寫入失敗或丟例外都把債留到下一個點，不會靜默歸零。
+side-channel 回傳 bool：只有 memory_edit 的結果 JSON（`status: ok`、`applied` 含 `memory/agent/temp-memory.md`）才算清償（`_settle_state_file_debt` 歸零）。被 service 退回並還原的改寫是 `status: failed` 的 JSON，不是 `Error` 字串，所以要用 `is_failed_memory_edit_result` 判定並重試一次；模型沒呼叫工具、只改了別的檔或丟例外都把債留到下一個點，不會靜默歸零。
 
 `tools.memory_sync.every_n_turns` 已移除，`MemorySyncConfig` 只剩 `max_retries`。
 
@@ -55,8 +55,8 @@ side-channel 回傳 bool：只有 memory_edit 真的執行且沒出錯才算清�
 | 元件 | 位置 | 說明 |
 |------|------|------|
 | `RecallAgent` | `src/lincy/tools/builtin/recall.py` | `recall(question, sender, channel, context_tail, exclude_paths, max_tool_calls, deadline_seconds) -> str \| None`；request 內寫 `Asked by: <sender> via <channel>`，第一人稱的問題指這個人；context tail 的 user 行帶 `channel/sender`；私有 `ToolRegistry` + 自己的 capped tool loop（`run_simple_tool_loop` 沒有上限所以不用）；達上限後多出來的呼叫回「limit reached」，再送一次 finalization prompt 拿最終文字；超過 `deadline_seconds` 時改送「time budget reached」要模型直接作答（`RecallRun.timed_out`）；assistant 回合連同 `reasoning_content` / `reasoning_details` / `served_by` 一起重放，與 brain 的 side-channel 相同；`NONE` 或空字串回 None；結果截到 `max_result_chars`；request 內寫明工具呼叫與字數預算 |
-| 私有工具 `grep` | 同上 | 不分大小寫 regex；`.md` 回 `path:line: text` 加前後文；`.jsonl` 逐行 parse `SessionEntry` 渲染成 `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] 文字`（`send_message` 顯示 body，tool result 截 200 字），regex 只跑在渲染後的整行上，所以 pattern 可以同時限定日期、sender 與內文；`count_only` 回每檔命中數；總輸出 6000 字、`max_matches` 上限 200。結果順序：live 檔（`people/`、`agent/`）先、`archive/temp-memory/` 新到舊、其他 archive 新到舊、session 新到舊，所以截斷時先留現行事實 |
-| 私有工具 `list_dir` / `read_file` | 同上 | `read_file` 對 `.jsonl` 逐條渲染帶行號；`.md` 走 `create_read_file` |
+| 私有工具 `grep` | 同上 | 不分大小寫 regex；`.md` 回 `path:line: text` 加前後文；`.jsonl` 逐行 parse `SessionEntry` 渲染成 `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] 文字`（`send_message` 顯示 body，tool result 截 200 字），regex 只跑在渲染後的整行上，所以 pattern 可以同時限定日期、sender 與內文；超過 300 字的行以第一個命中為中心節錄，保留開頭的時間戳與 sender，要看全文再 `read_file(limit=1)`；`count_only` 回每檔命中數；總輸出 6000 字、`max_matches` 上限 200。結果順序：live 檔（`people/`、`agent/`）先、`archive/temp-memory/` 新到舊、其他 archive 新到舊、session 新到舊，所以截斷時先留現行事實 |
+| 私有工具 `list_dir` / `read_file` | 同上 | `read_file` 對 `.jsonl` 逐條渲染帶行號，`limit=1` 回該筆完整內容（上限 12000 字），多筆時每筆截 1200 字；`.md` 走 `create_read_file` |
 | 路徑守門 | `_allowed_relative` / `_expand_glob` | glob 必須以 `memory/` 或 `session/brain/` 開頭、不可含 `..`、resolve 後須在 agent_os_dir 內；`memory/` 下只讀 `.md`；session 下只讀 `transcript.jsonl` / `messages.jsonl`。`requests.jsonl`、`responses.jsonl`、`events.jsonl`、`turns.jsonl`、`checkpoints/`、`state/` 一律不可見。session 路徑新到舊排序，截斷時先留最近的 |
 | 搜尋文字 | `_grep_transcript` | 只搜渲染後的文字，**不含 metadata 與 JSON 欄位名**：否則 `turn_overlay` 裡的 `[Recall]` 會被下一次 recall 搜到，形成迴圈 |
 | prompt | `kernel/agents/recall/prompts/system.md` | 英文指令、繁中輸出；語料地圖、先 `count_only` 再縮日期 glob、3-6 次呼叫內收手；輸出 `- [YYYY-MM-DD HH:MM][來源路徑] 事實`、衝突列「不確定」、沒有超出已載入檔案的內容就只回 `NONE` |
@@ -82,7 +82,7 @@ preempt 併入進行中 turn 的訊息沒有 overlay，所以也沒有預抓；b
 
 - `SessionManager.append_message()` 同一行寫 `messages.jsonl` 與 `transcript.jsonl`；compaction 的 `rewrite_messages()` 只動前者。`_rotate_session` 重放保留歷史時 `transcript=False`。compaction 摘要不進 transcript。
 - overflow retry 會把同一則用戶訊息重新加進對話（overlay 重算）：`run_turn` 一開始就固定 inbound 時間戳，`append_message` 以 (channel, sender, message) 比對最近 16 筆 transcript，相同就不重寫。換 session 時清空比對清單。
-- `cleanup_sessions(..., debug_retention_days=7)`：session 目錄未到 `retention_days` 但超過 7 天者，只刪 `requests.jsonl`（正式機 16GB 的來源）；`responses.jsonl` 是 dashboard 用量圖的資料來源，留到 session 到期。
+- `cleanup_sessions(..., debug_retention_days)`：`debug_retention_days` 不寫在 `cfgs/agent.yaml`，schema 預設 `min(7, retention_days)`（override 只縮短 `retention_days` 時才不會在 migration 之前就被驗證擋下）；session 目錄未到 `retention_days` 但超過這個天數者，只刪 `requests.jsonl`（正式機 16GB 的來源）；`responses.jsonl` 是 dashboard 用量圖的資料來源，留到 session 到期。
 - 升級前的舊 session 用 `scripts/backfill_transcripts.py <agent_os_dir> [--dry-run] [--force]` 還原：串流 `requests.jsonl`，只取 `client_label == "brain"`，略過 system、synthetic boot（`read_startup_context` / `read_pinned_context`）、side-channel 提醒、compaction 摘要；用戶與 assistant 文字去掉 `[時間]` 前綴，用戶訊息再去掉 `[channel, from sender]` 與 overlay 區塊並還原 channel/sender/timestamp；tool call / result 以 id 去重，純文字以 (role, 文字, 分鐘, channel/sender) 去重，所以同一句話在不同時間說兩次、或兩個人同一分鐘說同一句話都會保留；tool 條目沒有自己的時間戳，取同一筆 request 內前一則有時間戳的訊息；與 `messages.jsonl` 重疊的條目以後者為準（有精確時間與 channel），最後依分鐘穩定排序。request 來源的條目帶 `metadata.backfilled_from`。2026-11-08 在三個 session 的副本上實測：265MB + 476MB + 13MB 的 dump 約 2 秒，產出 621 / 597 / 123 條。
 
 ## kano-proxy
@@ -95,7 +95,7 @@ group `lincy` 新增 group model `recall-agent`，targets 依序 `claude-code/cl
 - live `temp-memory.md`：不是新格式就轉檔。去掉 `- [digest ...]` 行（原文已在 archive），行首 `- [YYYY-MM-DD` 開頭的條目（含續行）按日期寫進 `archive/temp-memory/{date}.md`（既有檔附加），日期只認行首，條目內文提到的日期不會另開一天；沒有日期的備註行歸到 `<今天>.md` 的 `## Undated notes (migrated)`，舊模板的兩行說明文字略過。重建 index，再寫入新骨架；`## 最後互動` 放一條升級說明指向最新一個有日期的快照。
 - `memory/agent/index.md` 只把 temp-memory 那行描述換成「今日現況檔（最後互動、時間線、未閉環、下一步）」，其餘 35 條自訂內容不碰。
 - `core/config.py` `_RETIRED_CONFIG_PATHS` 也列入這四個移除的 key：`load_config()` 在 migration 之前跑，而 `cfgs/agent.override.yaml` 不在 migrator 範圍內，否則舊 override 會擋住啟動。
-- workspace `agent.yaml` / `cfgs/agent.yaml` 若存在：刪 `every_n_turns`、`maintenance.archive`、`digest_*`；補 `temp_memory_max_chars`、`debug_retention_days`（取 7 與 `retention_days` 的較小值，schema 不允許超過）、`agents.recall`（含 `prefetch_deadline_seconds`）、bm25 exclude `memory/archive/curation/`。
+- workspace `agent.yaml` / `cfgs/agent.yaml` 若存在：刪 `every_n_turns`、`maintenance.archive`、`digest_*`；補 `temp_memory_max_chars`、`agents.recall`（含 `prefetch_deadline_seconds`）、bm25 exclude `memory/archive/curation/`；`debug_retention_days` 交給 schema 預設，不寫入。
 
 正式機上線順序：kano-proxy 加 `recall-agent` → PR 合併 → `ssh lincy` 跑回填腳本（先 `--dry-run`）→ `lincy upgrade` → 看 `logs/lincy.log` 的 migration 摘要與第一輪 `recall-prefetch` debug。
 

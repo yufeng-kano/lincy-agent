@@ -66,7 +66,7 @@ maintenance:
   session_file_cleanup:
     enabled: true
     retention_days: 90
-    debug_retention_days: 7 # requests.jsonl dumps only; responses.jsonl and transcript.jsonl stay
+    # debug_retention_days defaults to min(7, retention_days): requests.jsonl dumps only; responses.jsonl and transcript.jsonl stay
 
 # Feature flags
 features:

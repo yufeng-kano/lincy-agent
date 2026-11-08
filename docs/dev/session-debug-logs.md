@@ -68,7 +68,7 @@
 - overflow retry 重新加入的同一則用戶訊息不會在 transcript 出現兩次：`append_message` 以 (channel, sender, message) 比對最近 16 筆，`run_turn` 一開始就固定 inbound 時間戳讓兩次嘗試的 message 一致
 - context refresh 開新 session 時，保留的歷史用 `append_message(entry, transcript=False)` 重放，不會在新 session 的 transcript 重複出現
 - compaction 摘要只進 `messages.jsonl`，不進 transcript
-- `maintenance.session_file_cleanup.debug_retention_days`（預設 7）到期只刪 `requests.jsonl`；`responses.jsonl` 是 dashboard 用量圖的來源，與 `messages.jsonl`、`transcript.jsonl` 一起留到 `retention_days`（30）
+- `maintenance.session_file_cleanup.debug_retention_days`（預設 `min(7, retention_days)`，不寫在設定檔）到期只刪 `requests.jsonl`；`responses.jsonl` 是 dashboard 用量圖的來源，與 `messages.jsonl`、`transcript.jsonl` 一起留到 `retention_days`（30）
 - 升級前的舊 session 沒有 transcript：`scripts/backfill_transcripts.py <agent_os_dir> [--dry-run] [--force]` 從 `requests.jsonl` 的歷史還原（去掉 system、synthetic boot、side-channel 提醒、compaction 摘要；tool 條目以 id 去重、文字以 role + 文字 + 分鐘去重；與 `messages.jsonl` 重疊時以後者為準，再依分鐘穩定排序），條目帶 `metadata.backfilled_from`
 - recall 子代理只讀 `transcript.jsonl` / `messages.jsonl`，拒絕 requests / responses / events / turns / checkpoints（見 `memory-recall.md`）
 

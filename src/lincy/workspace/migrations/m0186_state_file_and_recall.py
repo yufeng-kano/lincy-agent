@@ -255,13 +255,6 @@ def _update_config(config_path: Path) -> None:
                 if key in curate:
                     curate.pop(key)
                     changed = True
-        cleanup = maintenance.get("session_file_cleanup")
-        if isinstance(cleanup, dict) and "debug_retention_days" not in cleanup:
-            # The schema rejects debug_retention_days > retention_days.
-            retention = cleanup.get("retention_days")
-            bound = retention if isinstance(retention, int) and retention >= 1 else 30
-            cleanup["debug_retention_days"] = min(7, bound)
-            changed = True
 
     agents = config.get("agents")
     if isinstance(agents, dict) and "recall" not in agents:

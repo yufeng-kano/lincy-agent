@@ -430,8 +430,20 @@ class SessionFileCleanupConfig(StrictConfigModel):
     enabled: bool = True
     retention_days: int = Field(default=30, ge=1)
     # Brain sessions keep transcript.jsonl / messages.jsonl / responses.jsonl
-    # for retention_days; the bulky requests.jsonl dumps go after this.
+    # for retention_days; the bulky requests.jsonl dumps go after this. Left
+    # unset it resolves to min(7, retention_days), so an override that only
+    # shortens retention_days keeps loading (load_config runs before any
+    # migration could repair it).
     debug_retention_days: int = Field(default=7, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_debug_retention(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("debug_retention_days") is None:
+            retention = data.get("retention_days", 30)
+            if isinstance(retention, int) and retention >= 1:
+                data = {**data, "debug_retention_days": min(7, retention)}
+        return data
 
     @model_validator(mode="after")
     def _validate_debug_retention(self) -> "SessionFileCleanupConfig":

@@ -135,7 +135,8 @@ def test_config_keys_are_migrated(tmp_path: Path):
     ]
     assert "archive" not in config["maintenance"]
     assert config["maintenance"]["curate"] == {"enabled": True}
-    assert config["maintenance"]["session_file_cleanup"]["debug_retention_days"] == 7
+    # debug_retention_days is resolved by the schema (min(7, retention_days)), not written.
+    assert "debug_retention_days" not in config["maintenance"]["session_file_cleanup"]
     assert config["agents"]["recall"]["llm"] == "cfgs/llm/kano-proxy/recall.yaml"
     assert config["agents"]["recall"]["recall"]["prefetch_max_tool_calls"] == 6
     assert config["agents"]["recall"]["recall"]["prefetch_deadline_seconds"] == 20
@@ -155,17 +156,3 @@ def test_undated_notes_are_archived_under_today_without_template_lines(tmp_path:
     # The state file still points at the newest dated day.
     state = (memory_dir / "agent" / "temp-memory.md").read_text(encoding="utf-8")
     assert "archive/temp-memory/2026-11-06.md" in state
-
-
-def test_debug_retention_is_capped_by_a_short_session_retention(tmp_path: Path):
-    kernel_dir = tmp_path / "kernel"
-    kernel_dir.mkdir()
-    config_path = tmp_path / "agent.yaml"
-    config_path.write_text(yaml.safe_dump({
-        "maintenance": {"session_file_cleanup": {"enabled": True, "retention_days": 3}},
-    }), encoding="utf-8")
-
-    M0186StateFileAndRecall().upgrade(kernel_dir, TEMPLATES)
-
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert config["maintenance"]["session_file_cleanup"]["debug_retention_days"] == 3

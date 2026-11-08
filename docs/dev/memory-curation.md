@@ -107,7 +107,7 @@ maintenance:
     enabled: true
   session_file_cleanup:
     retention_days: 30
-    debug_retention_days: 7   # 只提前刪 requests.jsonl；responses.jsonl 留給 dashboard
+    # debug_retention_days 預設 min(7, retention_days)；只提前刪 requests.jsonl，responses.jsonl 留給 dashboard
 ```
 
 `maintenance.archive`、`curate.digest_*` 與 `tools.memory_sync.every_n_turns` 已移除（m0186）。

@@ -385,6 +385,27 @@ def test_retired_state_file_keys_in_override_do_not_block_startup(
         assert key in caplog.text
 
 
+def test_short_retention_in_override_gets_a_matching_debug_retention(monkeypatch, tmp_path: Path):
+    """A 1-6 day retention_days in the override must not trip the debug-retention check."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(
+        tmp_path / "agent.override.yaml",
+        {"maintenance": {"session_file_cleanup": {"retention_days": 3}}},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    config = config_module.load_config("agent.yaml")
+
+    assert config.maintenance.session_file_cleanup.debug_retention_days == 3
+
+
+def test_shipped_config_leaves_debug_retention_to_the_default():
+    """cfgs/agent.yaml must not pin debug_retention_days, or a short override breaks startup."""
+    shipped = Path(__file__).resolve().parents[2] / "cfgs" / "agent.yaml"
+    raw = yaml.safe_load(shipped.read_text(encoding="utf-8"))
+    assert "debug_retention_days" not in raw["maintenance"]["session_file_cleanup"]
+
+
 def test_retired_llm_paths_in_override_are_rewritten(
     monkeypatch, tmp_path: Path, caplog
 ):

@@ -142,6 +142,27 @@ def _clip(text: str, limit: int) -> str:
     return text[: limit - 3] + "..."
 
 
+def _excerpt(text: str, match: re.Match[str] | None, limit: int, *, keep_prefix: int = 0) -> str:
+    """Clip *text* to about *limit* characters while keeping the match visible.
+
+    The first *keep_prefix* characters (a transcript line's stamp and
+    speaker) always stay, so a hit deep inside a long message keeps its date
+    and sender. Newlines become spaces, which leaves match offsets intact.
+    """
+    text = text.replace("\n", " ")
+    if len(text) <= limit:
+        return text
+    if match is None or match.end() <= limit - 3:
+        return text[: limit - 3] + "..."
+    prefix = text[:keep_prefix]
+    budget = max(40, limit - len(prefix) - 6)
+    start = max(keep_prefix, match.start() - budget // 3)
+    end = min(len(text), start + budget)
+    head = "..." if start > keep_prefix else ""
+    tail = "..." if end < len(text) else ""
+    return f"{prefix}{head}{text[start:end]}{tail}"
+
+
 def _compact_json(value: Any, limit: int) -> str:
     try:
         rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -222,8 +243,10 @@ _GREP_DEFINITION = ToolDefinition(
     description=(
         "Search files with a case-insensitive regular expression. Markdown "
         "files return matching lines with context; transcript .jsonl files "
-        "return rendered conversation entries with context. Use count_only "
-        "first to see which files match before reading their lines."
+        "return rendered conversation entries with context. Long lines are "
+        "excerpted around the first match; read_file with limit=1 returns "
+        "the whole entry. Use count_only first to see which files match "
+        "before reading their lines."
     ),
     parameters={
         "pattern": ToolParameter(
@@ -273,7 +296,9 @@ _READ_FILE_DEFINITION = ToolDefinition(
     name="read_file",
     description=(
         "Read a memory markdown file or a session transcript (.jsonl, rendered "
-        "one entry per line) with line numbers."
+        "one entry per line) with line numbers. Transcript entries are clipped "
+        "to 1200 characters unless limit is 1, which returns that one entry "
+        "in full."
     ),
     parameters={
         "path": ToolParameter(type="string", description="Path relative to the agent directory."),
@@ -304,14 +329,17 @@ def _grep_markdown(
         return []
     blocks: list[tuple[int, list[str]]] = []
     for index, line in enumerate(lines):
-        if not regex.search(line):
+        match = regex.search(line)
+        if not match:
             continue
         start = max(0, index - context_lines)
         end = min(len(lines), index + context_lines + 1)
         block = []
         for j in range(start, end):
-            sep = ":" if j == index else "-"
-            block.append(f"{rel}{sep}{j + 1}{sep} {_clip(lines[j], _MAX_LINE_CHARS)}")
+            if j == index:
+                block.append(f"{rel}:{j + 1}: {_excerpt(line, match, _MAX_LINE_CHARS)}")
+            else:
+                block.append(f"{rel}-{j + 1}- {_clip(lines[j], _MAX_LINE_CHARS)}")
         blocks.append((index + 1, block))
     return blocks
 
@@ -340,7 +368,8 @@ def _grep_transcript(
 
     blocks: list[tuple[int, list[str]]] = []
     for index, text in enumerate(rendered):
-        if text is None or not regex.search(text):
+        match = regex.search(text) if text is not None else None
+        if text is None or not match:
             continue
         start = max(0, index - context_lines)
         end = min(len(rendered), index + context_lines + 1)
@@ -349,8 +378,14 @@ def _grep_transcript(
             line_text = rendered[j]
             if line_text is None:
                 continue
-            sep = ":" if j == index else "-"
-            block.append(f"{rel}{sep}{j + 1}{sep} {_clip(line_text, _MAX_LINE_CHARS)}")
+            if j == index:
+                # Keep the "[stamp who] " header so a deep hit keeps its date.
+                header_end = text.find("] ") + 2 if text.startswith("[") else 0
+                block.append(
+                    f"{rel}:{j + 1}: {_excerpt(text, match, _MAX_LINE_CHARS, keep_prefix=header_end)}"
+                )
+            else:
+                block.append(f"{rel}-{j + 1}- {_clip(line_text, _MAX_LINE_CHARS)}")
         blocks.append((index + 1, block))
     return blocks
 
@@ -469,14 +504,23 @@ def _make_read_file(agent_os_dir: Path) -> Callable[..., str]:
         start = offset - 1
         chunk = raw_lines[start:start + limit]
         out = [f"{rel} lines {start + 1}-{start + len(chunk)} of {len(raw_lines)}"]
+        # limit=1 is how the model reads one long entry in full after a grep
+        # excerpt; multi-entry reads clip each entry so the page stays short.
+        per_entry = None if limit == 1 else _MAX_READ_LINE_CHARS
         total = 0
         for index, raw in enumerate(chunk):
             entry = _parse_entry(raw)
             text = render_transcript_entry(entry) if entry else "(unparseable line)"
-            line = f"{start + index + 1}: {_clip(text, _MAX_READ_LINE_CHARS)}"
+            if per_entry is not None:
+                text = _clip(text, per_entry)
+            else:
+                text = text.replace("\n", " ")
+                if len(text) > _MAX_READ_OUTPUT_CHARS:
+                    text = text[:_MAX_READ_OUTPUT_CHARS] + "... (entry truncated)"
+            line = f"{start + index + 1}: {text}"
             total += len(line) + 1
-            if total > _MAX_READ_OUTPUT_CHARS:
-                out.append("(output truncated; continue with a larger offset)")
+            if total > _MAX_READ_OUTPUT_CHARS and index > 0:
+                out.append(f"(output truncated; continue with offset {start + index + 1})")
                 break
             out.append(line)
         return "\n".join(out)

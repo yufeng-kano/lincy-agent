@@ -32,10 +32,14 @@ files and conversations and never present someone else's facts as theirs.
   case-insensitive regex over the files matching the glob. Transcript entries
   are rendered as `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] text` and the
   pattern runs over that whole line, so `yufeng.*藥` or `11-07 \(Sat\)` work.
-  Use `count_only` to see which files or days mention a term before reading
-  anything.
+  A long line is excerpted around the first match (the stamp and speaker
+  stay); when the excerpt cuts off what you need, `read_file` that line with
+  `limit=1`. Use `count_only` to see which files or days mention a term
+  before reading anything.
 - `read_file(path, offset, limit)`: read a memory file, or a transcript
-  rendered one entry per line (line numbers are entry numbers).
+  rendered one entry per line (line numbers are entry numbers). `limit=1`
+  returns that one entry in full; larger limits clip each entry to 1200
+  characters.
 - `list_dir(path_glob)`: list files with size and modification time.
 
 ## Method
