@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import timedelta
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
 
@@ -16,6 +18,7 @@ from lincy.memory.editor.schema import (
 )
 from lincy.memory.editor.service import MemoryEditor
 from lincy.memory.editor.session_log import SessionCommitLog
+from lincy.timezone_utils import now as tz_now
 from lincy.workspace.people import load_people_index, save_people_index, PersonEntry
 
 
@@ -1616,3 +1619,57 @@ def test_long_term_missing_core_values_section_rejected(tmp_path: Path):
 
     assert result.status == "failed"
     assert "核心價值" in result.errors[0].detail
+
+
+def test_temp_memory_rejects_log_style_operations(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    plan = MemoryEditPlan(
+        status="ok",
+        operations=[MemoryEditOperation(kind="append_entry", payload_text="- [2026-05-17 20:05] log line")],
+    )
+    batch = MemoryEditBatch(
+        as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()],
+    )
+
+    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
+    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "temp_memory_operation_invalid"
+    assert target.read_text(encoding="utf-8") == _STATE_FILE
+
+
+def test_temp_memory_first_rewrite_of_a_new_day_snapshots_the_old_day(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    yesterday = tz_now() - timedelta(days=1)
+    os.utime(target, (yesterday.timestamp(), yesterday.timestamp()))
+    archived = tmp_path / "memory" / "archive" / "temp-memory" / f"{yesterday.date().isoformat()}.md"
+    new_state = _STATE_FILE.replace("等他回覆後問早餐", "中午問午餐")
+
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": _overwrite_plan(new_state)}),
+    )
+    result = editor.apply_batch(
+        MemoryEditBatch(as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()]),
+        allowed_paths=_allowed(tmp_path), base_dir=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == new_state
+    assert archived.read_text(encoding="utf-8") == f"# {yesterday.date().isoformat()}\n\n{_STATE_FILE.strip()}\n"
+
+    # A later rewrite on the same day leaves the archive alone.
+    newer = new_state.replace("中午問午餐", "下午問點心")
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": _overwrite_plan(newer)}),
+    )
+    editor.apply_batch(
+        MemoryEditBatch(as_of="2026-05-17T21:05:00+08:00", turn_id="turn-2", requests=[_state_file_request()]),
+        allowed_paths=_allowed(tmp_path), base_dir=tmp_path,
+    )
+    assert archived.read_text(encoding="utf-8") == f"# {yesterday.date().isoformat()}\n\n{_STATE_FILE.strip()}\n"
+    assert not (archived.parent / f"{tz_now().date().isoformat()}.md").exists()

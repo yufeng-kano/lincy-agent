@@ -365,3 +365,66 @@ def test_brain_tool_wraps_agent_results_and_errors(tmp_path: Path):
             raise RuntimeError("boom")
 
     assert create_recall_tool(_agent(tmp_path, _Boom()))(question="q") == "Error: recall failed: boom"
+
+
+def test_grep_transcript_matches_rendered_text_only(tmp_path: Path):
+    ws = _workspace(tmp_path)
+    session = ws / "session" / "brain" / SESSION_ID
+    overlay_entry = SessionEntry(
+        message=Message(
+            role="user", content="再問一次",
+            timestamp=datetime.fromisoformat("2026-11-05T19:00:00+08:00"),
+        ),
+        channel="discord", sender="yufeng",
+        metadata={"turn_overlay": "[Recall]\n- [2026-11-05 14:44][x] overlay-only text"},
+    )
+    with (session / "transcript.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(overlay_entry.model_dump_json() + "\n")
+    registry = build_recall_registry(ws)
+    glob = "session/brain/*/transcript.jsonl"
+
+    # One pattern can span the rendered stamp, sender and text.
+    out = _run(registry, "grep", pattern=r"yufeng user\] .*藥", path_glob=glob)
+    assert "[2026-11-05 (Thu) 14:44 discord/yufeng user] 我今天去心寬福拿藥了" in out
+    assert "麥當勞" not in out
+    assert "麥當勞" in _run(registry, "grep", pattern=r"11-05 \(Thu\) 18:00", path_glob=glob)
+
+    # Raw JSON keys and entry metadata are not searchable: the [Recall] block
+    # of an earlier turn must not feed the next recall.
+    assert _run(registry, "grep", pattern="tool_call_id", path_glob=glob).startswith("No matches")
+    assert _run(registry, "grep", pattern="overlay-only", path_glob=glob).startswith("No matches")
+
+
+def test_recall_agent_stops_at_the_deadline_and_replays_reasoning(tmp_path: Path):
+    class _DeadlineClient:
+        def __init__(self):
+            self.calls: list[list[Message]] = []
+
+        def chat_with_tools(self, messages, tools, temperature=None):
+            del temperature
+            self.calls.append(list(messages))
+            if any(m.role == "user" and "Time budget reached" in (m.content or "") for m in messages):
+                return LLMResponse(content="- [2026-11-05 14:44][session/x] fact", tool_calls=[])
+            return LLMResponse(
+                content=None,
+                reasoning_content="looking",
+                reasoning_details=[{"type": "thinking", "signature": "sig"}],
+                served_by="haiku-primary",
+                tool_calls=[ToolCall(id=f"t{len(self.calls)}", name="grep", arguments={"pattern": "藥"})],
+            )
+
+    client = _DeadlineClient()
+    run = _agent(tmp_path, client).run("q", max_tool_calls=12, deadline_seconds=1e-6)
+
+    assert run.timed_out is True
+    assert run.hit_limit is True
+    assert run.tool_calls == 1
+    assert run.text == "- [2026-11-05 14:44][session/x] fact"
+    final_request = client.calls[-1]
+    assert final_request[-1].role == "user"
+    assert "Time budget reached" in final_request[-1].content
+    # The assistant turn goes back with its reasoning, as the brain's side channels do.
+    replayed = next(m for m in final_request if m.role == "assistant")
+    assert replayed.reasoning_content == "looking"
+    assert replayed.reasoning_details == [{"type": "thinking", "signature": "sig"}]
+    assert replayed.reasoning_origin == "haiku-primary"

@@ -2,12 +2,12 @@
 
 ## 每日維護順序（實作，`AgentCore._perform_maintenance`）
 
-1. **現況檔狀態債**：若 `_turns_since_memory_sync > 0`（有用戶回合沒寫 `temp-memory.md`），先跑一次 `[MEMORY SYNC - STATE REFRESH]` side-channel 讓 brain 整份重寫現況檔
+1. **現況檔狀態債**：若 `_turns_since_memory_sync > 0`（有用戶回合沒寫 `temp-memory.md`），先跑一次 `[MEMORY SYNC - STATE REFRESH]` side-channel 讓 brain 整份重寫現況檔；只有 memory_edit 真的執行成功才歸零，否則債留到下一個清償點（`_settle_state_file_debt`）
 2. **現況檔快照**：`snapshot_state_file()` 把 `temp-memory.md` 整檔寫到 `memory/archive/temp-memory/<昨天>.md`（已存在則附加），重建該目錄 `index.md`
 3. **curation**：全掃超標檔案補入佇列，再由 worker 依 `memory-maintenance` skill 原地濃縮或拆檔（見 `../memory-curation.md`）
 4. **context refresh**：清空對話、重載 system prompt 與 boot files、開新 session
 5. **backup**：kernel 備份
-6. **session cleanup**：`retention_days`（30）到期刪整個 session 目錄；`debug_retention_days`（7）到期先刪 `requests.jsonl` / `responses.jsonl`，`messages.jsonl` 與 `transcript.jsonl` 留到 session 到期
+6. **session cleanup**：`retention_days`（30）到期刪整個 session 目錄；`debug_retention_days`（7）到期先刪 `requests.jsonl`；`responses.jsonl`（dashboard 用量圖來源）、`messages.jsonl` 與 `transcript.jsonl` 留到 session 到期
 
 現況檔與 recall 的設計見 `../memory-recall.md`。以下為早期設計文件。
 

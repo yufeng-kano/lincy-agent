@@ -155,12 +155,17 @@ def _run_responder(*args, **kwargs) -> LLMResponse:
     return _responder._run_responder(*args, **kwargs)
 
 
+# Inbound channels that are not a person talking to the agent. They never
+# count as state-file debt and never trigger a recall prefetch.
+_INTERNAL_CHANNEL_KINDS = {"worker": "worker_result", "shell_task": "shell_task"}
+
+
 def _classify_inbound_kind(
     *,
     channel: str,
     metadata: dict[str, object] | None,
 ) -> str:
-    """Classify the inbound source for turn-level debug logs."""
+    """Classify the inbound source: user_message, or one of the internal kinds."""
     meta = metadata or {}
     if channel == "system":
         if bool(meta.get("task_due")):
@@ -170,7 +175,7 @@ def _classify_inbound_kind(
         if bool(meta.get("system")):
             return "heartbeat"
         return "system"
-    return "user_message"
+    return _INTERNAL_CHANNEL_KINDS.get(channel, "user_message")
 
 
 @dataclass
@@ -480,6 +485,7 @@ class AgentCore:
                 context_tail=format_context_tail(self.conversation.get_messages()),
                 exclude_paths=self._loaded_context_paths(),
                 max_tool_calls=recall_cfg.prefetch_max_tool_calls,
+                deadline_seconds=recall_cfg.prefetch_deadline_seconds,
             )
         except Exception as exc:
             logger.warning("Recall prefetch failed: %s", exc)
@@ -787,8 +793,12 @@ class AgentCore:
         on_before_tool_call: Callable[[ToolCall], None] | None = None,
         is_cancel_requested: Callable[[], bool] | None = None,
         on_cancel_pending: Callable[[], None] | None = None,
-    ) -> None:
-        """Run memory sync with the configured side-channel client."""
+    ) -> bool:
+        """Run memory sync with the configured side-channel client.
+
+        Returns True when the side channel executed a memory_edit without
+        error; callers only clear state-file debt on True.
+        """
         sync_client = getattr(self, "memory_sync_client", None) or self.client
         if reminder_text is None:
             reminder_text = _build_memory_sync_reminder(
@@ -796,7 +806,7 @@ class AgentCore:
                 turns_accumulated,
                 max_chars=self.config.tools.memory_edit.temp_memory_max_chars,
             )
-        _run_memory_sync_side_channel(
+        return bool(_run_memory_sync_side_channel(
             sync_client,
             self.conversation,
             self.builder,
@@ -810,7 +820,31 @@ class AgentCore:
             on_before_tool_call=on_before_tool_call,
             is_cancel_requested=is_cancel_requested,
             on_cancel_pending=on_cancel_pending,
-        )
+        ))
+
+    def _settle_state_file_debt(self, *, label: str) -> bool:
+        """Run the state refresh side channel when user turns are unsynced.
+
+        Returns True when no debt is left: nothing was owed, or the refresh
+        wrote the state file. A refresh that fails or writes nothing keeps the
+        debt for the next settlement point instead of silently dropping it.
+        """
+        if self._turns_since_memory_sync <= 0:
+            return True
+        try:
+            synced = self._run_memory_sync(
+                tools=self.registry.get_definitions(),
+                missing_targets=list(MEMORY_SYNC_TARGETS),
+                turns_accumulated=self._turns_since_memory_sync,
+            )
+        except Exception as e:
+            logger.warning("%s state-file sync failed: %s", label, e)
+            return False
+        if synced:
+            self._turns_since_memory_sync = 0
+        else:
+            logger.warning("%s state-file sync wrote nothing; debt kept", label)
+        return synced
 
     def _maybe_run_turn_artifact_sync(
         self,
@@ -915,7 +949,7 @@ class AgentCore:
             return
 
         try:
-            self._run_memory_sync(
+            synced = self._run_memory_sync(
                 tools=tools,
                 missing_targets=pre_compact_missing,
                 turns_accumulated=self._turns_since_memory_sync,
@@ -923,9 +957,15 @@ class AgentCore:
                 is_cancel_requested=is_cancel_requested,
                 on_cancel_pending=on_cancel_pending,
             )
-            self._turns_since_memory_sync = 0
+            if synced:
+                self._turns_since_memory_sync = 0
             if prepared.debug:
-                self.console.print_debug("memory-sync", "pre-compaction sync done")
+                self.console.print_debug(
+                    "memory-sync",
+                    "pre-compaction sync done"
+                    if synced
+                    else "pre-compaction sync wrote nothing; debt kept",
+                )
         except Exception:
             if prepared.debug:
                 self.console.print_debug(
@@ -1085,6 +1125,9 @@ class AgentCore:
             Turn completion status for queue-level ack / requeue decisions.
         """
         self._last_turn_failure_category = None
+        # Fix the inbound time once: an overflow retry re-adds the user entry
+        # and the transcript recognises it as the same message by timestamp.
+        timestamp = timestamp or tz_now()
         # Guard against dangling tool calls left by a previous hard
         # interruption; providers reject tool_use without a tool result.
         dangling = self.conversation.remove_dangling_tool_calls()
@@ -1224,11 +1267,14 @@ class AgentCore:
         return self._requeue().requeue_yielded_scheduled_turn(msg, receipt, scope_id=scope_id)
 
     def graceful_exit(self) -> None:
-        """Handle graceful exit.
+        """Handle graceful exit (shutdown or restart).
 
-        Only finalizes the session; snapshot, backup and session cleanup are
-        handled by the daily maintenance window.
+        Settles state-file debt first: the counter lives only in memory, so
+        a restart would otherwise forget the user turns it covers. Backup
+        and session cleanup stay with the daily maintenance window.
         """
+        if getattr(self, "registry", None) is not None:
+            self._settle_state_file_debt(label="Exit")
         if self.session_mgr is not None:
             self.session_mgr.finalize("completed")
 
@@ -1318,6 +1364,9 @@ class AgentCore:
     def _perform_new_session(self) -> None:
         """Rotate into a fresh empty session."""
         try:
+            # The history is about to be dropped, so settle the debt first;
+            # whatever still fails has nothing left to sync from.
+            self._settle_state_file_debt(label="New session")
             self._turns_since_memory_sync = 0
             self.conversation.clear()
             if self.turn_context is not None:
@@ -1371,16 +1420,7 @@ class AgentCore:
             # The state file is rewritten in place, so settle any refresh debt
             # first, then snapshot it for the day that just ended before the
             # context refresh below starts a new session.
-            if self._turns_since_memory_sync > 0:
-                try:
-                    self._run_memory_sync(
-                        tools=self.registry.get_definitions(),
-                        missing_targets=list(MEMORY_SYNC_TARGETS),
-                        turns_accumulated=self._turns_since_memory_sync,
-                    )
-                    self._turns_since_memory_sync = 0
-                except Exception as e:
-                    logger.warning("Maintenance state-file sync failed: %s", e)
+            self._settle_state_file_debt(label="Maintenance")
             try:
                 snapshot = snapshot_state_file(
                     self.agent_os_dir,
@@ -1619,17 +1659,8 @@ class AgentCore:
                 self._queue.ack(receipt)
             return
 
-        tools = self.registry.get_definitions()
-        try:
-            self._run_memory_sync(
-                tools=tools,
-                missing_targets=list(MEMORY_SYNC_TARGETS),
-                turns_accumulated=self._turns_since_memory_sync,
-            )
-            self._turns_since_memory_sync = 0
+        if self._settle_state_file_debt(label="Pre-sleep"):
             self.console.print_info("Pre-sleep memory sync completed")
-        except Exception:
-            logger.warning("Pre-sleep sync failed", exc_info=True)
 
         if self._queue is not None and receipt is not None:
             self._queue.ack(receipt)

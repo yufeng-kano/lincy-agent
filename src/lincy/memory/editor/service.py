@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import json
 import logging
@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 
 from ...core.schema import MemoryEditWarningsConfig
+from ...timezone_utils import get_tz, now as tz_now
 from ...workspace.people import sync_people_index_entry
+from ..hooks import snapshot_state_file
 from ..curation.budget import (
     matches_ignore_patterns as _matches_warning_patterns,
     resolve_budget as _resolve_warning_budget,
@@ -59,8 +61,18 @@ _LONG_TERM_LIST_LINE = re.compile(r"^-\s*\[\d{4}-\d{2}-\d{2}\]\s+.+$")
 _LONG_TERM_RECORD_LINE = re.compile(r"^-\s*\[\d{4}-\d{2}-\d{2}\]\s+.+$")
 # temp-memory.md is the rewritten-in-place state file: a title plus four fixed
 # sections, validated after every write (see docs/dev/memory-recall.md).
-_STATE_FILE_TITLE = "# 今日現況"
-_STATE_FILE_SECTIONS = ("## 最後互動", "## 今日時間線", "## 未閉環", "## 下一步")
+# State-file headings are Chinese; written as escapes so the source stays ASCII.
+STATE_FILE_TITLE = "# \u4eca\u65e5\u73fe\u6cc1"
+STATE_FILE_SECTIONS = (
+    "## \u6700\u5f8c\u4e92\u52d5",
+    "## \u4eca\u65e5\u6642\u9593\u7dda",
+    "## \u672a\u9589\u74b0",
+    "## \u4e0b\u4e00\u6b65",
+)
+# Operations that keep temp-memory.md a whole-file rewrite. append_entry would
+# turn it back into a log, delete_file and the checkbox edits make no sense
+# for it, so only the editor prompt used to stand in the way.
+_STATE_FILE_ALLOWED_OPERATIONS = frozenset({"overwrite", "replace_block", "create_if_missing"})
 
 
 @dataclass
@@ -327,6 +339,17 @@ class MemoryEditor:
                 path=req.target_path,
             )
 
+        if _is_state_file_path(req.target_path):
+            rejected = _check_state_file_operations(plan.operations)
+            if rejected is not None:
+                return ErrorItem(
+                    request_id=req.request_id,
+                    code="temp_memory_operation_invalid",
+                    detail=rejected,
+                )
+            if file_exists and file_content.strip():
+                _snapshot_state_file_before_rewrite(target, agent_os_dir=base_dir)
+
         request_changed = False
         failed_outcome = None
         for operation in plan.operations:
@@ -464,9 +487,42 @@ def _validate_target_file_after_apply(
     return None
 
 
+def _is_state_file_path(rel_path: str) -> bool:
+    return str(rel_path).strip().replace("\\", "/") == _TEMP_MEMORY_REL_PATH
+
+
+def _check_state_file_operations(operations) -> str | None:
+    for operation in operations:
+        if operation.kind not in _STATE_FILE_ALLOWED_OPERATIONS:
+            return (
+                "temp-memory.md is rewritten as a whole: use overwrite or "
+                f"replace_block, not {operation.kind}"
+            )
+    return None
+
+
+def _snapshot_state_file_before_rewrite(target: Path, *, agent_os_dir: Path) -> None:
+    """Archive the last state of an earlier day before the first rewrite of a new day.
+
+    The state file only describes "now", so the last version written on a
+    day is that day's record. The 03:00 maintenance snapshot alone would miss
+    it whenever the brain rewrites the file between midnight and 03:00.
+    """
+    try:
+        written = datetime.fromtimestamp(target.stat().st_mtime, tz=get_tz()).date()
+        if written < tz_now().date():
+            snapshot_state_file(agent_os_dir, day=written)
+    except Exception:
+        logger.warning("State file pre-rewrite snapshot failed", exc_info=True)
+
+
 def _validate_state_file(target: Path, *, max_chars: int) -> ApplyOutcome | None:
     if not target.exists() or not target.is_file():
-        return None
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_structure_invalid",
+            detail="temp-memory.md must exist",
+        )
 
     content = target.read_text(encoding="utf-8")
     if len(content) > max_chars:
@@ -478,14 +534,14 @@ def _validate_state_file(target: Path, *, max_chars: int) -> ApplyOutcome | None
                 "rewrite it shorter and keep only what matters now"
             ),
         )
-    if not content.lstrip().startswith(_STATE_FILE_TITLE):
+    if not content.lstrip().startswith(STATE_FILE_TITLE):
         return ApplyOutcome(
             status="error",
             code="temp_memory_structure_invalid",
-            detail=f"temp-memory.md must start with '{_STATE_FILE_TITLE}'",
+            detail=f"temp-memory.md must start with '{STATE_FILE_TITLE}'",
         )
     positions: list[int] = []
-    for header in _STATE_FILE_SECTIONS:
+    for header in STATE_FILE_SECTIONS:
         index = content.find(header)
         if index < 0:
             return ApplyOutcome(

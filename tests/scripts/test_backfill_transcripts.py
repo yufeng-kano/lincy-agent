@@ -49,12 +49,19 @@ def _session(tmp_path: Path) -> Path:
     )
     turn1_call = _msg("assistant", None, tool_calls=[{"id": "t1", "name": "send_message", "arguments": {"body": "太好了"}}])
     turn1_result = _msg("tool", "sent", tool_call_id="t1", name="send_message")
-    turn1_final = _msg("assistant", "done")
+    # The builder stamps assistant text too; the stamp must not survive.
+    turn1_final = _msg("assistant", "[2026-11-05 (Thu) 14:45] done")
     sync_reminder = _msg("user", "[MEMORY SYNC - STATE REFRESH]\nrefresh now")
     sync_call = _msg("assistant", None, tool_calls=[{"id": "m1", "name": "memory_edit", "arguments": {"requests": []}}])
     sync_result = _msg("tool", "ok", tool_call_id="m1", name="memory_edit")
     summary = _msg("assistant", "[Conversation summary before compaction]\n- he took the medicine")
     turn2_user = _msg("user", "[2026-11-05 (Thu) 18:00] [discord, from 毓峰] 晚餐吃麥當勞")
+    # Same reply as the messages.jsonl copy below (exact timestamp 18:00:40):
+    # the stamped request copy must collapse into it.
+    turn2_final = _msg("assistant", "[2026-11-05 (Thu) 18:00] 好吃嗎")
+    # Identical short texts at different minutes are different messages.
+    ok_1 = _msg("user", "[2026-11-05 (Thu) 18:30] [discord, from 毓峰] ok")
+    ok_2 = _msg("user", "[2026-11-05 (Thu) 18:45] [discord, from 毓峰] ok")
     records = [
         _record(1, "2026-11-05T14:44:05+08:00", boot + [turn1_user]),
         _record(2, "2026-11-05T14:44:20+08:00", boot + [turn1_user, turn1_call, turn1_result]),
@@ -62,6 +69,8 @@ def _session(tmp_path: Path) -> Path:
         _record(4, "2026-11-05T14:45:30+08:00", boot + [turn1_user, turn1_call, turn1_result, turn1_final, sync_reminder, sync_call, sync_result]),
         _record(5, "2026-11-05T18:00:10+08:00", boot + [summary, turn2_user]),
         _record(6, "2026-11-05T18:00:20+08:00", [_msg("system", "recall prompt"), _msg("user", "Question: x")], label="recall"),
+        _record(7, "2026-11-05T18:30:05+08:00", boot + [summary, turn2_user, turn2_final, ok_1]),
+        _record(8, "2026-11-05T18:45:05+08:00", boot + [summary, turn2_user, turn2_final, ok_1, ok_2]),
     ]
     (session / "requests.jsonl").write_text("\n".join(records) + "\n", encoding="utf-8")
     # messages.jsonl after compaction: summary + the last turn with its final reply.
@@ -103,15 +112,22 @@ def test_build_entries_unions_requests_and_messages_in_time_order(tmp_path: Path
         ("tool", "ok", "m1"),
         ("user", "晚餐吃麥當勞", None),
         ("assistant", "好吃嗎", None),
+        ("user", "ok", None),
+        ("user", "ok", None),
     ]
     first = entries[0]
     assert first.channel == "discord" and first.sender == "毓峰"
     assert first.timestamp == datetime(2026, 11, 5, 14, 44, tzinfo=TZ)
     assert first.metadata == {"backfilled_from": "requests.jsonl"}
-    assert entries[1].timestamp == datetime.fromisoformat("2026-11-05T14:44:20+08:00")
+    # Tool calls take the time of the stamped message before them, not the request time.
+    assert entries[1].timestamp == datetime(2026, 11, 5, 14, 44, tzinfo=TZ)
+    assert entries[3].timestamp == datetime(2026, 11, 5, 14, 45, tzinfo=TZ)
     # The turn-2 user entry comes from messages.jsonl (it keeps its overlay metadata).
     assert entries[6].metadata == {"turn_overlay": "[Runtime Context]\n..."}
-    assert stats == {"records": 6, "from_messages": 2, "from_requests": 6, "total": 8}
+    # So does the reply: the exact timestamp wins over the minute stamp.
+    assert entries[7].timestamp == datetime(2026, 11, 5, 18, 0, 40, tzinfo=TZ)
+    assert [e.timestamp.minute for e in entries[8:]] == [30, 45]
+    assert stats == {"records": 8, "from_messages": 2, "from_requests": 8, "total": 10}
 
 
 def test_backfill_session_writes_skips_and_forces(tmp_path: Path, capsys):
@@ -124,11 +140,11 @@ def test_backfill_session_writes_skips_and_forces(tmp_path: Path, capsys):
     report = backfill.backfill_session(session, tz=TZ, dry_run=False, force=False)
     assert report.endswith("(written)")
     lines = (session / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 8
+    assert len(lines) == 10
     assert all(SessionEntry.model_validate_json(line) for line in lines)
 
     assert backfill.backfill_session(session, tz=TZ, dry_run=False, force=False).endswith("(transcript.jsonl exists)")
     assert backfill.backfill_session(session, tz=TZ, dry_run=False, force=True).endswith("(written)")
 
     assert backfill.main([str(tmp_path), "--dry-run", "--force", "--tz", "+08:00"]) == 0
-    assert "20261105_030000_abc123: records=6" in capsys.readouterr().out
+    assert "20261105_030000_abc123: records=8" in capsys.readouterr().out

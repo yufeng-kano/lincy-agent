@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -46,6 +47,10 @@ _FINALIZE_PROMPT = (
     "Tool call limit reached. Write the final answer now using only the facts "
     "already found, in the required output format. Output NONE if nothing "
     "relevant was found. Do not call tools."
+)
+_DEADLINE_PROMPT = (
+    "Time budget reached. Do not call any more tools. Answer now from what "
+    "you have found, or output NONE."
 )
 _NONE_PATTERN = re.compile(r"NONE[.!]?", re.IGNORECASE)
 
@@ -169,12 +174,6 @@ def render_transcript_entry(entry: SessionEntry) -> str:
         else:
             pieces.append(f"-> {call.name}({_compact_json(args, 200)})")
     return f"[{stamp} {who}] " + " ".join(pieces)
-
-
-def _searchable_text(entry: SessionEntry) -> str:
-    """Text grep matches against; metadata is excluded so overlay blocks
-    (including earlier [Recall] output) never feed back into recall."""
-    return render_transcript_entry(entry)
 
 
 def _parse_entry(line: str) -> SessionEntry | None:
@@ -319,34 +318,28 @@ def _grep_transcript(
 ) -> list[tuple[int, list[str]]]:
     """Like _grep_markdown, but each line is a rendered SessionEntry.
 
-    The raw JSON line is tested first so only candidate lines are parsed;
-    the rendered text is then re-tested because JSON escaping and metadata
-    can produce false positives.
+    Only the rendered text is searched: a pattern that spans the stamp, the
+    sender and the body must match the line the way the model sees it, and
+    entry metadata (overlay blocks, earlier [Recall] output) never matches.
     """
     try:
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    rendered: dict[int, str | None] = {}
-
-    def render(index: int) -> str | None:
-        if index not in rendered:
-            entry = _parse_entry(raw_lines[index])
-            rendered[index] = render_transcript_entry(entry) if entry else None
-        return rendered[index]
+    rendered: list[str | None] = []
+    for raw in raw_lines:
+        entry = _parse_entry(raw)
+        rendered.append(render_transcript_entry(entry) if entry else None)
 
     blocks: list[tuple[int, list[str]]] = []
-    for index, raw in enumerate(raw_lines):
-        if not regex.search(raw):
-            continue
-        text = render(index)
+    for index, text in enumerate(rendered):
         if text is None or not regex.search(text):
             continue
         start = max(0, index - context_lines)
-        end = min(len(raw_lines), index + context_lines + 1)
+        end = min(len(rendered), index + context_lines + 1)
         block = []
         for j in range(start, end):
-            line_text = render(j)
+            line_text = rendered[j]
             if line_text is None:
                 continue
             sep = ":" if j == index else "-"
@@ -504,6 +497,7 @@ class RecallRun:
     text: str
     tool_calls: int
     hit_limit: bool
+    timed_out: bool = False
 
 
 class RecallAgent:
@@ -530,6 +524,7 @@ class RecallAgent:
         context_tail: str = "",
         exclude_paths: Iterable[str] = (),
         max_tool_calls: int | None = None,
+        deadline_seconds: float | None = None,
     ) -> str | None:
         """Return sourced facts for *question*, or None when nothing was found."""
         run = self.run(
@@ -537,6 +532,7 @@ class RecallAgent:
             context_tail=context_tail,
             exclude_paths=exclude_paths,
             max_tool_calls=max_tool_calls,
+            deadline_seconds=deadline_seconds,
         )
         text = run.text.strip()
         if not text or _NONE_PATTERN.fullmatch(text):
@@ -550,9 +546,15 @@ class RecallAgent:
         context_tail: str = "",
         exclude_paths: Iterable[str] = (),
         max_tool_calls: int | None = None,
+        deadline_seconds: float | None = None,
     ) -> RecallRun:
-        """Run the capped tool loop and return the model's final text."""
+        """Run the capped tool loop and return the model's final text.
+
+        ``deadline_seconds`` bounds the wall-clock time spent on search
+        rounds; once it has passed, the next round is the answer.
+        """
         limit = max_tool_calls or self.config.max_tool_calls
+        deadline = time.monotonic() + deadline_seconds if deadline_seconds else None
         with llm_session("recall"):
             return self._run_loop(
                 _build_request(
@@ -563,9 +565,10 @@ class RecallAgent:
                     max_result_chars=self.config.max_result_chars,
                 ),
                 limit=limit,
+                deadline=deadline,
             )
 
-    def _run_loop(self, request: str, *, limit: int) -> RecallRun:
+    def _run_loop(self, request: str, *, limit: int, deadline: float | None) -> RecallRun:
         messages = [
             Message(role="system", content=self.system_prompt),
             Message(role="user", content=request),
@@ -573,11 +576,17 @@ class RecallAgent:
         tool_defs = self._registry.get_definitions()
         calls_used = 0
         hit_limit = False
+        timed_out = False
         response = self.client.chat_with_tools(messages, tool_defs)
         while response.tool_calls:
+            # Replay reasoning like the brain's side channels do: signed
+            # thinking blocks must travel with the tool calls they produced.
             messages.append(Message(
                 role="assistant",
                 content=response.content,
+                reasoning_content=response.reasoning_content,
+                reasoning_details=response.reasoning_details,
+                reasoning_origin=response.served_by,
                 tool_calls=response.tool_calls,
             ))
             for call in response.tool_calls:
@@ -592,12 +601,16 @@ class RecallAgent:
                     name=call.name,
                     content=content,
                 ))
-            if calls_used >= limit:
+            timed_out = deadline is not None and time.monotonic() >= deadline
+            if calls_used >= limit or timed_out:
                 hit_limit = True
                 # Tools stay attached: Anthropic rejects a history with
                 # tool_use blocks when the request defines no tools. Any
                 # further call is ignored; only the text is kept.
-                messages.append(Message(role="user", content=_FINALIZE_PROMPT))
+                messages.append(Message(
+                    role="user",
+                    content=_DEADLINE_PROMPT if timed_out else _FINALIZE_PROMPT,
+                ))
                 response = self.client.chat_with_tools(messages, tool_defs)
                 break
             response = self.client.chat_with_tools(messages, tool_defs)
@@ -605,6 +618,7 @@ class RecallAgent:
             text=response.content or "",
             tool_calls=calls_used,
             hit_limit=hit_limit,
+            timed_out=timed_out,
         )
 
 

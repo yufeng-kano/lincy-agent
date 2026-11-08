@@ -54,7 +54,7 @@ agent_os_dir: ~/.agent
 │       ├── messages.jsonl      # 目前 context（compaction 會改寫）
 │       ├── transcript.jsonl    # 完整對話原文，只追加；recall 子代理的語料
 │       ├── requests.jsonl      # LLM request dump（保留 7 天）
-│       └── responses.jsonl     # LLM response dump（保留 7 天）
+│       └── responses.jsonl     # LLM response dump（dashboard 用量來源；留到 session 到期）
 │
 ├── state/                      # runtime operational state（可重建，不屬於 memory）
 │   ├── shared_state.json       # Common-ground shared state

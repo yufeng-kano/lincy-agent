@@ -23,12 +23,16 @@ class _FakeRecallAgent:
         self.result = result
         self.error: Exception | None = None
 
-    def recall(self, question, *, context_tail="", exclude_paths=(), max_tool_calls=None):
+    def recall(
+        self, question, *, context_tail="", exclude_paths=(), max_tool_calls=None,
+        deadline_seconds=None,
+    ):
         self.calls.append({
             "question": question,
             "context_tail": context_tail,
             "exclude_paths": set(exclude_paths),
             "max_tool_calls": max_tool_calls,
+            "deadline_seconds": deadline_seconds,
         })
         if self.error is not None:
             raise self.error
@@ -90,6 +94,7 @@ def test_user_turn_prefetches_recall_into_overlay(tmp_path: Path):
     assert "user: earlier question" in call["context_tail"]
     assert "assistant: earlier answer" in call["context_tail"]
     assert call["max_tool_calls"] == agent.config.prefetch_max_tool_calls
+    assert call["deadline_seconds"] == agent.config.prefetch_deadline_seconds
     assert call["exclude_paths"] == {"memory/agent/long-term.md", "memory/agent/temp-memory.md"}
     latest = _last_user_text(prepared.messages)
     assert "[Recall]\n- [2026-11-05 14:44][session/x] took the medicine" in latest
@@ -148,6 +153,13 @@ def test_internal_turns_and_short_messages_skip_prefetch(tmp_path: Path):
             "[HEARTBEAT] check in", channel="system", sender="system", timestamp=None,
             turn_metadata=metadata,
         )
+    core._prepare_turn_attempt(
+        "[worker:research] SUCCESS long report", channel="worker", sender="research",
+        timestamp=None, turn_metadata={},
+    )
+    core._prepare_turn_attempt(
+        "shell task 12 finished", channel="shell_task", sender=None, timestamp=None, turn_metadata={},
+    )
     core._prepare_turn_attempt("hi", channel="cli", sender="tester", timestamp=None, turn_metadata={})
     core._prepare_turn_attempt("long enough", channel="cli", sender="tester", timestamp=None, turn_metadata=None)
 

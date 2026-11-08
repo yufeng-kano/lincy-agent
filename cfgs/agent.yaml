@@ -66,7 +66,7 @@ maintenance:
   session_file_cleanup:
     enabled: true
     retention_days: 90
-    debug_retention_days: 7 # requests.jsonl / responses.jsonl dumps; transcript.jsonl stays
+    debug_retention_days: 7 # requests.jsonl dumps only; responses.jsonl and transcript.jsonl stay
 
 # Feature flags
 features:
@@ -312,6 +312,7 @@ agents:
       prefetch: true
       prefetch_min_chars: 4
       prefetch_max_tool_calls: 6
+      prefetch_deadline_seconds: 20
       max_tool_calls: 12
       max_result_chars: 1500
 

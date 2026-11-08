@@ -13,6 +13,7 @@ from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import extract_memory_edit_paths
+from ..memory.editor.service import STATE_FILE_SECTIONS, STATE_FILE_TITLE
 from ..tools import ToolRegistry
 from .side_channel import run_side_channel_tool_loop
 from .tool_setup import resolve_memory_path
@@ -108,6 +109,8 @@ def _build_memory_sync_reminder(
     turn_scope = (
         "1 user turn" if turns_accumulated == 1 else f"{turns_accumulated} user turns"
     )
+    last, timeline, open_loops, next_steps = (h[3:] for h in STATE_FILE_SECTIONS)
+    sections = ", ".join(f"`{h}`" for h in STATE_FILE_SECTIONS)
     return (
         "[MEMORY SYNC - STATE REFRESH]\n"
         f"The following state files have not been refreshed for {turn_scope}:\n"
@@ -115,12 +118,12 @@ def _build_memory_sync_reminder(
         "Refresh them now with ONE memory_edit call.\n\n"
         "memory/agent/temp-memory.md is the current-state file, not a log. Put the\n"
         "complete new file content in the instruction so the editor overwrites it:\n"
-        "- Keep the title `# 今日現況` and the four sections `## 最後互動`,\n"
-        "  `## 今日時間線`, `## 未閉環`, `## 下一步`, in that order.\n"
-        "- 最後互動: who, when, which channel, what it was about, how they felt.\n"
-        "- 今日時間線: at most 12 one-line bullets with HH:MM, today only.\n"
-        "- 未閉環: only still-open items, with schedule/task ids where they exist.\n"
-        "- 下一步: what to do at the next message or wake-up.\n"
+        f"- Keep the title `{STATE_FILE_TITLE}` and the four sections {sections},\n"
+        "  in that order.\n"
+        f"- {last}: who, when, which channel, what it was about, how they felt.\n"
+        f"- {timeline}: at most 12 one-line bullets with HH:MM, today only.\n"
+        f"- {open_loops}: only still-open items, with schedule/task ids where they exist.\n"
+        f"- {next_steps}: what to do at the next message or wake-up.\n"
         "- Drop closed loops, internal bookkeeping (silent heartbeats, worker\n"
         "  reports, bare scheduler ids) and anything already stored in long-term\n"
         "  or people files. Do not add dated log entries.\n"
@@ -251,10 +254,14 @@ def _run_memory_sync_side_channel(
     on_before_tool_call: Callable[[ToolCall], None] | None = None,
     is_cancel_requested: Callable[[], bool] | None = None,
     on_cancel_pending: Callable[[], None] | None = None,
-) -> None:
-    """Side-channel LLM call to sync missing memory targets."""
+) -> bool:
+    """Side-channel LLM call to sync missing memory targets.
+
+    Returns True when a memory_edit call ran without error, so callers can
+    tell a refresh that wrote something from one that did not.
+    """
     if not any(definition.name == "memory_edit" for definition in tools):
-        return
+        return False
 
     local_messages = builder.build(conversation)
     local_messages.append(
@@ -281,16 +288,19 @@ def _run_memory_sync_side_channel(
 
     for attempt in range(1 + max_retries):
         had_error = False
+        executed = False
 
         def observe(response: LLMResponse) -> bool:
             _debug_print_responder_output(console, response, label="memory-sync")
             return False
 
         def execute_memory_edit_with_status(tool_call: ToolCall):
-            nonlocal had_error
+            nonlocal had_error, executed
             result = execute_memory_edit(tool_call)
-            if result is not None and result.is_error:
-                had_error = True
+            if result is not None:
+                executed = True
+                if result.is_error:
+                    had_error = True
             return result
 
         run_side_channel_tool_loop(
@@ -305,10 +315,14 @@ def _run_memory_sync_side_channel(
             ),
             on_response=observe,
         )
+        if executed and not had_error:
+            return True
         if not had_error:
-            break
+            # The model made no memory_edit call; a retry would repeat that.
+            return False
         if attempt < max_retries:
             logger.info("memory-sync retry %d/%d after error", attempt + 1, max_retries)
+    return False
 
 
 _EMPTY_RESPONSE_NUDGE = (

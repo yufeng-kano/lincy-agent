@@ -8,11 +8,12 @@ from lincy.session.manager import SessionManager
 from lincy.session.schema import SessionEntry
 
 
-def _entry(text: str) -> SessionEntry:
+def _entry(text: str, *, ts: datetime | None = None, metadata: dict | None = None) -> SessionEntry:
     return SessionEntry(
-        message=Message(role="user", content=text, timestamp=datetime.now(timezone.utc)),
+        message=Message(role="user", content=text, timestamp=ts or datetime.now(timezone.utc)),
         channel="cli",
         sender="alice",
+        metadata=metadata,
     )
 
 
@@ -49,3 +50,25 @@ def test_replayed_history_skips_transcript(tmp_path: Path):
     transcript = _lines(session_dir / "transcript.jsonl")
     assert len(transcript) == 1
     assert '"fresh"' in transcript[0]
+
+
+def test_same_message_re_added_with_a_new_overlay_is_logged_once(tmp_path: Path):
+    mgr = SessionManager(tmp_path)
+    sid = mgr.create("alice", "Alice")
+    session_dir = tmp_path / sid
+    ts = datetime(2026, 11, 5, 14, 44, tzinfo=timezone.utc)
+
+    mgr.append_message(_entry("same words", ts=ts, metadata={"turn_overlay": "[Recall]\n- a"}))
+    # An overflow retry re-adds the entry with a recomputed overlay.
+    mgr.append_message(_entry("same words", ts=ts, metadata={"turn_overlay": "[Recall]\n- b"}))
+    assert len(_lines(session_dir / "messages.jsonl")) == 2
+    assert len(_lines(session_dir / "transcript.jsonl")) == 1
+
+    # The same words sent at another time are a new message.
+    mgr.append_message(_entry("same words", ts=ts.replace(minute=45)))
+    assert len(_lines(session_dir / "transcript.jsonl")) == 2
+
+    # A new session starts with a clean slate.
+    sid2 = mgr.create("alice", "Alice")
+    mgr.append_message(_entry("same words", ts=ts))
+    assert len(_lines(tmp_path / sid2 / "transcript.jsonl")) == 1

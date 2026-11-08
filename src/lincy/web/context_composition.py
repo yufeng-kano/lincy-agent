@@ -52,6 +52,7 @@ _LATEST_TURN_MARKERS = (
     ("[Timing Notice]", "timing_notice", "[Timing Notice]"),
     ("[Decision Reminder]", "decision_reminder", "[Decision Reminder]"),
     ("[Agent Notes]", "agent_notes", "[Agent Notes]"),
+    ("[Recall]", "recall", "[Recall]"),
     ("[Common Ground at Message Time]", "common_ground", "[Common Ground at Message Time]"),
 )
 

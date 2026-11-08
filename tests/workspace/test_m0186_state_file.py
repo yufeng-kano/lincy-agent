@@ -1,5 +1,6 @@
 """Tests for m0186: temp-memory log -> state file, index line, config keys."""
 
+from datetime import date
 from importlib import resources
 from pathlib import Path
 
@@ -10,8 +11,10 @@ from lincy.workspace.migrations.m0186_state_file_and_recall import M0186StateFil
 TEMPLATES = Path(str(resources.files("lincy.workspace"))) / "templates" / "kernel"
 
 OLD_LOG = (
-    "# 暫存記憶\n\n"
-    "只放近期工作上下文。\n\n"
+    "# 暫存工作記憶\n\n"
+    "這裡只放近期上下文與短期情緒線索。\n"
+    "它不是提醒機制，也不是保證未來會做事的地方。\n\n"
+    "- 備忘：他喜歡熱美式，2026-11-03 說過。\n\n"
     "- [2026-11-05 00:20] 黃毓峰傳語音，說有點餓。\n"
     "  續行：澤希替他決定不點。\n"
     "- [2026-11-05 08:30] 叫醒，他說醒了。\n"
@@ -135,3 +138,34 @@ def test_config_keys_are_migrated(tmp_path: Path):
     assert config["maintenance"]["session_file_cleanup"]["debug_retention_days"] == 7
     assert config["agents"]["recall"]["llm"] == "cfgs/llm/kano-proxy/recall.yaml"
     assert config["agents"]["recall"]["recall"]["prefetch_max_tool_calls"] == 6
+    assert config["agents"]["recall"]["recall"]["prefetch_deadline_seconds"] == 20
+
+
+def test_undated_notes_are_archived_under_today_without_template_lines(tmp_path: Path):
+    kernel_dir, memory_dir = _workspace(tmp_path)
+
+    M0186StateFileAndRecall().upgrade(kernel_dir, TEMPLATES)
+
+    today = date.today().isoformat()
+    notes = (memory_dir / "archive" / "temp-memory" / f"{today}.md").read_text(encoding="utf-8")
+    assert notes.startswith(f"# {today}\n\n## Undated notes (migrated)\n\n- 備忘：他喜歡熱美式")
+    assert "提醒機制" not in notes
+    # A date inside an entry's text does not open a new day.
+    assert not (memory_dir / "archive" / "temp-memory" / "2026-11-03.md").exists()
+    # The state file still points at the newest dated day.
+    state = (memory_dir / "agent" / "temp-memory.md").read_text(encoding="utf-8")
+    assert "archive/temp-memory/2026-11-06.md" in state
+
+
+def test_debug_retention_is_capped_by_a_short_session_retention(tmp_path: Path):
+    kernel_dir = tmp_path / "kernel"
+    kernel_dir.mkdir()
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "maintenance": {"session_file_cleanup": {"enabled": True, "retention_days": 3}},
+    }), encoding="utf-8")
+
+    M0186StateFileAndRecall().upgrade(kernel_dir, TEMPLATES)
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["maintenance"]["session_file_cleanup"]["debug_retention_days"] == 3

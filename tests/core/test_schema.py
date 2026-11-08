@@ -168,6 +168,7 @@ def test_maintenance_curation_defaults_and_strict_validation():
     assert recall.prefetch is True
     assert recall.prefetch_min_chars == 4
     assert recall.prefetch_max_tool_calls == 6
+    assert recall.prefetch_deadline_seconds == 20.0
     assert recall.max_tool_calls == 12
     assert recall.max_result_chars == 1500
 

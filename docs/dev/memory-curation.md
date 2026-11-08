@@ -66,6 +66,8 @@
 `temp-memory.md` 是整份改寫的今日現況檔，沒有舊條目可歸檔。維護時 `snapshot_state_file()` 把整檔原樣寫到
 `memory/archive/temp-memory/<昨天>.md`（已存在就附加、不改寫），並重建該目錄 `index.md`。
 沒有 digest、沒有 LLM：過去的事由 recall 子代理直接 grep 快照與 `transcript.jsonl`，不再把摘要寫回現況檔。
+另外，brain 在跨日後第一次改寫現況檔時，`memory/editor/service.py` 會先把前一天的最後版本快照到同一目錄
+（`_snapshot_state_file_before_rewrite`，依檔案 mtime 的本地日期判斷），補上 00:00 到 03:00 之間改寫造成的空窗。
 
 **b. 超標檔案整理（消化佇列）**
 
@@ -105,7 +107,7 @@ maintenance:
     enabled: true
   session_file_cleanup:
     retention_days: 30
-    debug_retention_days: 7   # requests/responses.jsonl 提前刪除
+    debug_retention_days: 7   # 只提前刪 requests.jsonl；responses.jsonl 留給 dashboard
 ```
 
 `maintenance.archive`、`curate.digest_*` 與 `tools.memory_sync.every_n_turns` 已移除（m0186）。

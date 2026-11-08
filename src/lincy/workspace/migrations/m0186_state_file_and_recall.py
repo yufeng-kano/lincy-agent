@@ -51,7 +51,14 @@ _NEW_INDEX_LINE = (
     "未閉環、下一步）"
 )
 
-_DATE_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2})")
+# Legacy log entries start the line with "- [YYYY-MM-DD"; a date mentioned
+# inside an entry's text must not open a new day.
+_DATE_RE = re.compile(r"^- \[(\d{4}-\d{2}-\d{2})")
+# Intro lines of the pre-0.86 template; boilerplate, not notes worth archiving.
+_LEGACY_TEMPLATE_LINES = frozenset({
+    "\u9019\u88e1\u53ea\u653e\u8fd1\u671f\u4e0a\u4e0b\u6587\u8207\u77ed\u671f\u60c5\u7dd2\u7dda\u7d22\u3002",
+    "\u5b83\u4e0d\u662f\u63d0\u9192\u6a5f\u5236\uff0c\u4e5f\u4e0d\u662f\u4fdd\u8b49\u672a\u4f86\u6703\u505a\u4e8b\u7684\u5730\u65b9\u3002",
+})
 _DIGEST_RE = re.compile(r"^\s*- \[digest \d{4}-\d{2}-\d{2}\].*\n?", re.MULTILINE)
 
 _RECALL_AGENT_CONFIG = {
@@ -64,6 +71,7 @@ _RECALL_AGENT_CONFIG = {
         "prefetch": True,
         "prefetch_min_chars": 4,
         "prefetch_max_tool_calls": 6,
+        "prefetch_deadline_seconds": 20,
         "max_tool_calls": 12,
         "max_result_chars": 1500,
     },
@@ -114,12 +122,18 @@ class M0186StateFileAndRecall(Migration):
 
 # -- state file ---------------------------------------------------------------
 
-def _parse_by_date(content: str) -> dict[date, str]:
-    """Group the legacy dated log into {date: text}; the preamble is dropped."""
+def _parse_by_date(content: str) -> tuple[dict[date, str], str]:
+    """Group the legacy dated log into ({date: text}, undated text).
+
+    The lines after an entry line belong to that entry. Non-heading lines
+    before the first entry are returned as undated text so that free-form
+    notes survive the conversion.
+    """
     groups: dict[date, list[str]] = {}
+    undated: list[str] = []
     current: date | None = None
     for line in content.splitlines(keepends=True):
-        match = _DATE_RE.search(line)
+        match = _DATE_RE.match(line)
         if match:
             try:
                 current = date.fromisoformat(match.group(1))
@@ -127,7 +141,9 @@ def _parse_by_date(content: str) -> dict[date, str]:
                 pass
         if current is not None:
             groups.setdefault(current, []).append(line)
-    return {day: "".join(lines) for day, lines in groups.items()}
+        elif line.strip() and not line.startswith("#") and line.strip() not in _LEGACY_TEMPLATE_LINES:
+            undated.append(line)
+    return {day: "".join(lines) for day, lines in groups.items()}, "".join(undated)
 
 
 def _convert_state_file(memory_dir: Path) -> None:
@@ -139,12 +155,19 @@ def _convert_state_file(memory_dir: Path) -> None:
         return
 
     # Digest lines summarise days whose full text is already archived.
-    dated = _parse_by_date(_DIGEST_RE.sub("", content))
+    dated, undated = _parse_by_date(_DIGEST_RE.sub("", content))
+    today = datetime.now().date()
+    partitions = {day: text.rstrip("\n") for day, text in dated.items()}
+    if undated.strip():
+        # Notes without a date line must not vanish; they ride with today's
+        # partition so the brain can still find them.
+        notes = f"## Undated notes (migrated)\n\n{undated.strip()}"
+        partitions[today] = f"{partitions[today]}\n\n{notes}" if today in partitions else notes
     archive_dir = memory_dir / "archive" / "temp-memory"
-    if dated:
+    if partitions:
         archive_dir.mkdir(parents=True, exist_ok=True)
-        for day in sorted(dated):
-            text = dated[day].rstrip("\n")
+        for day in sorted(partitions):
+            text = partitions[day]
             target = archive_dir / f"{day.isoformat()}.md"
             if target.is_file():
                 existing = target.read_text(encoding="utf-8")
@@ -157,14 +180,14 @@ def _convert_state_file(memory_dir: Path) -> None:
                 target.write_text(f"# {day.isoformat()}\n\n{text}\n", encoding="utf-8")
         _rebuild_archive_index(archive_dir)
 
-    today = datetime.now().date().isoformat()
-    if dated:
-        latest = max(dated).isoformat()
+    if partitions:
+        # Point at the newest real day; undated notes alone fall back to today.
+        latest = (max(dated) if dated else today).isoformat()
         note = _UPGRADE_NOTE.format(
-            today=today, latest=f"archive/temp-memory/{latest}.md",
+            today=today.isoformat(), latest=f"archive/temp-memory/{latest}.md",
         )
     else:
-        note = _NO_HISTORY_NOTE.format(today=today)
+        note = _NO_HISTORY_NOTE.format(today=today.isoformat())
     skeleton = (
         f"{_STATE_TITLE}\n\n{_STATE_INTRO}\n\n"
         f"{_STATE_SECTIONS[0]}\n\n{note}\n\n"
@@ -234,7 +257,10 @@ def _update_config(config_path: Path) -> None:
                     changed = True
         cleanup = maintenance.get("session_file_cleanup")
         if isinstance(cleanup, dict) and "debug_retention_days" not in cleanup:
-            cleanup["debug_retention_days"] = 7
+            # The schema rejects debug_retention_days > retention_days.
+            retention = cleanup.get("retention_days")
+            bound = retention if isinstance(retention, int) and retention >= 1 else 30
+            cleanup["debug_retention_days"] = min(7, bound)
             changed = True
 
     agents = config.get("agents")

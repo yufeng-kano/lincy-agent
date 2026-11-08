@@ -356,6 +356,9 @@ class RecallAgentConfig(StrictConfigModel):
     # Messages shorter than this (after strip) skip the prefetch.
     prefetch_min_chars: int = Field(default=4, ge=1)
     prefetch_max_tool_calls: int = Field(default=6, ge=1)
+    # Wall-clock budget for one prefetch. Once it has passed, the sub-agent
+    # answers from what it has instead of starting another search round.
+    prefetch_deadline_seconds: float = Field(default=20.0, gt=0)
     # Budget for the brain's explicit recall tool.
     max_tool_calls: int = Field(default=12, ge=1)
     max_result_chars: int = Field(default=1500, ge=200)
@@ -426,8 +429,8 @@ class SessionFileCleanupConfig(StrictConfigModel):
 
     enabled: bool = True
     retention_days: int = Field(default=30, ge=1)
-    # Brain sessions keep transcript.jsonl / messages.jsonl for retention_days;
-    # the bulky requests.jsonl / responses.jsonl debug dumps go after this.
+    # Brain sessions keep transcript.jsonl / messages.jsonl / responses.jsonl
+    # for retention_days; the bulky requests.jsonl dumps go after this.
     debug_retention_days: int = Field(default=7, ge=1)
 
     @model_validator(mode="after")

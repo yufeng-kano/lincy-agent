@@ -159,12 +159,13 @@ class TestDebugDumpRetention:
 
         deleted = cleanup_sessions(base, retention_days=30, debug_retention_days=7)
 
-        assert deleted == 2
+        assert deleted == 1
         assert aged.exists()
         assert (aged / "messages.jsonl").exists()
         assert (aged / "transcript.jsonl").exists()
         assert not (aged / "requests.jsonl").exists()
-        assert not (aged / "responses.jsonl").exists()
+        # The dashboard reads usage history from responses.jsonl; it stays.
+        assert (aged / "responses.jsonl").exists()
         assert (fresh / "requests.jsonl").exists()
 
     def test_without_debug_retention_dumps_stay(self, tmp_path: Path):

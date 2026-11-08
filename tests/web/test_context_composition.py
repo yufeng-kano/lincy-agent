@@ -133,7 +133,7 @@ def _build_messages() -> list[dict]:
     })
     messages.append({"role": "assistant", "content": "好，晚安，記得吃藥。"})
 
-    # Latest user message: base text + [Runtime Context] + [Agent Notes].
+    # Latest user message: base text + [Runtime Context] + [Agent Notes] + [Recall].
     messages.append({
         "role": "user",
         "content": (
@@ -142,7 +142,9 @@ def _build_messages() -> list[dict]:
             "current_local_time: 2026-08-01 (Sat) 09:00\n"
             "agent_os_dir: /Users/yufeng/AgentOS\n\n"
             "[Agent Notes]\n"
-            'bedtime_med: "已服藥" | updated_at 2026-08-01 08:30'
+            'bedtime_med: "已服藥" | updated_at 2026-08-01 08:30\n\n'
+            "[Recall]\n"
+            "- [2026-07-31 20:10][session/brain/x/transcript.jsonl] 他說睡前已吃藥"
         ),
     })
 
@@ -317,7 +319,7 @@ def test_analyze_latest_brain_request_calibrated(tmp_path: Path):
     assert "memory/agent/mine.md" in pinned_context_items
 
     current_turn_items = {item["key"] for item in by_key["current_turn"]["items"]}
-    assert {"user_message", "runtime_context", "agent_notes", "tool_loop"} <= current_turn_items
+    assert {"user_message", "runtime_context", "agent_notes", "recall", "tool_loop"} <= current_turn_items
 
     # system_prompt / history have no per-item breakdown by design.
     assert by_key["system_prompt"]["items"] == []

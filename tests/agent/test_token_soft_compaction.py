@@ -337,6 +337,42 @@ def test_context_length_overflow_retry_preserves_original_timestamp(monkeypatch,
     assert retry_user.timestamp == original_timestamp
 
 
+def test_context_length_overflow_retry_logs_the_user_entry_once(monkeypatch, tmp_path):
+    """The retry re-adds the user entry; the transcript must not show it twice."""
+    from lincy.agent import core as core_module
+    from lincy.session.manager import SessionManager
+
+    core = _make_core(tmp_path, provider="openrouter", preserve_turns=2, soft_limit=128_000)
+    session_mgr = SessionManager(tmp_path / "sessions")
+    session_id = session_mgr.create("tester", "Tester")
+    core.session_mgr = session_mgr
+    core.conversation.set_on_message(session_mgr.append_message)
+    _seed_turns(core.conversation, 5)
+    calls = {"count": 0}
+
+    def _fake_run_responder(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ContextLengthExceededError("context length exceeded")
+        response = LLMResponse(
+            content="recovered", tool_calls=[],
+            prompt_tokens=1000, completion_tokens=20, total_tokens=1020, usage_available=True,
+        )
+        cb = kwargs.get("on_model_response")
+        if cb is not None:
+            cb(response)
+        return response
+
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
+
+    # No inbound timestamp: both attempts must still share one.
+    core.run_turn("retry turn", output_fn=lambda _text: None, channel="cli", sender="tester")
+
+    assert calls["count"] == 2
+    transcript = (tmp_path / "sessions" / session_id / "transcript.jsonl").read_text(encoding="utf-8")
+    assert sum(1 for line in transcript.splitlines() if '"retry turn"' in line) == 1
+
+
 def test_prepare_turn_attempt_reuses_common_ground_rev_for_turn_debug(tmp_path):
     core = _make_core(tmp_path, provider="openrouter")
     core.console.debug = True
@@ -413,6 +449,7 @@ def test_memory_sync_side_channel_uses_brain_client(monkeypatch, tmp_path):
 
     def _fake_run_memory_sync_side_channel(client, *_args, **_kwargs):
         captured["client"] = client
+        return True
 
     monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
@@ -453,6 +490,7 @@ def test_soft_limit_exceeded_forces_memory_sync(monkeypatch, tmp_path):
 
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
+        return True
 
     monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
@@ -490,6 +528,7 @@ def test_soft_limit_exceeded_no_sync_when_targets_met(monkeypatch, tmp_path):
 
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
+        return True
 
     monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
@@ -527,6 +566,7 @@ def test_below_soft_limit_only_tracks_state_debt(monkeypatch, tmp_path):
 
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
+        return True
 
     monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)
@@ -574,6 +614,66 @@ def test_pre_compaction_sync_failure_keeps_debt(monkeypatch, tmp_path):
 
     assert call_count["n"] == 1  # only the pre-compaction sync; no per-turn sync exists
     assert core._turns_since_memory_sync == 5  # this turn's debt plus the unpaid 4
+
+
+def test_pre_compaction_sync_that_writes_nothing_keeps_debt(monkeypatch, tmp_path):
+    """A side channel that made no memory_edit call must not clear the debt."""
+    from lincy.agent import core as core_module
+
+    core = _make_core(tmp_path, provider="openrouter", soft_limit=96_000)
+    core._turns_since_memory_sync = 4
+    _seed_turns(core.conversation, 4)
+
+    def _fake_run_responder(**kwargs):
+        response = LLMResponse(
+            content="ok", tool_calls=[],
+            prompt_tokens=140_000, completion_tokens=80,
+            total_tokens=140_080, usage_available=True,
+        )
+        cb = kwargs.get("on_model_response")
+        if cb is not None:
+            cb(response)
+        return response
+
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
+    monkeypatch.setattr(
+        core_module, "find_missing_memory_sync_targets", lambda _m: ["memory/agent/temp-memory.md"],
+    )
+    monkeypatch.setattr(core_module, "_run_memory_sync_side_channel", lambda *_a, **_k: False)
+
+    core.run_turn("sync noop", output_fn=lambda _: None, channel="cli", sender="tester")
+
+    assert core._turns_since_memory_sync == 5
+
+
+def test_worker_and_shell_task_results_never_add_state_debt(monkeypatch, tmp_path):
+    """Sub-agent reports arrive as turns, but they are not the user talking."""
+    from lincy.agent import core as core_module
+
+    core = _make_core(tmp_path, provider="openrouter", soft_limit=128_000)
+
+    def _fake_run_responder(**kwargs):
+        response = LLMResponse(
+            content="noted", tool_calls=[],
+            prompt_tokens=1000, completion_tokens=20, total_tokens=1020, usage_available=True,
+        )
+        cb = kwargs.get("on_model_response")
+        if cb is not None:
+            cb(response)
+        return response
+
+    monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
+    monkeypatch.setattr(
+        core_module, "find_missing_memory_sync_targets", lambda _m: ["memory/agent/temp-memory.md"],
+    )
+
+    for channel in ("worker", "shell_task"):
+        core.turn_context.set_inbound(channel, channel, {})
+        core.run_turn(
+            "[worker:research] SUCCESS report", output_fn=lambda _: None,
+            channel=channel, sender=channel,
+        )
+    assert core._turns_since_memory_sync == 0
 
 
 def test_internal_turns_never_add_state_debt(monkeypatch, tmp_path):
@@ -639,6 +739,7 @@ def test_heartbeat_soft_over_no_accumulated_skips_sync(monkeypatch, tmp_path):
 
     def _fake_run_memory_sync_side_channel(*_args, **_kwargs):
         sync_called["count"] += 1
+        return True
 
     monkeypatch.setattr(core_module, "_run_responder", _fake_run_responder)
     monkeypatch.setattr(core_module, "find_missing_memory_sync_targets", _fake_find_missing)

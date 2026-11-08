@@ -148,7 +148,7 @@ v0.2.0 的問題：Agent 學到新工具（如 claude CLI）後下次就忘記�
 - 工具表新增 `recall` 列；`memory_edit` 契約補「現況檔 instruction 直接附整份新內容」
 - 鐵則 8 刪掉 reviewer 時代的審查欄位禁令，改為不可把 `[Recall]`、`[Runtime Context]` 等系統區塊抄進記憶檔
 
-runtime 端對應：每 9 回合的強制 rollup 移除，只剩 compaction 前、睡前與每日維護三個同步點，提醒文改為 `[MEMORY SYNC - STATE REFRESH]`（見 `../memory-recall.md`）。
+runtime 端對應：每 9 回合的強制 rollup 移除，剩 compaction 前、睡前、每日維護、結束/重啟與開新 session 五個同步點，只有 memory_edit 真的執行成功才清債；提醒文改為 `[MEMORY SYNC - STATE REFRESH]`（見 `../memory-recall.md`）。
 
 ### Heartbeat Reliability（v0.74.16）
 

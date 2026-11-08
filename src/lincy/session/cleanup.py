@@ -13,9 +13,11 @@ logger = logging.getLogger(__name__)
 _TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 _TIMESTAMP_PREFIX_LEN = 15  # len("20260215_120000")
 
-# Full LLM request/response dumps; hundreds of MB per day, only useful for
-# short-term debugging. transcript.jsonl keeps the conversation itself.
-_DEBUG_DUMP_FILES = ("requests.jsonl", "responses.jsonl")
+# Full LLM request dumps run to hundreds of MB per day and are only useful
+# for short-term debugging; transcript.jsonl keeps the conversation itself.
+# responses.jsonl stays for the whole retention: it is small and the web
+# dashboard reads cost and token usage from it.
+_DEBUG_DUMP_FILES = ("requests.jsonl",)
 
 
 def _parse_session_timestamp(name: str) -> datetime | None:
@@ -59,8 +61,8 @@ def cleanup_sessions(
     """Remove expired sessions under session/brain/ and session/gui/.
 
     Brain sessions older than ``debug_retention_days`` (but not yet expired)
-    lose only their requests.jsonl / responses.jsonl dumps. Returns the
-    number of deleted entries (session directories, GUI files, dump files).
+    lose only their requests.jsonl dump. Returns the number of deleted
+    entries (session directories, GUI files, dump files).
     """
     now_local = tz_now()
     app_tz = now_local.tzinfo

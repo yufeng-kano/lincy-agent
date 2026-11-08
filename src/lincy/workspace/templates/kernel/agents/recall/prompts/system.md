@@ -27,9 +27,11 @@ no conversation context beyond what the request gives you.
 ## Tools
 
 - `grep(pattern, path_glob, context_lines, max_matches, count_only)`:
-  case-insensitive regex over the files matching the glob. Transcript hits are
-  rendered as `[YYYY-MM-DD HH:MM channel/sender role] text`. Use `count_only`
-  to see which files or days mention a term before reading anything.
+  case-insensitive regex over the files matching the glob. Transcript entries
+  are rendered as `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] text` and the
+  pattern runs over that whole line, so `yufeng.*藥` or `11-07 \(Sat\)` work.
+  Use `count_only` to see which files or days mention a term before reading
+  anything.
 - `read_file(path, offset, limit)`: read a memory file, or a transcript
   rendered one entry per line (line numbers are entry numbers).
 - `list_dir(path_glob)`: list files with size and modification time.

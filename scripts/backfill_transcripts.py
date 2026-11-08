@@ -5,7 +5,8 @@ transcript.jsonl existed the only complete record of the conversation is the
 history embedded in every logged LLM request. This script replays those
 requests, keeps the first appearance of each message, merges in whatever
 messages.jsonl still holds (it has channel, sender and exact timestamps), and
-writes the union as SessionEntry lines ordered by time.
+writes the union as SessionEntry lines ordered by minute, in request order
+within a minute.
 
 Run once on the production host before upgrading:
 
@@ -22,7 +23,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, tzinfo
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -52,16 +53,22 @@ _COMPACTION_SUMMARY_PREFIX = "[Conversation summary before compaction]"
 _SYNTHETIC_TOOLS = {"read_startup_context", "read_pinned_context"}
 
 
+def strip_stamp(text: str) -> tuple[str, str | None]:
+    """Remove the '[YYYY-MM-DD (Ddd) HH:MM] ' prefix ContextBuilder puts on
+    user and assistant text. Returns (text, 'YYYY-MM-DD HH:MM' or None)."""
+    match = _STAMP_RE.match(text)
+    if not match:
+        return text, None
+    return text[match.end():], f"{match.group(1)} {match.group(2)}"
+
+
 def strip_rendering(text: str) -> tuple[str, str | None, str | None, str | None]:
     """Undo the prompt rendering of a user message.
 
     Returns (raw_text, stamp, channel, sender); stamp is 'YYYY-MM-DD HH:MM'.
     """
-    stamp = channel = sender = None
-    match = _STAMP_RE.match(text)
-    if match:
-        stamp = f"{match.group(1)} {match.group(2)}"
-        text = text[match.end():]
+    channel = sender = None
+    text, stamp = strip_stamp(text)
     match = _TAG_RE.match(text)
     if match:
         channel, sender = match.group(1), match.group(2)
@@ -72,10 +79,26 @@ def strip_rendering(text: str) -> tuple[str, str | None, str | None, str | None]
     return text.rstrip(), stamp, channel, sender
 
 
+def _minute_key(timestamp: datetime | None) -> str | None:
+    """Minute-precision UTC key: the rendered stamps only carry minutes."""
+    if timestamp is None:
+        return None
+    return timestamp.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+
+
 def _entry_key(entry: SessionEntry) -> tuple:
+    """Identity of one message across requests.jsonl and messages.jsonl.
+
+    Tool calls and results carry unique ids. Plain text is keyed with its
+    minute, so the same words sent at different times stay separate messages
+    while the request copy (stamped to the minute) still matches the
+    messages.jsonl copy (exact timestamp).
+    """
     text = content_to_text(entry.content).strip()
     tool_ids = tuple(call.id for call in entry.message.tool_calls or [])
-    return (entry.role, text, tool_ids, entry.message.tool_call_id)
+    if tool_ids or entry.message.tool_call_id:
+        return (entry.role, text, tool_ids, entry.message.tool_call_id, None)
+    return (entry.role, text, (), None, _minute_key(entry.timestamp))
 
 
 def _is_skipped(message: Message) -> bool:
@@ -114,7 +137,10 @@ def _request_entries(session_dir: Path, tz: tzinfo) -> tuple[list[SessionEntry],
             records += 1
             if record.get("client_label") != "brain":
                 continue
-            record_ts = _parse_ts(record.get("ts"))
+            # Tool calls and results carry no stamp of their own; they take
+            # the time of the last stamped message before them, which keeps
+            # them inside their own turn when the union is sorted.
+            clock = _parse_ts(record.get("ts"))
             for raw in record.get("messages") or []:
                 try:
                     message = Message.model_validate(raw)
@@ -122,9 +148,11 @@ def _request_entries(session_dir: Path, tz: tzinfo) -> tuple[list[SessionEntry],
                     continue
                 if _is_skipped(message):
                     continue
-                entry = _to_entry(message, record_ts, tz)
+                entry, stamped = _to_entry(message, clock, tz)
                 if entry is None:
                     continue
+                if stamped:
+                    clock = entry.timestamp
                 if entry.role == "tool":
                     # Synthetic results (boot files, pinned files, common
                     # ground) have no kept assistant call to answer.
@@ -139,17 +167,29 @@ def _request_entries(session_dir: Path, tz: tzinfo) -> tuple[list[SessionEntry],
     return entries, records
 
 
-def _to_entry(message: Message, record_ts: datetime | None, tz: tzinfo) -> SessionEntry | None:
+def _to_entry(
+    message: Message, clock: datetime | None, tz: tzinfo,
+) -> tuple[SessionEntry | None, bool]:
+    """Turn a replayed prompt message into a transcript entry.
+
+    Returns (entry, stamped); stamped is True when the entry's timestamp came
+    from the rendered prefix rather than from ``clock``.
+    """
     channel = sender = None
-    timestamp = message.timestamp or record_ts
+    timestamp = message.timestamp or clock
+    stamped = False
     content: Any = message.content
-    if message.role == "user" and isinstance(content, str):
-        content, stamp, channel, sender = strip_rendering(content)
+    if message.role in ("user", "assistant") and isinstance(content, str):
+        if message.role == "user":
+            content, stamp, channel, sender = strip_rendering(content)
+        else:
+            content, stamp = strip_stamp(content)
         if stamp:
             timestamp = datetime.strptime(stamp, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-        if not content:
-            return None
-    return SessionEntry(
+            stamped = True
+        if not content and not message.tool_calls:
+            return None, False
+    entry = SessionEntry(
         message=Message(
             role=message.role,
             content=content,
@@ -162,6 +202,7 @@ def _to_entry(message: Message, record_ts: datetime | None, tz: tzinfo) -> Sessi
         sender=sender,
         metadata=dict(BACKFILL_MARKER),
     )
+    return entry, stamped
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -194,22 +235,39 @@ def _messages_entries(session_dir: Path) -> list[SessionEntry]:
 
 
 def build_transcript_entries(session_dir: Path, *, tz: tzinfo) -> tuple[list[SessionEntry], dict[str, int]]:
-    """Union of request-derived and messages.jsonl entries, ordered by time."""
+    """Union of request-derived and messages.jsonl entries.
+
+    The request replay is chronological, so it fixes the order; the
+    messages.jsonl copy of a message is preferred (it has channel, sender and
+    the exact timestamp). Entries only messages.jsonl has (the newest turn)
+    go after the replayed ones. The final sort is by minute and stable, so
+    that order survives inside each minute.
+    """
     from_messages = _messages_entries(session_dir)
     from_requests, records = _request_entries(session_dir, tz)
-    seen = {_entry_key(entry) for entry in from_messages}
-    merged = list(from_messages)
+    by_key: dict[tuple, SessionEntry] = {}
+    for entry in from_messages:
+        by_key.setdefault(_entry_key(entry), entry)
+    merged: list[SessionEntry] = []
+    used: set[tuple] = set()
     added = 0
     for entry in from_requests:
         key = _entry_key(entry)
-        if key in seen:
+        if key in used:
             continue
-        seen.add(key)
+        used.add(key)
+        if key in by_key:
+            merged.append(by_key[key])
+        else:
+            merged.append(entry)
+            added += 1
+    for entry in from_messages:
+        key = _entry_key(entry)
+        if key in used:
+            continue
+        used.add(key)
         merged.append(entry)
-        added += 1
-    # Stable sort: entries without a timestamp keep their relative position
-    # at the end, which only happens for malformed records.
-    merged.sort(key=lambda e: (e.timestamp is None, e.timestamp or datetime.max.replace(tzinfo=tz)))
+    merged.sort(key=lambda e: (e.timestamp is None, _minute_key(e.timestamp) or ""))
     stats = {
         "records": records,
         "from_messages": len(from_messages),
