@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 from lincy.core.schema import RecallAgentConfig
-from lincy.llm.schema import LLMResponse, Message, ToolCall
+from lincy.llm.schema import ContentPart, LLMResponse, Message, ToolCall
 from lincy.session.schema import SessionEntry
 from lincy.tools.builtin.recall import (
     RecallAgent,
+    _expand_braces,
+    _RENDERER_TOKENS,
+    _grep_transcript,
+    _literal_terms,
     build_recall_registry,
     create_recall_tool,
     format_context_tail,
@@ -479,3 +485,131 @@ def test_grep_markdown_excerpts_long_lines_around_the_match(tmp_path: Path):
 
     assert "memory/people/yufeng/health.md:3: ..." in out
     assert "回診日 11-21" in out
+
+
+# -- brace globs and the literal prefilter -------------------------------------
+
+def test_grep_accepts_brace_alternatives_and_guards_each_one(tmp_path: Path):
+    registry = build_recall_registry(_workspace(tmp_path))
+
+    out = _run(
+        registry, "grep", pattern="心寬福",
+        path_glob="{memory/people/**/*.md,session/brain/202611*/transcript.jsonl}",
+        context_lines=0,
+    )
+    assert "memory/people/yufeng/health.md:3:" in out
+    assert f"session/brain/{SESSION_ID}/transcript.jsonl:1:" in out
+
+    rejected = _run(registry, "grep", pattern="x", path_glob="{memory/**/*.md,state/*.json}")
+    assert rejected.startswith("Error: path_glob must start with memory/ or session/brain/.")
+    assert _run(registry, "grep", pattern="x", path_glob="{memory/**/*.md,../*.md}").startswith(
+        "Error: '..' is not allowed"
+    )
+    assert _expand_braces("{a,b}/x{1,2}.md") == ["a/x1.md", "a/x2.md", "b/x1.md", "b/x2.md"]
+    assert _expand_braces("plain/*.md") == ["plain/*.md"]
+
+
+def test_literal_prefilter_never_changes_transcript_grep_results(tmp_path: Path):
+    root = _workspace(tmp_path)
+    transcript = root / "session" / "brain" / SESSION_ID / "transcript.jsonl"
+    extra = [
+        # A line written by another tool with ASCII escapes must stay searchable.
+        json.dumps(
+            json.loads(_line(
+                "user", "喉嚨很乾", ts="2026-11-05T19:00:00+08:00", channel="discord", sender="yufeng",
+            )),
+            ensure_ascii=True,
+        ),
+        # Text parts are concatenated when rendered: "鼻" + "塞" reads as 鼻塞.
+        SessionEntry(
+            message=Message(
+                role="user",
+                content=[ContentPart(type="text", text="鼻"), ContentPart(type="text", text="塞")],
+                timestamp=datetime.fromisoformat("2026-11-05T19:01:00+08:00"),
+            ),
+            channel="discord", sender="yufeng",
+        ).model_dump_json(),
+        # Tool results lose their newlines when clipped.
+        _line("tool", "line one\nline two", ts="2026-11-05T19:02:00+08:00", name="web_fetch", tool_call_id="w1"),
+        # re.IGNORECASE equates dotless i, long s and capital I with dot with i, s, i.
+        _line("user", "K\u0131vanc booked dinner", ts="2026-11-05T19:03:00+08:00", channel="discord", sender="yufeng"),
+        _line("user", "a\u017fk again", ts="2026-11-05T19:04:00+08:00", channel="discord", sender="yufeng"),
+        _line("user", "\u0130stanbul trip", ts="2026-11-05T19:05:00+08:00", channel="discord", sender="yufeng"),
+    ]
+    transcript.write_text(
+        transcript.read_text(encoding="utf-8") + "\n".join(extra) + "\n", encoding="utf-8",
+    )
+    rel = Path("session") / "brain" / SESSION_ID / "transcript.jsonl"
+
+    cases = {
+        "心寬福|麥當勞": [["心寬福"], ["麥當勞"]],
+        "喉嚨": [["喉嚨"]],
+        "鼻塞": [["鼻塞"]],
+        "one line two": [["one", "line", "two"]],
+        "Send_Message": [["send_message"]],
+        # Terms that touch the rendered header or markers keep their content atoms.
+        "discord/yufeng": [["discord", "yufeng"]],
+        "-> send_message": [["send_message"]],
+        "yufeng user": [["yufeng", "user"]],
+        "14:44 discord/yufeng": [["discord", "yufeng"]],
+        "kivanc booked": [["kivanc", "booked"]],
+        "ask again": [["ask", "again"]],
+        "istanbul": [["istanbul"]],
+        "Sat|istanbul": None,  # one alternative is a stamp word alone
+        r"\(web_fetch\) line": None,  # regex syntax
+        "Thu": None,  # weekday names come from the re-rendered stamp
+        "2026-11-05": None,  # so do the digits
+        r"11-05 \(Thu\)": None,
+        "yufeng.*藥": None,
+    }
+    for pattern, terms in cases.items():
+        assert _literal_terms(pattern) == terms, pattern
+        regex = re.compile(pattern, re.IGNORECASE)
+        plain = _grep_transcript(transcript, rel, regex, context_lines=1)
+        fast = _grep_transcript(transcript, rel, regex, context_lines=1, prefilter=terms)
+        assert plain, pattern
+        assert fast == plain, pattern
+    assert _literal_terms('說"好"') is None
+    assert _literal_terms("a||b") is None
+    assert _literal_terms("unknown time") is None
+    # Pieces of renderer words and cased non-ASCII letters get no prefilter.
+    assert _literal_terms("Fr") is None
+    assert _literal_terms("at|心寬福") is None
+    assert _literal_terms("ime") is None
+    assert _literal_terms("KIVAN\u00c7") is None
+    assert _literal_terms("stra\u00dfe") is None
+    assert _literal_terms("Fri 心寬福") == [["心寬福"]]
+
+    registry = build_recall_registry(root)
+    counted = _run(registry, "grep", pattern="喉嚨", path_glob="session/brain/*/transcript.jsonl", count_only=True)
+    assert counted.startswith(f"session/brain/{SESSION_ID}/transcript.jsonl: 1")
+
+
+def test_renderer_only_adds_stamps_separators_and_known_words(tmp_path: Path):
+    """The prefilter contract: every other rendered token comes from the raw line."""
+    transcript = _workspace(tmp_path) / "session" / "brain" / SESSION_ID / "transcript.jsonl"
+    lines = transcript.read_text(encoding="utf-8").splitlines() + [
+        _line("tool", "first line\nsecond line", ts="2026-11-05T19:02:00+08:00", name="web_fetch", tool_call_id="w1"),
+        _line(
+            "assistant", "查一下", ts="2026-11-05T19:03:00+08:00",
+            tool_calls=[ToolCall(id="t2", name="web_search", arguments={"query": "nycu 校曆", "limit": 3})],
+        ),
+        SessionEntry(message=Message(role="assistant", content="no stamp")).model_dump_json(),
+    ]
+    for raw in lines:
+        rendered = render_transcript_entry(SessionEntry.model_validate_json(raw))
+        atoms = [
+            atom for atom in re.split(r"[\s/\-:>,()\[\]{}\"]+", rendered.lower())
+            if atom and not atom.isdigit() and atom not in _RENDERER_TOKENS
+        ]
+        assert atoms, rendered
+        for atom in atoms:
+            assert atom in raw.lower(), (atom, rendered)
+
+
+def test_brace_expansion_is_capped_before_it_grows(tmp_path: Path):
+    assert _expand_braces("{a,b}" * 5) is not None
+    assert _expand_braces("{a,b}" * 6) is None
+    registry = build_recall_registry(_workspace(tmp_path))
+    out = _run(registry, "grep", pattern="x", path_glob="memory/" + "{a,b}" * 6 + "/*.md")
+    assert out == "Error: path_glob expands to more than 32 globs."

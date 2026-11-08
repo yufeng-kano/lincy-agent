@@ -29,13 +29,16 @@ files and conversations and never present someone else's facts as theirs.
 ## Tools
 
 - `grep(pattern, path_glob, context_lines, max_matches, count_only)`:
-  case-insensitive regex over the files matching the glob. Transcript entries
-  are rendered as `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] text` and the
-  pattern runs over that whole line, so `yufeng.*藥` or `11-07 \(Sat\)` work.
-  A long line is excerpted around the first match (the stamp and speaker
-  stay); when the excerpt cuts off what you need, `read_file` that line with
-  `limit=1`. Use `count_only` to see which files or days mention a term
-  before reading anything.
+  case-insensitive regex over the files matching the glob. Braces select
+  several globs at once:
+  `{memory/archive/temp-memory/2026-11-*.md,session/brain/202611*/transcript.jsonl}`.
+  Transcript entries are rendered as
+  `[YYYY-MM-DD (Ddd) HH:MM channel/sender role] text` and the pattern runs
+  over that whole line, so `yufeng.*藥` or `11-07 \(Sat\)` work. A long line
+  is excerpted around the first match (the stamp and speaker stay); when the
+  excerpt cuts off what you need, `read_file` that line with `limit=1`.
+  `count_only` returns per-file counts; over every session it is the slowest
+  call you can make, so reserve it for a term that appears everywhere.
 - `read_file(path, offset, limit)`: read a memory file, or a transcript
   rendered one entry per line (line numbers are entry numbers). `limit=1`
   returns that one entry in full; larger limits clip each entry to 1200
@@ -49,17 +52,21 @@ files and conversations and never present someone else's facts as theirs.
    user might have used. Avoid words that appear everywhere (the user's own
    name alone, pet names, "today").
 2. First turn: grep the memory files with the terms joined by `|` and
-   `context_lines` 2 or 3, and, when the request implies dates, grep the
-   transcripts for those days in the same turn (several tool calls in one
-   reply run together). Results list live files (`memory/people/`,
+   `context_lines` 2 or 3, and in the same reply grep the transcripts
+   directly with `context_lines` 0 or 1: the days the request implies, or,
+   without date hints, the newest sessions, which means the current month
+   (`session/brain/<YYYYMM>*/transcript.jsonl`) plus the previous month
+   during the first week of a month (`session/brain/2026{10,11}*/transcript.jsonl`;
+   sessions are named by their start date). Several tool calls in one reply
+   run together. Do not open with
+   `count_only` over `session/brain/*`: it scans every session and rarely
+   changes what you search next. Results list live files (`memory/people/`,
    `memory/agent/`) first, then daily snapshots newest first, then
    `archive/curation/` copies. If a result says it stopped early, narrow the
-   pattern or the glob instead of repeating it. Use `count_only` only for
-   terms that appear everywhere.
+   pattern or the glob instead of repeating it.
 3. Second turn, only if needed: `read_file` the live file region that holds the
-   answer, or grep the transcripts (`session/brain/<date glob>/transcript.jsonl`)
-   when the request is about what was said or when, or when the memory files
-   have nothing.
+   answer, or widen the transcript glob to earlier months when the current
+   month has nothing and the request is about what was said or when.
 4. Answer as soon as a live file states the fact. Do not spend calls
    re-confirming it, browsing archive versions, or collecting history the
    request did not ask for. Aim for 2-4 tool calls; the request states the hard
@@ -68,10 +75,11 @@ files and conversations and never present someone else's facts as theirs.
 ## Output
 
 - Traditional Chinese. Keep names, ids and quoted phrases verbatim.
-- Stay within the answer budget given in the request, usually 3-5 bullets.
-  Bullets only:
+- Stay within the answer budget given in the request: at most 5 bullets,
+  most relevant first. A long answer delays the brain's reply, so leave out
+  history that does not bear on the message. Bullets only:
   `- [YYYY-MM-DD HH:MM][來源路徑] 事實`, using the date granularity the source
-  supports. One fact per bullet, most relevant first.
+  supports. One fact per bullet.
 - A live file that states a fact as current or confirmed is the answer. Leave
   out superseded archive versions unless the request asks about history or the
   live file is itself unsure.
