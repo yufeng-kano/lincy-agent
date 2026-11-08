@@ -192,7 +192,11 @@ def format_context_tail(
     max_entries: int = 3,
     max_chars: int = 300,
 ) -> str:
-    """Render the last few user/assistant texts for disambiguating a question."""
+    """Render the last few user/assistant texts for disambiguating a question.
+
+    User lines keep their channel and sender so the sub-agent can tell whose
+    conversation it is looking at.
+    """
     picked: list[str] = []
     for entry in reversed(list(entries)):
         if entry.role not in ("user", "assistant"):
@@ -200,7 +204,10 @@ def format_context_tail(
         text = content_to_text(entry.content).strip()
         if not text:
             continue
-        picked.append(f"{entry.role}: {_clip(text, max_chars)}")
+        label = entry.role
+        if entry.role == "user" and (entry.channel or entry.sender):
+            label = f"user ({'/'.join(p for p in (entry.channel, entry.sender) if p)})"
+        picked.append(f"{label}: {_clip(text, max_chars)}")
         if len(picked) >= max_entries:
             break
     return "\n".join(reversed(picked))
@@ -521,14 +528,22 @@ class RecallAgent:
         self,
         question: str,
         *,
+        sender: str | None = None,
+        channel: str | None = None,
         context_tail: str = "",
         exclude_paths: Iterable[str] = (),
         max_tool_calls: int | None = None,
         deadline_seconds: float | None = None,
     ) -> str | None:
-        """Return sourced facts for *question*, or None when nothing was found."""
+        """Return sourced facts for *question*, or None when nothing was found.
+
+        ``sender`` / ``channel`` name who is asking, so first-person questions
+        resolve to that person's files and conversations.
+        """
         run = self.run(
             question,
+            sender=sender,
+            channel=channel,
             context_tail=context_tail,
             exclude_paths=exclude_paths,
             max_tool_calls=max_tool_calls,
@@ -543,6 +558,8 @@ class RecallAgent:
         self,
         question: str,
         *,
+        sender: str | None = None,
+        channel: str | None = None,
         context_tail: str = "",
         exclude_paths: Iterable[str] = (),
         max_tool_calls: int | None = None,
@@ -559,6 +576,8 @@ class RecallAgent:
             return self._run_loop(
                 _build_request(
                     question,
+                    sender=sender,
+                    channel=channel,
                     context_tail=context_tail,
                     exclude_paths=exclude_paths,
                     max_tool_calls=limit,
@@ -625,12 +644,21 @@ class RecallAgent:
 def _build_request(
     question: str,
     *,
+    sender: str | None,
+    channel: str | None,
     context_tail: str,
     exclude_paths: Iterable[str],
     max_tool_calls: int,
     max_result_chars: int,
 ) -> str:
     parts = [f"Now: {format_local_stamp(tz_now())}", f"Question: {question.strip()}"]
+    if sender or channel:
+        via = f" via {channel}" if channel else ""
+        parts.append(
+            f"Asked by: {sender or 'unknown'}{via}. First person in the question "
+            "(I, my, me) is this person: search their files and conversations, "
+            "and never report another person's facts as theirs."
+        )
     if context_tail.strip():
         parts.append(
             "Recent conversation (only to disambiguate the question; do not "

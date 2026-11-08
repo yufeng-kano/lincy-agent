@@ -24,11 +24,13 @@ class _FakeRecallAgent:
         self.error: Exception | None = None
 
     def recall(
-        self, question, *, context_tail="", exclude_paths=(), max_tool_calls=None,
-        deadline_seconds=None,
+        self, question, *, sender=None, channel=None, context_tail="", exclude_paths=(),
+        max_tool_calls=None, deadline_seconds=None,
     ):
         self.calls.append({
             "question": question,
+            "sender": sender,
+            "channel": channel,
             "context_tail": context_tail,
             "exclude_paths": set(exclude_paths),
             "max_tool_calls": max_tool_calls,
@@ -91,7 +93,8 @@ def test_user_turn_prefetches_recall_into_overlay(tmp_path: Path):
     assert len(agent.calls) == 1
     call = agent.calls[0]
     assert call["question"] == "did he take the medicine"
-    assert "user: earlier question" in call["context_tail"]
+    assert call["sender"] == "tester" and call["channel"] == "cli"
+    assert "user (cli/tester): earlier question" in call["context_tail"]
     assert "assistant: earlier answer" in call["context_tail"]
     assert call["max_tool_calls"] == agent.config.prefetch_max_tool_calls
     assert call["deadline_seconds"] == agent.config.prefetch_deadline_seconds

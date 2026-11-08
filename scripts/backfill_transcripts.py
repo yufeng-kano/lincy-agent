@@ -90,15 +90,19 @@ def _entry_key(entry: SessionEntry) -> tuple:
     """Identity of one message across requests.jsonl and messages.jsonl.
 
     Tool calls and results carry unique ids. Plain text is keyed with its
-    minute, so the same words sent at different times stay separate messages
-    while the request copy (stamped to the minute) still matches the
-    messages.jsonl copy (exact timestamp).
+    minute and its channel/sender, so the same words sent at different times
+    or by different people stay separate messages, while the request copy
+    (stamped to the minute, routing recovered from the "[channel, from
+    sender]" tag) still matches the messages.jsonl copy (exact timestamp).
     """
     text = content_to_text(entry.content).strip()
     tool_ids = tuple(call.id for call in entry.message.tool_calls or [])
     if tool_ids or entry.message.tool_call_id:
-        return (entry.role, text, tool_ids, entry.message.tool_call_id, None)
-    return (entry.role, text, (), None, _minute_key(entry.timestamp))
+        return (entry.role, text, tool_ids, entry.message.tool_call_id, None, None)
+    return (
+        entry.role, text, (), None, _minute_key(entry.timestamp),
+        (entry.channel, entry.sender),
+    )
 
 
 def _is_skipped(message: Message) -> bool:

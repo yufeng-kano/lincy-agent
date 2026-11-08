@@ -62,6 +62,8 @@ def _session(tmp_path: Path) -> Path:
     # Identical short texts at different minutes are different messages.
     ok_1 = _msg("user", "[2026-11-05 (Thu) 18:30] [discord, from 毓峰] ok")
     ok_2 = _msg("user", "[2026-11-05 (Thu) 18:45] [discord, from 毓峰] ok")
+    # Another person saying the same words in the same minute is a message of its own.
+    ok_other = _msg("user", "[2026-11-05 (Thu) 18:30] [discord, from 小明] ok")
     records = [
         _record(1, "2026-11-05T14:44:05+08:00", boot + [turn1_user]),
         _record(2, "2026-11-05T14:44:20+08:00", boot + [turn1_user, turn1_call, turn1_result]),
@@ -70,7 +72,7 @@ def _session(tmp_path: Path) -> Path:
         _record(5, "2026-11-05T18:00:10+08:00", boot + [summary, turn2_user]),
         _record(6, "2026-11-05T18:00:20+08:00", [_msg("system", "recall prompt"), _msg("user", "Question: x")], label="recall"),
         _record(7, "2026-11-05T18:30:05+08:00", boot + [summary, turn2_user, turn2_final, ok_1]),
-        _record(8, "2026-11-05T18:45:05+08:00", boot + [summary, turn2_user, turn2_final, ok_1, ok_2]),
+        _record(8, "2026-11-05T18:45:05+08:00", boot + [summary, turn2_user, turn2_final, ok_1, ok_2, ok_other]),
     ]
     (session / "requests.jsonl").write_text("\n".join(records) + "\n", encoding="utf-8")
     # messages.jsonl after compaction: summary + the last turn with its final reply.
@@ -114,6 +116,7 @@ def test_build_entries_unions_requests_and_messages_in_time_order(tmp_path: Path
         ("assistant", "好吃嗎", None),
         ("user", "ok", None),
         ("user", "ok", None),
+        ("user", "ok", None),
     ]
     first = entries[0]
     assert first.channel == "discord" and first.sender == "毓峰"
@@ -126,8 +129,8 @@ def test_build_entries_unions_requests_and_messages_in_time_order(tmp_path: Path
     assert entries[6].metadata == {"turn_overlay": "[Runtime Context]\n..."}
     # So does the reply: the exact timestamp wins over the minute stamp.
     assert entries[7].timestamp == datetime(2026, 11, 5, 18, 0, 40, tzinfo=TZ)
-    assert [e.timestamp.minute for e in entries[8:]] == [30, 45]
-    assert stats == {"records": 8, "from_messages": 2, "from_requests": 8, "total": 10}
+    assert [(e.timestamp.minute, e.sender) for e in entries[8:]] == [(30, "毓峰"), (30, "小明"), (45, "毓峰")]
+    assert stats == {"records": 8, "from_messages": 2, "from_requests": 9, "total": 11}
 
 
 def test_backfill_session_writes_skips_and_forces(tmp_path: Path, capsys):
@@ -140,7 +143,7 @@ def test_backfill_session_writes_skips_and_forces(tmp_path: Path, capsys):
     report = backfill.backfill_session(session, tz=TZ, dry_run=False, force=False)
     assert report.endswith("(written)")
     lines = (session / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 10
+    assert len(lines) == 11
     assert all(SessionEntry.model_validate_json(line) for line in lines)
 
     assert backfill.backfill_session(session, tz=TZ, dry_run=False, force=False).endswith("(transcript.jsonl exists)")

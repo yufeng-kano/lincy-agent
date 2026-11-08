@@ -17,7 +17,7 @@ from .bm25_search import (
 )
 from .tool_adapter import MEMORY_EDIT_DEFINITION, create_memory_edit
 from .backup import MemoryBackupManager
-from .hooks import snapshot_state_file
+from .hooks import snapshot_stale_state_file, snapshot_state_file
 from .curation import (
     curate_queue_via_worker,
     scan_over_budget_files,
@@ -47,6 +47,7 @@ __all__ = [
     "MEMORY_SEARCH_DEFINITION",
     "create_bm25_memory_search",
     "MemoryBackupManager",
+    "snapshot_stale_state_file",
     "snapshot_state_file",
     "curate_queue_via_worker",
     "scan_over_budget_files",

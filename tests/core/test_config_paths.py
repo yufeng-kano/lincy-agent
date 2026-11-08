@@ -357,6 +357,34 @@ def test_retired_keys_in_override_do_not_block_startup(
     assert retired_key in caplog.text
 
 
+def test_retired_state_file_keys_in_override_do_not_block_startup(
+    monkeypatch, tmp_path: Path, caplog
+):
+    """m0186 removed these keys; an override that still sets them must load."""
+    _write_base_agent_config(tmp_path)
+    _write_yaml(tmp_path / "agent.override.yaml", {
+        "tools": {"memory_sync": {"every_n_turns": 9, "max_retries": 2}},
+        "maintenance": {
+            "archive": {"retain_days": 3},
+            "curate": {"enabled": False, "digest_retain_days": 14, "digest_max_chars": 1200},
+        },
+    })
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with caplog.at_level("WARNING"):
+        config = config_module.load_config("agent.yaml")
+
+    assert config.tools.memory_sync.max_retries == 2
+    assert config.maintenance.curate.enabled is False
+    for key in (
+        "tools.memory_sync.every_n_turns",
+        "maintenance.archive",
+        "maintenance.curate.digest_retain_days",
+        "maintenance.curate.digest_max_chars",
+    ):
+        assert key in caplog.text
+
+
 def test_retired_llm_paths_in_override_are_rewritten(
     monkeypatch, tmp_path: Path, caplog
 ):

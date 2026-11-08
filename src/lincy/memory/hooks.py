@@ -1,10 +1,11 @@
 """Daily snapshot of the temp-memory state file into memory/archive/temp-memory/."""
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import logging
 
 from ..json_store import save_text
+from ..timezone_utils import get_tz, now as tz_now
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,23 @@ def snapshot_state_file(agent_os_dir: Path, *, day: date) -> Path | None:
     _update_archive_index(archive_dir)
     logger.info("Snapshot %s -> %s", _STATE_FILE_REL_PATH, target.name)
     return target
+
+
+def snapshot_stale_state_file(agent_os_dir: Path) -> Path | None:
+    """Archive the state file under the local date it was last written on.
+
+    Nothing happens while that date is today: the file still describes the
+    current day and is archived once the day is over. Used before the first
+    rewrite of a new day and at the start of daily maintenance, so a version
+    written after midnight never lands in the previous day's partition.
+    """
+    source = agent_os_dir / _STATE_FILE_REL_PATH
+    if not source.is_file():
+        return None
+    written = datetime.fromtimestamp(source.stat().st_mtime, tz=get_tz()).date()
+    if written >= tz_now().date():
+        return None
+    return snapshot_state_file(agent_os_dir, day=written)
 
 
 def _update_archive_index(archive_dir: Path) -> None:

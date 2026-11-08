@@ -186,7 +186,7 @@ brain 唯一的短期記憶檔。它描述「現在」，不是日誌：
 - 整檔不超過 `tools.memory_edit.temp_memory_max_chars`（預設 6000）
 - 每次更新都是整份改寫（`overwrite`），不再 `append_entry`
 - 內部回合（heartbeat、scheduled、task due、worker 回報）不算「未更新」的債；只有用戶回合會累積
-- 每天 03:00 維護時整檔快照到 `archive/temp-memory/YYYY-MM-DD.md`；過去的細節靠 recall 子代理從快照與 transcript 找回（見 `../memory-recall.md`）
+- 系統依最後寫入日整檔快照到 `archive/temp-memory/YYYY-MM-DD.md`（每天 03:00 維護開頭與跨日第一次改寫前）；過去的細節靠 recall 子代理從快照與 transcript 找回（見 `../memory-recall.md`）
 - 人的長期資訊不放這裡，要寫到 `people/{user_id}/`
 
 ## 記憶類型分類

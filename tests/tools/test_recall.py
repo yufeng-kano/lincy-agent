@@ -240,6 +240,13 @@ def test_format_context_tail_takes_last_user_and_assistant_texts():
     assert lines[0].endswith("...")
     assert lines[1] == "user: last"
 
+    # User lines keep who said them, so the sub-agent knows whose thread it is.
+    attributed = [
+        SessionEntry(message=Message(role="user", content="hi"), channel="discord", sender="yufeng"),
+        SessionEntry(message=Message(role="user", content="yo"), channel="cli"),
+    ]
+    assert format_context_tail(attributed).splitlines() == ["user (discord/yufeng): hi", "user (cli): yo"]
+
 
 # -- RecallAgent ----------------------------------------------------------------
 
@@ -337,7 +344,9 @@ def test_recall_request_carries_question_context_and_loaded_paths(tmp_path: Path
     agent = _agent(tmp_path, client)
 
     agent.recall(
-        "他上次拿藥是什麼時候",
+        "我上次拿藥是什麼時候",
+        sender="yufeng",
+        channel="discord",
         context_tail="user: 藥快沒了",
         exclude_paths={"memory/agent/index.md", "memory/agent/temp-memory.md"},
     )
@@ -346,7 +355,8 @@ def test_recall_request_carries_question_context_and_loaded_paths(tmp_path: Path
     assert request[0].role == "system" and request[0].content == "system prompt"
     body = request[1].content
     assert body.startswith("Now: ")
-    assert "Question: 他上次拿藥是什麼時候" in body
+    assert "Question: 我上次拿藥是什麼時候" in body
+    assert "Asked by: yufeng via discord." in body
     assert "Recent conversation" in body and "藥快沒了" in body
     assert "- memory/agent/index.md\n- memory/agent/temp-memory.md" in body
 

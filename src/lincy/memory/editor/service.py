@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 import hashlib
 import json
 import logging
@@ -13,9 +13,8 @@ from pathlib import Path
 import re
 
 from ...core.schema import MemoryEditWarningsConfig
-from ...timezone_utils import get_tz, now as tz_now
 from ...workspace.people import sync_people_index_entry
-from ..hooks import snapshot_state_file
+from ..hooks import snapshot_stale_state_file
 from ..curation.budget import (
     matches_ignore_patterns as _matches_warning_patterns,
     resolve_budget as _resolve_warning_budget,
@@ -348,7 +347,7 @@ class MemoryEditor:
                     detail=rejected,
                 )
             if file_exists and file_content.strip():
-                _snapshot_state_file_before_rewrite(target, agent_os_dir=base_dir)
+                _snapshot_state_file_before_rewrite(base_dir)
 
         request_changed = False
         failed_outcome = None
@@ -501,7 +500,7 @@ def _check_state_file_operations(operations) -> str | None:
     return None
 
 
-def _snapshot_state_file_before_rewrite(target: Path, *, agent_os_dir: Path) -> None:
+def _snapshot_state_file_before_rewrite(agent_os_dir: Path) -> None:
     """Archive the last state of an earlier day before the first rewrite of a new day.
 
     The state file only describes "now", so the last version written on a
@@ -509,9 +508,7 @@ def _snapshot_state_file_before_rewrite(target: Path, *, agent_os_dir: Path) -> 
     it whenever the brain rewrites the file between midnight and 03:00.
     """
     try:
-        written = datetime.fromtimestamp(target.stat().st_mtime, tz=get_tz()).date()
-        if written < tz_now().date():
-            snapshot_state_file(agent_os_dir, day=written)
+        snapshot_stale_state_file(agent_os_dir)
     except Exception:
         logger.warning("State file pre-rewrite snapshot failed", exc_info=True)
 

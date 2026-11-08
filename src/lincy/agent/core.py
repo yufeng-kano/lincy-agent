@@ -41,7 +41,7 @@ from ..memory import (
     find_missing_artifact_registry_paths,
     find_missing_memory_sync_targets,
     scan_over_budget_files,
-    snapshot_state_file,
+    snapshot_stale_state_file,
 )
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
@@ -423,6 +423,7 @@ class AgentCore:
         recall_text = self._prefetch_recall(
             user_input,
             channel=channel,
+            sender=sender,
             turn_metadata=turn_metadata,
             debug=debug,
         )
@@ -455,6 +456,7 @@ class AgentCore:
         user_input: str,
         *,
         channel: str,
+        sender: str | None,
         turn_metadata: dict[str, object] | None,
         debug: bool,
     ) -> str | None:
@@ -482,6 +484,8 @@ class AgentCore:
         try:
             result = recall_agent.recall(
                 user_input,
+                sender=sender,
+                channel=channel,
                 context_tail=format_context_tail(self.conversation.get_messages()),
                 exclude_paths=self._loaded_context_paths(),
                 max_tool_calls=recall_cfg.prefetch_max_tool_calls,
@@ -1417,19 +1421,17 @@ class AgentCore:
 
         logger.info("Daily maintenance started")
         try:
-            # The state file is rewritten in place, so settle any refresh debt
-            # first, then snapshot it for the day that just ended before the
-            # context refresh below starts a new session.
-            self._settle_state_file_debt(label="Maintenance")
+            # The state file is rewritten in place. Archive the last version
+            # of the day it was written on first: the debt refresh below
+            # rewrites it with today's date, and that version is archived at
+            # tomorrow's maintenance (or before the first rewrite of the day).
             try:
-                snapshot = snapshot_state_file(
-                    self.agent_os_dir,
-                    day=(tz_now() - timedelta(days=1)).date(),
-                )
+                snapshot = snapshot_stale_state_file(self.agent_os_dir)
                 if snapshot is not None:
                     self.console.print_info(f"State file snapshot: {snapshot.name}")
             except Exception as e:
                 logger.warning("Maintenance state-file snapshot failed: %s", e)
+            self._settle_state_file_debt(label="Maintenance")
 
             if cfg.curate.enabled and self.worker_runner is not None:
                 try:
