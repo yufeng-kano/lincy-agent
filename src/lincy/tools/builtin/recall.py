@@ -23,7 +23,7 @@ from ...llm.content import content_to_text
 from ...llm.schema import Message, ToolDefinition, ToolParameter, make_tool_result_message
 from ...llm.session import llm_session
 from ...session.schema import SessionEntry
-from ...timezone_utils import format_local_stamp, now as tz_now
+from ...timezone_utils import _DAY_NAMES, format_local_stamp, now as tz_now
 from ..registry import ToolRegistry
 from ..security import resolve_allowed_path
 from .file import create_read_file
@@ -49,7 +49,10 @@ _REGEX_META_RE = re.compile(r'[\\.^$*+?{}\[\]()"]')
 _ATOM_SPLIT_RE = re.compile(r"[\s/\-:>,]+")
 # Words render_transcript_entry adds on its own; everything else it emits is
 # taken verbatim from the entry (see its docstring).
-_RENDERER_TOKENS = frozenset({"mon", "tue", "wed", "thu", "fri", "sat", "sun", "unknown", "time"})
+_RENDERER_TOKENS = frozenset(name.lower() for name in _DAY_NAMES) | {"unknown", "time"}
+# Characters re.IGNORECASE equates with ASCII i, s and k while str.lower()
+# does not: dotless i, long s, capital I with dot above, Kelvin sign.
+_ASCII_CASE_ALIASES = ("\u0131", "\u017f", "\u0130", "\u212a")
 _LIMIT_TOOL_RESULT = (
     "Tool call limit reached. Do not call tools. Answer now from what you have found."
 )
@@ -401,23 +404,47 @@ def _literal_terms(pattern: str) -> list[list[str]] | None:
     render_transcript_entry only wraps text copied from the entry in stamps,
     separators and fixed markers, so a literal term can only match when every
     one of its other tokens occurs somewhere in the raw JSON line. That lets
-    grep skip parsing lines that cannot match. Patterns with regex syntax or
-    quotes (escaped in JSON) get no prefilter, and neither does a pattern with
-    an alternative made only of digits and renderer words (``Sat``, ``11:44``):
-    those come from the re-rendered local stamp.
+    grep skip parsing lines that cannot match. No prefilter for patterns with
+    regex syntax or quotes (escaped in JSON), for cased non-ASCII letters
+    (the regex engine folds them by rules str.lower() does not share), or
+    when an alternative keeps no atom because it is made of digits and pieces
+    of renderer words (``Sat``, ``Fr``, ``11:44`` all come from the stamp).
     """
     if _REGEX_META_RE.search(pattern):
         return None
     alternatives: list[list[str]] = []
-    for term in pattern.lower().split("|"):
-        atoms = [
-            atom for atom in _ATOM_SPLIT_RE.split(term)
-            if atom and not atom.isdigit() and atom not in _RENDERER_TOKENS
-        ]
+    for term in pattern.split("|"):
+        atoms: list[str] = []
+        for atom in _ATOM_SPLIT_RE.split(term):
+            if not atom or atom.isdigit():
+                continue
+            if any(not ch.isascii() and ch.lower() != ch.upper() for ch in atom):
+                return None
+            atom = atom.lower()
+            # "fr" matches the rendered "(Fri)" of a line whose raw text has
+            # no "fr"; a piece of a renderer word cannot be required.
+            if any(atom in token for token in _RENDERER_TOKENS):
+                continue
+            atoms.append(atom)
         if not atoms:
             return None
         alternatives.append(atoms)
     return alternatives
+
+
+def _raw_line_can_match(raw: str, prefilter: list[list[str]], alias_check: bool) -> bool:
+    """Necessary condition for a literal pattern to match the rendered *raw* line.
+
+    Escaped text (another writer), list content (text parts are concatenated
+    when rendered) and lines holding a case alias of i, s or k are parsed
+    instead of judged here.
+    """
+    if "\\u" in raw or '"content":[' in raw:
+        return True
+    if alias_check and any(alias in raw for alias in _ASCII_CASE_ALIASES):
+        return True
+    lowered = raw.lower()
+    return any(all(atom in lowered for atom in atoms) for atoms in prefilter)
 
 
 def _grep_transcript(
@@ -434,9 +461,7 @@ def _grep_transcript(
     sender and the body must match the line the way the model sees it, and
     entry metadata (overlay blocks, earlier [Recall] output) never matches.
     Entries are parsed and rendered lazily; *prefilter* (see
-    ``_literal_terms``) skips lines whose raw text rules a match out. Lines
-    with ``\\u`` escapes (another writer) or list content (text parts are
-    concatenated when rendered) are always parsed.
+    ``_literal_terms``) skips lines whose raw text rules a match out.
     """
     try:
         raw_lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -450,12 +475,13 @@ def _grep_transcript(
             rendered[index] = render_transcript_entry(entry) if entry else None
         return rendered[index]
 
+    alias_check = prefilter is not None and any(
+        ch in "isk" for atoms in prefilter for atom in atoms for ch in atom
+    )
     blocks: list[tuple[int, list[str]]] = []
     for index, raw in enumerate(raw_lines):
-        if prefilter is not None and "\\u" not in raw and '"content":[' not in raw:
-            lowered = raw.lower()
-            if not any(all(atom in lowered for atom in atoms) for atoms in prefilter):
-                continue
+        if prefilter is not None and not _raw_line_can_match(raw, prefilter, alias_check):
+            continue
         text = render(index)
         if text is None:
             continue

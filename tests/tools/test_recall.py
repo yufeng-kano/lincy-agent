@@ -531,6 +531,10 @@ def test_literal_prefilter_never_changes_transcript_grep_results(tmp_path: Path)
         ).model_dump_json(),
         # Tool results lose their newlines when clipped.
         _line("tool", "line one\nline two", ts="2026-11-05T19:02:00+08:00", name="web_fetch", tool_call_id="w1"),
+        # re.IGNORECASE equates dotless i, long s and capital I with dot with i, s, i.
+        _line("user", "K\u0131vanc booked dinner", ts="2026-11-05T19:03:00+08:00", channel="discord", sender="yufeng"),
+        _line("user", "a\u017fk again", ts="2026-11-05T19:04:00+08:00", channel="discord", sender="yufeng"),
+        _line("user", "\u0130stanbul trip", ts="2026-11-05T19:05:00+08:00", channel="discord", sender="yufeng"),
     ]
     transcript.write_text(
         transcript.read_text(encoding="utf-8") + "\n".join(extra) + "\n", encoding="utf-8",
@@ -548,6 +552,10 @@ def test_literal_prefilter_never_changes_transcript_grep_results(tmp_path: Path)
         "-> send_message": [["send_message"]],
         "yufeng user": [["yufeng", "user"]],
         "14:44 discord/yufeng": [["discord", "yufeng"]],
+        "kivanc booked": [["kivanc", "booked"]],
+        "ask again": [["ask", "again"]],
+        "istanbul": [["istanbul"]],
+        "Sat|istanbul": None,  # one alternative is a stamp word alone
         r"\(web_fetch\) line": None,  # regex syntax
         "Thu": None,  # weekday names come from the re-rendered stamp
         "2026-11-05": None,  # so do the digits
@@ -564,6 +572,13 @@ def test_literal_prefilter_never_changes_transcript_grep_results(tmp_path: Path)
     assert _literal_terms('說"好"') is None
     assert _literal_terms("a||b") is None
     assert _literal_terms("unknown time") is None
+    # Pieces of renderer words and cased non-ASCII letters get no prefilter.
+    assert _literal_terms("Fr") is None
+    assert _literal_terms("at|心寬福") is None
+    assert _literal_terms("ime") is None
+    assert _literal_terms("KIVAN\u00c7") is None
+    assert _literal_terms("stra\u00dfe") is None
+    assert _literal_terms("Fri 心寬福") == [["心寬福"]]
 
     registry = build_recall_registry(root)
     counted = _run(registry, "grep", pattern="喉嚨", path_glob="session/brain/*/transcript.jsonl", count_only=True)
