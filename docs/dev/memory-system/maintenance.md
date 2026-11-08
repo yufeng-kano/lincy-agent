@@ -1,5 +1,16 @@
 # 維護機制
 
+## 每日維護順序（實作，`AgentCore._perform_maintenance`）
+
+1. **現況檔快照**：`snapshot_stale_state_file()` 依 `temp-memory.md` 最後寫入的本地日期，早於今天就整檔寫到 `memory/archive/temp-memory/<該日>.md`（已存在則附加），重建該目錄 `index.md`；放在清償之前，03:00 的改寫才不會混進前一天的分區
+2. **現況檔狀態債**：若 `_turns_since_memory_sync > 0`（有用戶回合沒寫 `temp-memory.md`），跑一次 `[MEMORY SYNC - STATE REFRESH]` side-channel 讓 brain 整份重寫現況檔；只有 memory_edit 真的執行成功才歸零，否則債留到下一個清償點（`_settle_state_file_debt`）
+3. **curation**：全掃超標檔案補入佇列，再由 worker 依 `memory-maintenance` skill 原地濃縮或拆檔（見 `../memory-curation.md`）
+4. **context refresh**：清空對話、重載 system prompt 與 boot files、開新 session
+5. **backup**：kernel 備份
+6. **session cleanup**：`retention_days`（30）到期刪整個 session 目錄；`debug_retention_days`（預設 `min(7, retention_days)`）到期先刪 `requests.jsonl`；`responses.jsonl`（dashboard 用量圖來源）、`messages.jsonl` 與 `transcript.jsonl` 留到 session 到期
+
+現況檔與 recall 的設計見 `../memory-recall.md`。以下為早期設計文件。
+
 ## 歸檔觸發條件
 
 ### 知識歸檔 (knowledge/)
@@ -36,7 +47,7 @@
 ```
 啟動
   ↓
-memory/agent/recent.md（工作記憶快照）
+memory/agent/temp-memory.md（今日現況檔）
   ↓
 memory/agent/index.md
   ↓
@@ -80,7 +91,7 @@ def retrieve_memory(query: str, context: dict) -> list[str]:
     return render_snippets(ranked, snippet_lines=3, max_chars=2000)
 ```
 
-補充：BM25 模式可在 `tools.memory_search.bm25.exclude` 明確排除已經由 boot context 載入的檔案（例如 `memory/agent/recent.md`），避免搜尋結果重複消耗片段預算。
+補充：BM25 模式可在 `tools.memory_search.bm25.exclude` 明確排除已經由 boot context 載入的檔案（例如 `memory/agent/temp-memory.md`），避免搜尋結果重複消耗片段預算。
 
 ### 檢索範圍決定
 
@@ -174,7 +185,7 @@ def post_conversation_maintenance(conversation: dict):
 | thoughts/ | 300-500 行 | 按週拆分 |
 | experiences/ | 200-300 行 | 按事件拆分 |
 | user-{user_id}.md | 100-200 行 | 只保留摘要 |
-| recent.md | < 200 行 | 只保留近期記憶摘要（過長就再壓縮） |
+| temp-memory.md | < 6000 字 | 整份改寫的今日現況；系統每日快照到 archive/temp-memory/ |
 
 ## 索引更新
 

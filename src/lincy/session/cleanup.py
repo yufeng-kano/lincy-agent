@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 _TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 _TIMESTAMP_PREFIX_LEN = 15  # len("20260215_120000")
 
+# Full LLM request dumps run to hundreds of MB per day and are only useful
+# for short-term debugging; transcript.jsonl keeps the conversation itself.
+# responses.jsonl stays for the whole retention: it is small and the web
+# dashboard reads cost and token usage from it.
+_DEBUG_DUMP_FILES = ("requests.jsonl",)
+
 
 def _parse_session_timestamp(name: str) -> datetime | None:
     """Extract creation timestamp from a session ID / filename.
@@ -49,16 +55,25 @@ def _is_expired_session_timestamp(
 def cleanup_sessions(
     session_base_dir: Path,
     retention_days: int = 30,
+    *,
+    debug_retention_days: int | None = None,
 ) -> int:
     """Remove expired sessions under session/brain/ and session/gui/.
 
-    Returns the number of deleted entries.
+    Brain sessions older than ``debug_retention_days`` (but not yet expired)
+    lose only their requests.jsonl dump. Returns the number of deleted
+    entries (session directories, GUI files, dump files).
     """
     now_local = tz_now()
     app_tz = now_local.tzinfo
     if app_tz is None:
         app_tz = timezone.utc
     cutoff = now_local - timedelta(days=retention_days)
+    debug_cutoff = (
+        now_local - timedelta(days=debug_retention_days)
+        if debug_retention_days is not None
+        else None
+    )
     deleted = 0
 
     # Brain sessions: each session is a directory
@@ -76,6 +91,19 @@ def cleanup_sessions(
                     deleted += 1
                 except OSError:
                     logger.warning("Failed to remove brain session: %s", entry)
+                continue
+            if debug_cutoff is not None and _is_expired_session_timestamp(
+                ts, cutoff_local=debug_cutoff, app_tz=app_tz
+            ):
+                for name in _DEBUG_DUMP_FILES:
+                    dump = entry / name
+                    if not dump.is_file():
+                        continue
+                    try:
+                        dump.unlink()
+                        deleted += 1
+                    except OSError:
+                        logger.warning("Failed to remove debug dump: %s", dump)
 
     # GUI sessions: <id>.json plus the <id>.steps.jsonl and <id>.jpg
     # files written alongside it; the id is the part before the first dot.

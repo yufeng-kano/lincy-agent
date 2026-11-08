@@ -141,3 +141,40 @@ class TestCleanupSessions:
         assert deleted == 1
         assert (brain_dir / recent_utc).exists()
         assert not (brain_dir / old_utc).exists()
+
+
+class TestDebugDumpRetention:
+    def test_dumps_removed_before_session_expires(self, tmp_path: Path):
+        base = tmp_path / "session"
+        brain_dir = base / "brain"
+        brain_dir.mkdir(parents=True)
+
+        aged = brain_dir / _make_session_id(10)
+        aged.mkdir()
+        for name in ("meta.json", "messages.jsonl", "transcript.jsonl", "requests.jsonl", "responses.jsonl"):
+            (aged / name).write_text("{}")
+        fresh = brain_dir / _make_session_id(2)
+        fresh.mkdir()
+        (fresh / "requests.jsonl").write_text("{}")
+
+        deleted = cleanup_sessions(base, retention_days=30, debug_retention_days=7)
+
+        assert deleted == 1
+        assert aged.exists()
+        assert (aged / "messages.jsonl").exists()
+        assert (aged / "transcript.jsonl").exists()
+        assert not (aged / "requests.jsonl").exists()
+        # The dashboard reads usage history from responses.jsonl; it stays.
+        assert (aged / "responses.jsonl").exists()
+        assert (fresh / "requests.jsonl").exists()
+
+    def test_without_debug_retention_dumps_stay(self, tmp_path: Path):
+        base = tmp_path / "session"
+        brain_dir = base / "brain"
+        brain_dir.mkdir(parents=True)
+        aged = brain_dir / _make_session_id(10)
+        aged.mkdir()
+        (aged / "requests.jsonl").write_text("{}")
+
+        assert cleanup_sessions(base, retention_days=30) == 0
+        assert (aged / "requests.jsonl").exists()

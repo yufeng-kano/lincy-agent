@@ -140,6 +140,9 @@ class MemoryEditToolConfig(StrictConfigModel):
     allow_failure: bool = False
     turn_retry_limit: int = Field(default=3, ge=1)
     warnings: MemoryEditWarningsConfig = Field(default_factory=MemoryEditWarningsConfig)
+    # Hard size cap for memory/agent/temp-memory.md, the rewritten-in-place
+    # state file; an edit that leaves it larger is rolled back.
+    temp_memory_max_chars: int = Field(default=6000, ge=1000)
 
 
 class BM25SearchConfig(StrictConfigModel):
@@ -191,14 +194,13 @@ class ScrollConfig(StrictConfigModel):
 
 
 class MemorySyncConfig(StrictConfigModel):
-    """Side-channel memory sync frequency.
+    """Side-channel refresh of the temp-memory state file.
 
-    Tracks consecutive turns without natural memory target updates.
-    When the count reaches every_n_turns, forces a sync call.
-    null = disabled (never force sync).
+    The brain is only forced to refresh memory/agent/temp-memory.md before
+    compaction, before heartbeat sleep and at daily maintenance, and only
+    when user-message turns passed without the brain writing it itself.
     """
 
-    every_n_turns: int | None = Field(default=1, ge=1)
     max_retries: int = Field(default=1, ge=0)
 
 
@@ -345,6 +347,23 @@ class WorkerNotesConfig(StrictConfigModel):
         return self
 
 
+class RecallAgentConfig(StrictConfigModel):
+    """Recall sub-agent: grep-driven lookup over memory files and transcripts."""
+
+    # Run a recall before every user-message turn and attach the result to
+    # that turn's overlay as [Recall].
+    prefetch: bool = True
+    # Messages shorter than this (after strip) skip the prefetch.
+    prefetch_min_chars: int = Field(default=4, ge=1)
+    prefetch_max_tool_calls: int = Field(default=6, ge=1)
+    # Wall-clock budget for one prefetch. Once it has passed, the sub-agent
+    # answers from what it has instead of starting another search round.
+    prefetch_deadline_seconds: float = Field(default=20.0, gt=0)
+    # Budget for the brain's explicit recall tool.
+    max_tool_calls: int = Field(default=12, ge=1)
+    max_result_chars: int = Field(default=1500, ge=200)
+
+
 class AgentConfig(StrictConfigModel):
     """Agent configuration with LLM settings."""
 
@@ -382,6 +401,8 @@ class AgentConfig(StrictConfigModel):
     max_context_tokens: int = Field(default=96000, ge=1024)
     task_max_concurrency: int = Field(default=2, ge=1)
     notes: WorkerNotesConfig = Field(default_factory=WorkerNotesConfig)
+    # Recall subagent specific
+    recall: RecallAgentConfig = Field(default_factory=RecallAgentConfig)
     # Tools hidden from this agent's tool loop (schema + execution);
     # validated against the registry at startup.
     excluded_tools: list[str] = Field(default_factory=list)
@@ -389,18 +410,10 @@ class AgentConfig(StrictConfigModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
 
 
-class MemoryArchiveConfig(StrictConfigModel):
-    """Auto-archive rolling buffers older than retain_days."""
-
-    retain_days: int = Field(default=3, ge=0)
-
-
 class MaintenanceCurateConfig(StrictConfigModel):
-    """Memory distillation settings during daily maintenance."""
+    """Worker-driven condensing of over-budget memory files at daily maintenance."""
 
     enabled: bool = True
-    digest_retain_days: int = Field(default=14, ge=0)
-    digest_max_chars: int = Field(default=1200, ge=1)
 
 
 class MemoryBackupConfig(StrictConfigModel):
@@ -416,6 +429,27 @@ class SessionFileCleanupConfig(StrictConfigModel):
 
     enabled: bool = True
     retention_days: int = Field(default=30, ge=1)
+    # Brain sessions keep transcript.jsonl / messages.jsonl / responses.jsonl
+    # for retention_days; the bulky requests.jsonl dumps go after this. Left
+    # unset it resolves to min(7, retention_days), so an override that only
+    # shortens retention_days keeps loading (load_config runs before any
+    # migration could repair it).
+    debug_retention_days: int = Field(default=7, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_debug_retention(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("debug_retention_days") is None:
+            retention = data.get("retention_days", 30)
+            if isinstance(retention, int) and retention >= 1:
+                data = {**data, "debug_retention_days": min(7, retention)}
+        return data
+
+    @model_validator(mode="after")
+    def _validate_debug_retention(self) -> "SessionFileCleanupConfig":
+        if self.debug_retention_days > self.retention_days:
+            raise ValueError("debug_retention_days must not exceed retention_days")
+        return self
 
 
 class MaintenanceContextRefreshConfig(StrictConfigModel):
@@ -428,7 +462,8 @@ class MaintenanceConfig(StrictConfigModel):
     """Consolidated daily maintenance window.
 
     Steps run in fixed order:
-    archive -> context_refresh -> backup -> session_file_cleanup.
+    state-file sync + snapshot -> curate -> context_refresh -> backup
+    -> session_file_cleanup.
     """
 
     enabled: bool = True
@@ -436,7 +471,6 @@ class MaintenanceConfig(StrictConfigModel):
     latest_hour: int = Field(default=6, ge=0, le=23)
     retry_interval_minutes: int = Field(default=10, ge=1)
     # Steps in execution order:
-    archive: MemoryArchiveConfig = Field(default_factory=MemoryArchiveConfig)
     curate: MaintenanceCurateConfig = Field(default_factory=MaintenanceCurateConfig)
     context_refresh: MaintenanceContextRefreshConfig = Field(
         default_factory=MaintenanceContextRefreshConfig,

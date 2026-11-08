@@ -8,16 +8,13 @@ raw LLM client whose text the code applies directly.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from lincy.memory.curation.queue import load_queue
-from lincy.memory.curation.worker_dispatch import (
-    curate_queue_via_worker,
-    digest_day_via_worker,
-)
+from lincy.memory.curation.worker_dispatch import curate_queue_via_worker
 from lincy.worker.runner import WorkerResult
 
 
@@ -52,34 +49,6 @@ class FakeWorkerRunner:
             self._on_call(prompt, kwargs)
         self.calls.append({"prompt": prompt, **kwargs})
         return self._result
-
-
-# -- digest_day_via_worker (component 3a: read-only, code assembles the line) --
-
-
-def test_digest_day_via_worker_returns_worker_text():
-    runner = FakeWorkerRunner(_ok_result("a concise digest"))
-
-    digest = digest_day_via_worker(runner, date(2030, 1, 1), "raw content", 500)
-
-    assert digest == "a concise digest"
-    assert len(runner.calls) == 1
-    assert "raw content" in runner.calls[0]["prompt"]
-    assert runner.calls[0]["worker_label"] == "maintenance-digest"
-
-
-def test_digest_day_via_worker_raises_on_failure():
-    runner = FakeWorkerRunner(_fail_result("provider timeout"))
-
-    with pytest.raises(ValueError, match="provider timeout"):
-        digest_day_via_worker(runner, date(2030, 1, 1), "raw content", 500)
-
-
-def test_digest_day_via_worker_raises_on_empty_output():
-    runner = FakeWorkerRunner(_ok_result("   "))
-
-    with pytest.raises(ValueError):
-        digest_day_via_worker(runner, date(2030, 1, 1), "raw content", 500)
 
 
 # -- curate_queue_via_worker (component 3b: snapshot then dispatch worker) -----

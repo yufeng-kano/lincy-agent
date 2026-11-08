@@ -29,7 +29,7 @@ from ..memory import BM25MemorySearch, MemoryEditor, MemoryEditPlanner, SessionC
 from ..memory.backup import MemoryBackupManager
 from ..session import SessionManager
 from ..session.debug_client import wrap_llm_client_with_session_debug
-from ..tools import AudioAgent, VisionAgent
+from ..tools import AudioAgent, RecallAgent, VisionAgent
 from ..tools.builtin.shell_task import SHELL_KEYS, ShellTaskManager
 from ..ui.sink import FanoutUiSink
 from ..workspace import WorkspaceManager
@@ -454,6 +454,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         commit_log=SessionCommitLog(),
         planner=memory_planner,
         warnings_config=config.tools.memory_edit.warnings,
+        temp_memory_max_chars=config.tools.memory_edit.temp_memory_max_chars,
     )
 
     if config.maintenance.curate.enabled and config.agents.get("worker") is None:
@@ -584,6 +585,22 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 audio_prompt,
                 cache_dir=agent_os_dir / "cache" / "audio",
                 model_fingerprint=_media_model_fingerprint(audio_config),
+            )
+
+    # Recall agent: greps memory files and raw transcripts for the brain,
+    # both as a per-turn prefetch and as the brain's recall tool.
+    recall_agent_instance: RecallAgent | None = None
+    if "recall" in config.agents and config.agents["recall"].enabled:
+        recall_config = config.agents["recall"]
+        recall_prompt = _load_agent_prompt("recall")
+        if recall_prompt is not None:
+            recall_agent_instance = RecallAgent(
+                _build_subagent_client(
+                    "recall", recall_config, session_debug_label="recall",
+                ),
+                recall_prompt,
+                agent_os_dir=agent_os_dir,
+                config=recall_config.recall,
             )
 
     # GUI automation agent initialization
@@ -730,6 +747,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         own_vision_active=own_vision_active,
         vision_agent=vision_agent_instance,
         audio_agent=audio_agent_instance,
+        recall_agent=recall_agent_instance,
         gui_worker=gui_worker_instance,
         gui_lock=gui_lock,
         screenshot_max_width=ss_max_width,
@@ -881,6 +899,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         memory_sync_client=memory_sync_client,
         worker_runner=worker_runner,
         compactor_agent=compactor_agent_instance,
+        recall_agent=recall_agent_instance,
         brain_prompt_policy=brain_prompt_policy,
         ui_debug=debug,
         ui_show_tool_use=config.ui.show_tool_use,

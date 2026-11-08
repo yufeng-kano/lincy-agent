@@ -55,7 +55,10 @@ from ..tools import (
     VisionAgent,
     AudioAgent,
     READ_AUDIO_BY_SUBAGENT_DEFINITION,
+    RECALL_DEFINITION,
+    RecallAgent,
     create_read_audio_by_subagent,
+    create_recall_tool,
     create_calendar_tool,
     create_edit_file,
     create_execute_shell,
@@ -155,6 +158,7 @@ def setup_tools(
     own_vision_active: Callable[[], bool] | None = None,
     vision_agent: VisionAgent | None = None,
     audio_agent: AudioAgent | None = None,
+    recall_agent: RecallAgent | None = None,
     gui_worker: GUIWorker | None = None,
     gui_lock: threading.Lock | None = None,
     screenshot_max_width: int | None = None,
@@ -278,6 +282,9 @@ def setup_tools(
             create_bm25_memory_search(bm25_search),
             MEMORY_SEARCH_DEFINITION,
         )
+
+    if recall_agent is not None:
+        registry.register("recall", create_recall_tool(recall_agent), RECALL_DEFINITION)
 
     if tools_config.web_fetch.enabled:
         # Allow read_image to access images saved by web_fetch.

@@ -81,7 +81,7 @@ heartbeat:
 
 - 目標是在 cache 還可能存活的窗口內觸發；歷史設計抓 `1h`，但近期 Codex cross-turn 不保證
 - 只跑 `memory sync side-channel`，不跑 brain responder
-- `_turns_since_memory_sync == 0`（無累積未同步內容）時跳過，不呼叫 LLM
+- `_turns_since_memory_sync == 0`（沒有未寫現況檔的用戶回合）時跳過，不呼叫 LLM
 - metadata 為 `{"system": True, "pre_sleep_sync": True}`（無 `recurring`，不被 defer 影響）
 - 啟動時和普通心跳一樣被清除（`system: True`）
 

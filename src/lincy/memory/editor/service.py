@@ -14,6 +14,7 @@ import re
 
 from ...core.schema import MemoryEditWarningsConfig
 from ...workspace.people import sync_people_index_entry
+from ..hooks import snapshot_stale_state_file
 from ..curation.budget import (
     matches_ignore_patterns as _matches_warning_patterns,
     resolve_budget as _resolve_warning_budget,
@@ -57,9 +58,20 @@ _LONG_TERM_RULE_LINE = re.compile(
 )
 _LONG_TERM_LIST_LINE = re.compile(r"^-\s*\[\d{4}-\d{2}-\d{2}\]\s+.+$")
 _LONG_TERM_RECORD_LINE = re.compile(r"^-\s*\[\d{4}-\d{2}-\d{2}\]\s+.+$")
-_TEMP_MEMORY_ENTRY_LINE = re.compile(
-    r"^-\s*\[\d{4}-\d{2}-\d{2}(?:\s+\([^)]+\))?\s+\d{2}:\d{2}\]\s+.+$"
+# temp-memory.md is the rewritten-in-place state file: a title plus four fixed
+# sections, validated after every write (see docs/dev/memory-recall.md).
+# State-file headings are Chinese; written as escapes so the source stays ASCII.
+STATE_FILE_TITLE = "# \u4eca\u65e5\u73fe\u6cc1"
+STATE_FILE_SECTIONS = (
+    "## \u6700\u5f8c\u4e92\u52d5",
+    "## \u4eca\u65e5\u6642\u9593\u7dda",
+    "## \u672a\u9589\u74b0",
+    "## \u4e0b\u4e00\u6b65",
 )
+# Operations that keep temp-memory.md a whole-file rewrite. append_entry would
+# turn it back into a log, delete_file and the checkbox edits make no sense
+# for it, so only the editor prompt used to stand in the way.
+_STATE_FILE_ALLOWED_OPERATIONS = frozenset({"overwrite", "replace_block", "create_if_missing"})
 
 
 @dataclass
@@ -88,10 +100,12 @@ class MemoryEditor:
         commit_log: SessionCommitLog,
         planner: MemoryEditPlanner,
         warnings_config: MemoryEditWarningsConfig | None = None,
+        temp_memory_max_chars: int = 6000,
     ) -> None:
         self.commit_log = commit_log
         self.planner = planner
         self.warnings_config = warnings_config or MemoryEditWarningsConfig()
+        self.temp_memory_max_chars = temp_memory_max_chars
 
     def apply_batch(
         self,
@@ -301,21 +315,13 @@ class MemoryEditor:
             )
 
         file_exists = target.exists()
-        is_temp_memory = _is_temp_memory_path(req.target_path)
-        file_content = (
-            ""
-            if is_temp_memory
-            else target.read_text(encoding="utf-8")
-            if file_exists
-            else ""
-        )
+        file_content = target.read_text(encoding="utf-8") if file_exists else ""
         plan = self.planner.plan(
             request=req,
             as_of=batch.as_of,
             turn_id=batch.turn_id,
             file_exists=file_exists,
             file_content=file_content,
-            file_content_available=not is_temp_memory,
         )
         if plan.status != "ok":
             return ErrorItem(
@@ -332,26 +338,16 @@ class MemoryEditor:
                 path=req.target_path,
             )
 
-        if is_temp_memory:
-            original_size = target.stat().st_size if file_exists else None
-            temp_outcome = _apply_temp_memory_append_only(target, plan)
-            if temp_outcome.status == "error":
-                _rollback_temp_memory_append(
-                    target=target,
-                    existed=file_exists,
-                    original_size=original_size,
-                )
+        if _is_state_file_path(req.target_path):
+            rejected = _check_state_file_operations(plan.operations)
+            if rejected is not None:
                 return ErrorItem(
                     request_id=req.request_id,
-                    code=temp_outcome.code or "apply_failed",
-                    detail=temp_outcome.detail or "unknown_failure",
+                    code="temp_memory_operation_invalid",
+                    detail=rejected,
                 )
-            self.commit_log.mark_applied(batch.turn_id, req.request_id, payload_hash)
-            return AppliedItem(
-                request_id=req.request_id,
-                status="applied" if temp_outcome.status == "applied" else "noop",
-                path=req.target_path,
-            )
+            if file_exists and file_content.strip():
+                _snapshot_state_file_before_rewrite(base_dir)
 
         request_changed = False
         failed_outcome = None
@@ -383,6 +379,7 @@ class MemoryEditor:
             validation_outcome = _validate_target_file_after_apply(
                 target=target,
                 rel_path=req.target_path,
+                temp_memory_max_chars=self.temp_memory_max_chars,
             )
             if validation_outcome is not None:
                 _rollback_request_file(
@@ -411,79 +408,6 @@ class MemoryEditor:
             status="applied" if request_changed else "noop",
             path=req.target_path,
         )
-
-
-def _is_temp_memory_path(rel_path: str) -> bool:
-    return rel_path.strip().replace("\\", "/") == _TEMP_MEMORY_REL_PATH
-
-
-def _apply_temp_memory_append_only(target: Path, plan: MemoryEditPlan) -> ApplyOutcome:
-    """Append temp-memory payloads without reading existing file content."""
-    payloads: list[str] = []
-    for operation in plan.operations:
-        if operation.kind != "append_entry":
-            return ApplyOutcome(
-                status="error",
-                code="temp_memory_append_only",
-                detail="temp-memory.md only supports append_entry operations",
-            )
-        normalized = _normalize_temp_memory_payload(operation.payload_text or "")
-        validation = _validate_temp_memory_payload(normalized)
-        if validation is not None:
-            return validation
-        payloads.append(normalized)
-
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as f:
-            for payload in payloads:
-                f.write(payload)
-    except Exception as e:
-        return ApplyOutcome(status="error", code="apply_exception", detail=str(e))
-
-    return ApplyOutcome(status="applied")
-
-
-def _normalize_temp_memory_payload(payload: str) -> str:
-    text = payload.strip()
-    if not text:
-        return ""
-    return text + "\n"
-
-
-def _validate_temp_memory_payload(payload: str) -> ApplyOutcome | None:
-    lines = [line.strip() for line in payload.splitlines() if line.strip()]
-    if not lines:
-        return ApplyOutcome(
-            status="error",
-            code="temp_memory_format_invalid",
-            detail="append_entry payload_text must contain at least one entry",
-        )
-    for line in lines:
-        if not _TEMP_MEMORY_ENTRY_LINE.match(line):
-            return ApplyOutcome(
-                status="error",
-                code="temp_memory_format_invalid",
-                detail=(
-                    "append_entry for temp-memory.md must use "
-                    "'- [YYYY-MM-DD HH:MM] ...' lines"
-                ),
-            )
-    return None
-
-
-def _rollback_temp_memory_append(
-    *,
-    target: Path,
-    existed: bool,
-    original_size: int | None,
-) -> None:
-    if existed:
-        with target.open("r+b") as f:
-            f.truncate(original_size or 0)
-        return
-    if target.exists() and target.is_file():
-        target.unlink()
 
 
 def _sync_people_registry_after_batch(
@@ -552,10 +476,83 @@ def _validate_target_file_after_apply(
     *,
     target: Path,
     rel_path: str,
+    temp_memory_max_chars: int,
 ) -> ApplyOutcome | None:
     normalized = str(rel_path).strip().replace("\\", "/")
     if normalized == _LONG_TERM_REL_PATH:
         return _validate_long_term_file(target)
+    if normalized == _TEMP_MEMORY_REL_PATH:
+        return _validate_state_file(target, max_chars=temp_memory_max_chars)
+    return None
+
+
+def _is_state_file_path(rel_path: str) -> bool:
+    return str(rel_path).strip().replace("\\", "/") == _TEMP_MEMORY_REL_PATH
+
+
+def _check_state_file_operations(operations) -> str | None:
+    for operation in operations:
+        if operation.kind not in _STATE_FILE_ALLOWED_OPERATIONS:
+            return (
+                "temp-memory.md is rewritten as a whole: use overwrite or "
+                f"replace_block, not {operation.kind}"
+            )
+    return None
+
+
+def _snapshot_state_file_before_rewrite(agent_os_dir: Path) -> None:
+    """Archive the last state of an earlier day before the first rewrite of a new day.
+
+    The state file only describes "now", so the last version written on a
+    day is that day's record. The 03:00 maintenance snapshot alone would miss
+    it whenever the brain rewrites the file between midnight and 03:00.
+    """
+    try:
+        snapshot_stale_state_file(agent_os_dir)
+    except Exception:
+        logger.warning("State file pre-rewrite snapshot failed", exc_info=True)
+
+
+def _validate_state_file(target: Path, *, max_chars: int) -> ApplyOutcome | None:
+    if not target.exists() or not target.is_file():
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_structure_invalid",
+            detail="temp-memory.md must exist",
+        )
+
+    content = target.read_text(encoding="utf-8")
+    if len(content) > max_chars:
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_too_large",
+            detail=(
+                f"temp-memory.md is {len(content)} chars, limit {max_chars}; "
+                "rewrite it shorter and keep only what matters now"
+            ),
+        )
+    if not content.lstrip().startswith(STATE_FILE_TITLE):
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_structure_invalid",
+            detail=f"temp-memory.md must start with '{STATE_FILE_TITLE}'",
+        )
+    positions: list[int] = []
+    for header in STATE_FILE_SECTIONS:
+        index = content.find(header)
+        if index < 0:
+            return ApplyOutcome(
+                status="error",
+                code="temp_memory_structure_invalid",
+                detail=f"missing required section: {header}",
+            )
+        positions.append(index)
+    if positions != sorted(positions):
+        return ApplyOutcome(
+            status="error",
+            code="temp_memory_structure_invalid",
+            detail="required sections are out of order",
+        )
     return None
 
 

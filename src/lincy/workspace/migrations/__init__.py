@@ -195,6 +195,7 @@ from .m0182_native_apple_app_tools import M0182NativeAppleAppTools
 from .m0183_agent_note_turn_overlay import M0183AgentNoteTurnOverlay
 from .m0184_companion_care_loaded_files import M0184CompanionCareLoadedFiles
 from .m0185_discord_listen_tool import M0185DiscordListenTool
+from .m0186_state_file_and_recall import M0186StateFileAndRecall
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -380,4 +381,5 @@ ALL_MIGRATIONS = [
     M0183AgentNoteTurnOverlay(),
     M0184CompanionCareLoadedFiles(),
     M0185DiscordListenTool(),
+    M0186StateFileAndRecall(),
 ]

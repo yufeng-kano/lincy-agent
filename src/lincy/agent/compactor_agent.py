@@ -1,9 +1,8 @@
 """Sub-agent that summarizes older conversation turns for soft-limit compaction.
 
-Same distillation discipline as the memory digest prompts (see
-memory/curation/worker_dispatch.py:digest_day_via_worker): preserve lessons
-learned, agreements, emotional context, and open follow-ups instead of a flat
-compression, and reply in the conversation's own language.
+Distillation discipline: preserve lessons learned, agreements, emotional
+context, and open follow-ups instead of a flat compression, and reply in the
+conversation's own language.
 """
 
 from __future__ import annotations

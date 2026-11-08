@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import timedelta
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
 
@@ -16,6 +18,7 @@ from lincy.memory.editor.schema import (
 )
 from lincy.memory.editor.service import MemoryEditor
 from lincy.memory.editor.session_log import SessionCommitLog
+from lincy.timezone_utils import now as tz_now
 from lincy.workspace.people import load_people_index, save_people_index, PersonEntry
 
 
@@ -267,47 +270,42 @@ def test_memory_editor_applies_instruction_plan(tmp_path: Path):
     assert "- [2026-02-11 00:46] append" in target.read_text(encoding="utf-8")
 
 
-def test_temp_memory_append_does_not_read_existing_file(tmp_path: Path, monkeypatch):
-    target = tmp_path / "memory" / "agent" / "temp-memory.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("- [2026-05-17 10:00] 毓峰 existing entry。\n", encoding="utf-8")
+_STATE_FILE = (
+    "# 今日現況\n\n"
+    "## 最後互動\n\n- 毓峰 10:00 在 Discord 說早安，精神還可以\n\n"
+    "## 今日時間線\n\n- 10:00 早安\n\n"
+    "## 未閉環\n\n- 睡前藥還沒確認（t_0317）\n\n"
+    "## 下一步\n\n- 等他回覆後問早餐\n"
+)
 
-    original_read_text = Path.read_text
 
-    def guarded_read_text(self, *args, **kwargs):  # noqa: ANN001
-        if self == target:
-            raise AssertionError("temp-memory.md must not be read for append")
-        return original_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", guarded_read_text)
-
-    request = MemoryEditRequest(
+def _state_file_request() -> MemoryEditRequest:
+    return MemoryEditRequest(
         request_id="r1",
         target_path="memory/agent/temp-memory.md",
-        instruction="追加條目：毓峰要求 temp-memory append-only。",
+        instruction="整份改寫現況檔",
     )
-    plan = MemoryEditPlan(
+
+
+def _overwrite_plan(payload: str) -> MemoryEditPlan:
+    return MemoryEditPlan(
         status="ok",
-        operations=[
-            MemoryEditOperation(
-                kind="append_entry",
-                payload_text=(
-                    "- [2026-05-17 20:05] 毓峰要求 temp-memory 寫入不要讀全文。"
-                ),
-            )
-        ],
+        operations=[MemoryEditOperation(kind="overwrite", payload_text=payload)],
     )
+
+
+def test_temp_memory_overwrite_gives_planner_full_content(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    new_state = _STATE_FILE.replace("等他回覆後問早餐", "中午問午餐")
+    planner = _RecordingPlanner({"r1": _overwrite_plan(new_state)})
     batch = MemoryEditBatch(
-        as_of="2026-05-17T20:05:00+08:00",
-        turn_id="turn-1",
-        requests=[request],
+        as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()],
     )
-    planner = _RecordingPlanner({"r1": plan})
 
     editor = MemoryEditor(commit_log=SessionCommitLog(), planner=planner)
-    result = editor.apply_batch(
-        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
-    )
+    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
 
     assert result.status == "ok"
     assert result.applied[0].status == "applied"
@@ -315,70 +313,52 @@ def test_temp_memory_append_does_not_read_existing_file(tmp_path: Path, monkeypa
         {
             "request_id": "r1",
             "file_exists": True,
-            "file_content": "",
-            "file_content_available": False,
+            "file_content": _STATE_FILE,
+            "file_content_available": True,
         }
     ]
-    with target.open(encoding="utf-8") as f:
-        content = f.read()
-    assert content == (
-        "- [2026-05-17 10:00] 毓峰 existing entry。\n"
-        "- [2026-05-17 20:05] 毓峰要求 temp-memory 寫入不要讀全文。\n"
-    )
+    assert target.read_text(encoding="utf-8") == new_state
 
 
-def test_temp_memory_rejects_non_append_plan_without_reading_file(
-    tmp_path: Path, monkeypatch
-):
+def test_temp_memory_rejects_oversized_state_file_and_restores(tmp_path: Path):
     target = tmp_path / "memory" / "agent" / "temp-memory.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    original = "- [2026-05-17 10:00] 毓峰 existing entry。\n"
-    target.write_text(original, encoding="utf-8")
-
-    original_read_text = Path.read_text
-
-    def guarded_read_text(self, *args, **kwargs):  # noqa: ANN001
-        if self == target:
-            raise AssertionError(
-                "temp-memory.md must not be read for append-only rejection"
-            )
-        return original_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", guarded_read_text)
-
-    request = MemoryEditRequest(
-        request_id="r1",
-        target_path="memory/agent/temp-memory.md",
-        instruction="修改舊條目",
-    )
-    plan = MemoryEditPlan(
-        status="ok",
-        operations=[
-            MemoryEditOperation(
-                kind="replace_block",
-                old_block="existing",
-                new_block="changed",
-            )
-        ],
-    )
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    oversized = _STATE_FILE.replace("- 10:00 早安", "- 10:00 " + "長" * 1200)
     batch = MemoryEditBatch(
-        as_of="2026-05-17T20:05:00+08:00",
-        turn_id="turn-1",
-        requests=[request],
+        as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()],
     )
 
     editor = MemoryEditor(
         commit_log=SessionCommitLog(),
-        planner=_RecordingPlanner({"r1": plan}),
+        planner=_StaticPlanner({"r1": _overwrite_plan(oversized)}),
+        temp_memory_max_chars=1000,
     )
-    result = editor.apply_batch(
-        batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path
-    )
+    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
 
     assert result.status == "failed"
-    assert result.errors[0].code == "temp_memory_append_only"
-    with target.open(encoding="utf-8") as f:
-        assert f.read() == original
+    assert result.errors[0].code == "temp_memory_too_large"
+    assert target.read_text(encoding="utf-8") == _STATE_FILE
+
+
+def test_temp_memory_rejects_missing_sections_and_restores(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    broken = "# 今日現況\n\n## 最後互動\n\n- 只有一段\n"
+    batch = MemoryEditBatch(
+        as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()],
+    )
+
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(),
+        planner=_StaticPlanner({"r1": _overwrite_plan(broken)}),
+    )
+    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "temp_memory_structure_invalid"
+    assert target.read_text(encoding="utf-8") == _STATE_FILE
 
 
 def test_memory_editor_idempotent_replay_with_same_planned_ops(tmp_path: Path):
@@ -1639,3 +1619,57 @@ def test_long_term_missing_core_values_section_rejected(tmp_path: Path):
 
     assert result.status == "failed"
     assert "核心價值" in result.errors[0].detail
+
+
+def test_temp_memory_rejects_log_style_operations(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    plan = MemoryEditPlan(
+        status="ok",
+        operations=[MemoryEditOperation(kind="append_entry", payload_text="- [2026-05-17 20:05] log line")],
+    )
+    batch = MemoryEditBatch(
+        as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()],
+    )
+
+    editor = MemoryEditor(commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": plan}))
+    result = editor.apply_batch(batch, allowed_paths=_allowed(tmp_path), base_dir=tmp_path)
+
+    assert result.status == "failed"
+    assert result.errors[0].code == "temp_memory_operation_invalid"
+    assert target.read_text(encoding="utf-8") == _STATE_FILE
+
+
+def test_temp_memory_first_rewrite_of_a_new_day_snapshots_the_old_day(tmp_path: Path):
+    target = tmp_path / "memory" / "agent" / "temp-memory.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_STATE_FILE, encoding="utf-8")
+    yesterday = tz_now() - timedelta(days=1)
+    os.utime(target, (yesterday.timestamp(), yesterday.timestamp()))
+    archived = tmp_path / "memory" / "archive" / "temp-memory" / f"{yesterday.date().isoformat()}.md"
+    new_state = _STATE_FILE.replace("等他回覆後問早餐", "中午問午餐")
+
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": _overwrite_plan(new_state)}),
+    )
+    result = editor.apply_batch(
+        MemoryEditBatch(as_of="2026-05-17T20:05:00+08:00", turn_id="turn-1", requests=[_state_file_request()]),
+        allowed_paths=_allowed(tmp_path), base_dir=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == new_state
+    assert archived.read_text(encoding="utf-8") == f"# {yesterday.date().isoformat()}\n\n{_STATE_FILE.strip()}\n"
+
+    # A later rewrite on the same day leaves the archive alone.
+    newer = new_state.replace("中午問午餐", "下午問點心")
+    editor = MemoryEditor(
+        commit_log=SessionCommitLog(), planner=_StaticPlanner({"r1": _overwrite_plan(newer)}),
+    )
+    editor.apply_batch(
+        MemoryEditBatch(as_of="2026-05-17T21:05:00+08:00", turn_id="turn-2", requests=[_state_file_request()]),
+        allowed_paths=_allowed(tmp_path), base_dir=tmp_path,
+    )
+    assert archived.read_text(encoding="utf-8") == f"# {yesterday.date().isoformat()}\n\n{_STATE_FILE.strip()}\n"
+    assert not (archived.parent / f"{tz_now().date().isoformat()}.md").exists()

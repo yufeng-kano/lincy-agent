@@ -1,243 +1,65 @@
-"""Auto-archive temp-memory.md rolling buffer entries older than retain_days."""
+"""Daily snapshot of the temp-memory state file into memory/archive/temp-memory/."""
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime
 from pathlib import Path
 import logging
-import re
 
-from ..core.schema import MemoryArchiveConfig, MaintenanceCurateConfig
 from ..json_store import save_text
-from ..timezone_utils import now as tz_now
+from ..timezone_utils import get_tz, now as tz_now
 
 logger = logging.getLogger(__name__)
 
-_DATE_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2})")
-_DIGEST_RE = re.compile(r"^\s*- \[digest (\d{4}-\d{2}-\d{2})\].*\n?", re.MULTILINE)
-_DIGEST_MARKER_PREFIX_RE = re.compile(r"^(?:-\s*)?\[digest \d{4}-\d{2}-\d{2}\]\s*")
-
-_RECENT_REL_PATH = "memory/agent/temp-memory.md"
-_RECENT_ARCHIVE_SUBDIR = "memory/archive/temp-memory"
+_STATE_FILE_REL_PATH = "memory/agent/temp-memory.md"
+_ARCHIVE_SUBDIR = "memory/archive/temp-memory"
 
 
-@dataclass
-class ArchivedFile:
-    """One date-partition written to the archive directory."""
+def snapshot_state_file(agent_os_dir: Path, *, day: date) -> Path | None:
+    """Copy the current state file into the archive partition for ``day``.
 
-    date: date
-    path: Path
-    lines: int
-
-
-@dataclass
-class ArchiveResult:
-    """Summary of a single archive run."""
-
-    archived: list[ArchivedFile] = field(default_factory=list)
-
-    @property
-    def total_lines(self) -> int:
-        return sum(f.lines for f in self.archived)
-
-    @property
-    def summary(self) -> str:
-        if not self.archived:
-            return ""
-        dates = sorted({f.date for f in self.archived})
-        return f"{self.total_lines} lines archived ({dates[0]} ~ {dates[-1]})"
-
-
-# -- Parser -------------------------------------------------------------------
-
-
-def _parse_recent_by_date(content: str) -> tuple[str, dict[date, str]]:
-    """Parse the rolling buffer into preamble + date-grouped entries.
-
-    Returns (preamble, {date: content}).
-    Preamble = everything before the first dated entry (title, blank lines).
+    The state file is rewritten in place during the day, so this snapshot is
+    the only durable record of what it said. A partition that already exists
+    (legacy dated log entries, or an earlier snapshot) is appended to, never
+    replaced. Returns the written path, or None when there was nothing new
+    to write.
     """
-    preamble_lines: list[str] = []
-    groups: dict[date, list[str]] = {}
-    current_date: date | None = None
+    source = agent_os_dir / _STATE_FILE_REL_PATH
+    if not source.is_file():
+        return None
+    content = source.read_text(encoding="utf-8").strip()
+    if not content:
+        return None
 
-    for line in content.splitlines(keepends=True):
-        m = _DATE_RE.search(line)
-        if m:
-            current_date = date.fromisoformat(m.group(1))
-
-        if current_date is None:
-            preamble_lines.append(line)
-        else:
-            groups.setdefault(current_date, []).append(line)
-
-    preamble = "".join(preamble_lines)
-    return preamble, {d: "".join(lines) for d, lines in groups.items()}
-
-
-# -- Archive logic -------------------------------------------------------------
-
-
-def check_and_archive_buffers(
-    agent_os_dir: Path,
-    config: MemoryArchiveConfig,
-    *,
-    curate_config: MaintenanceCurateConfig | None = None,
-    digest_day: Callable[[date, str, int], str] | None = None,
-) -> ArchiveResult:
-    """Archive aged buffer entries, retaining digests when curation is enabled."""
-    buf_path = agent_os_dir / _RECENT_REL_PATH
-    result = ArchiveResult()
-
-    if not buf_path.is_file():
-        return result
-
-    content = buf_path.read_text(encoding="utf-8")
-    if curate_config is not None and curate_config.enabled:
-        content_without_digests = _DIGEST_RE.sub("", content)
-        preamble, dated = _parse_recent_by_date(content_without_digests)
+    archive_dir = agent_os_dir / _ARCHIVE_SUBDIR
+    target = archive_dir / f"{day.isoformat()}.md"
+    if target.is_file():
+        existing = target.read_text(encoding="utf-8")
+        if content in existing:
+            return None
+        save_text(target, f"{existing.rstrip()}\n\n---\n\n{content}\n")
     else:
-        preamble, dated = _parse_recent_by_date(content)
-    if not dated:
-        if curate_config is not None and curate_config.enabled:
-            _remove_expired_digests(buf_path, content, curate_config.digest_retain_days)
-        return result
-
-    today = tz_now().date()
-    cutoff = today - timedelta(days=config.retain_days)
-    old_dates = sorted(d for d in dated if d < cutoff)
-    if not old_dates:
-        if curate_config is not None and curate_config.enabled:
-            _remove_expired_digests(buf_path, content, curate_config.digest_retain_days)
-        return result
-
-    if curate_config is None or not curate_config.enabled:
-        return _archive_legacy(buf_path, preamble, dated, old_dates, cutoff, agent_os_dir)
-    if digest_day is None:
-        # Non-maintenance archive hooks must not drop full text while curation
-        # is enabled; maintenance supplies the curator callback.
-        return result
-
-    archive_dir = agent_os_dir / _RECENT_ARCHIVE_SUBDIR
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    retained_dates = sorted(d for d in dated if d >= cutoff)
-    retained = preamble + "".join(dated[d] for d in retained_dates)
-    retained_digests = _retain_unexpired_digests(
-        content,
-        today,
-        curate_config.digest_retain_days,
-    )
-    failed_content: list[str] = []
-    new_digests: list[str] = []
-
-    for d in old_dates:
-        try:
-            digest = digest_day(d, dated[d], curate_config.digest_max_chars).strip()
-            if not digest:
-                raise ValueError("empty digest")
-            archived = _write_archive_file(archive_dir, d, dated[d])
-        except Exception as exc:
-            logger.warning("Temp-memory curation failed for %s: %s", d, exc)
-            failed_content.append(dated[d])
-            continue
-        result.archived.append(archived)
-        new_digests.append(_format_digest(d, digest))
-
-    if result.archived:
-        # Do not remove any successful source text until every resulting digest
-        # can be committed together; a write failure leaves the original intact.
-        save_text(
-            buf_path,
-            retained + "".join(failed_content) + "".join(retained_digests + new_digests),
-        )
-    else:
-        _remove_expired_digests(buf_path, content, curate_config.digest_retain_days)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        save_text(target, f"# {day.isoformat()}\n\n{content}\n")
 
     _update_archive_index(archive_dir)
-    if result.archived:
-        logger.info("Archived %s: %d dates moved", _RECENT_REL_PATH, len(result.archived))
-    return result
+    logger.info("Snapshot %s -> %s", _STATE_FILE_REL_PATH, target.name)
+    return target
 
 
-def _archive_legacy(
-    buf_path: Path,
-    preamble: str,
-    dated: dict[date, str],
-    old_dates: list[date],
-    cutoff: date,
-    agent_os_dir: Path,
-) -> ArchiveResult:
-    """Preserve the original archive-and-drop behavior when curation is disabled."""
-    result = ArchiveResult()
-    archive_dir = agent_os_dir / _RECENT_ARCHIVE_SUBDIR
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    for d in old_dates:
-        result.archived.append(_write_archive_file(archive_dir, d, dated[d]))
-    retained = preamble + "".join(dated[d] for d in sorted(dated) if d >= cutoff)
-    buf_path.write_text(retained, encoding="utf-8")
-    _update_archive_index(archive_dir)
-    logger.info("Archived %s: %d dates moved", _RECENT_REL_PATH, len(old_dates))
-    return result
+def snapshot_stale_state_file(agent_os_dir: Path) -> Path | None:
+    """Archive the state file under the local date it was last written on.
 
-
-def _format_digest(day: date, digest: str) -> str:
-    cleaned = _strip_digest_marker(digest)
-    compact = " ".join(cleaned.splitlines()).strip()
-    return (
-        f"- [digest {day.isoformat()}] {compact}"
-        f"（全文：memory/archive/temp-memory/{day.isoformat()}.md）\n"
-    )
-
-
-def _strip_digest_marker(text: str) -> str:
-    """Strip any leading digest marker(s) the model echoed back in its output.
-
-    The prompt tells the model not to emit the marker itself, but it does
-    anyway often enough that the code must be the guarantee: observed in
-    production as a doubled `- [digest 2026-08-08] - [digest 2026-08-08]
-    ...` line once _format_digest prepends its own canonical marker.
+    Nothing happens while that date is today: the file still describes the
+    current day and is archived once the day is over. Used before the first
+    rewrite of a new day and at the start of daily maintenance, so a version
+    written after midnight never lands in the previous day's partition.
     """
-    stripped = text.lstrip()
-    while True:
-        match = _DIGEST_MARKER_PREFIX_RE.match(stripped)
-        if not match:
-            return stripped
-        stripped = stripped[match.end():].lstrip()
-
-
-def _retain_unexpired_digests(content: str, today: date, retain_days: int) -> list[str]:
-    cutoff = today - timedelta(days=retain_days)
-    kept: list[str] = []
-    for match in _DIGEST_RE.finditer(content):
-        if date.fromisoformat(match.group(1)) >= cutoff:
-            kept.append(match.group(0))
-    return kept
-
-
-def _remove_expired_digests(buf_path: Path, content: str, retain_days: int) -> None:
-    retained = _DIGEST_RE.sub(
-        lambda match: (
-            match.group(0)
-            if date.fromisoformat(match.group(1)) >= tz_now().date() - timedelta(days=retain_days)
-            else ""
-        ),
-        content,
-    )
-    if retained != content:
-        save_text(buf_path, retained)
-
-
-def _write_archive_file(archive_dir: Path, d: date, content: str) -> ArchivedFile:
-    """Write (or append to) a date-partitioned archive file."""
-    path = archive_dir / f"{d.isoformat()}.md"
-    lines = content.count("\n")
-    if path.exists():
-        with path.open("a", encoding="utf-8") as f:
-            f.write(content)
-    else:
-        # New archive file gets a date title header
-        path.write_text(f"# {d.isoformat()}\n\n{content}", encoding="utf-8")
-    return ArchivedFile(date=d, path=path, lines=lines)
+    source = agent_os_dir / _STATE_FILE_REL_PATH
+    if not source.is_file():
+        return None
+    written = datetime.fromtimestamp(source.stat().st_mtime, tz=get_tz()).date()
+    if written >= tz_now().date():
+        return None
+    return snapshot_state_file(agent_os_dir, day=written)
 
 
 def _update_archive_index(archive_dir: Path) -> None:

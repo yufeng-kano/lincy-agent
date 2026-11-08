@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 
 from ..context import ContextBuilder, Conversation
-from ..core.schema import MemoryArchiveConfig
 from ..llm import LLMResponse
 from ..llm.session import llm_session
 from ..llm.base import LLMClient
 from ..llm.schema import Message, ToolCall, ToolDefinition
 from ..memory import extract_memory_edit_paths
-from ..memory.hooks import check_and_archive_buffers
+from ..memory.tool_analysis import is_failed_memory_edit_result
+from ..memory.editor.service import STATE_FILE_SECTIONS, STATE_FILE_TITLE
 from ..tools import ToolRegistry
 from .side_channel import run_side_channel_tool_loop
 from .tool_setup import resolve_memory_path
@@ -35,7 +36,6 @@ class _MemoryFileSnapshot:
     existed: bool
     was_file: bool
     content: bytes | None = None
-    size: int | None = None
 
 
 class _TurnMemorySnapshot:
@@ -43,9 +43,6 @@ class _TurnMemorySnapshot:
 
     def __init__(self, *, agent_os_dir: Path):
         self._agent_os_dir = agent_os_dir
-        self._temp_memory_file = (
-            agent_os_dir / "memory" / "agent" / "temp-memory.md"
-        ).resolve()
         self._snapshots: dict[Path, _MemoryFileSnapshot] = {}
 
     def capture_from_tool_call(self, tool_call: ToolCall) -> None:
@@ -60,18 +57,11 @@ class _TurnMemorySnapshot:
 
             if resolved.exists():
                 if resolved.is_file():
-                    if resolved == self._temp_memory_file:
-                        self._snapshots[resolved] = _MemoryFileSnapshot(
-                            existed=True,
-                            was_file=True,
-                            size=resolved.stat().st_size,
-                        )
-                    else:
-                        self._snapshots[resolved] = _MemoryFileSnapshot(
-                            existed=True,
-                            was_file=True,
-                            content=resolved.read_bytes(),
-                        )
+                    self._snapshots[resolved] = _MemoryFileSnapshot(
+                        existed=True,
+                        was_file=True,
+                        content=resolved.read_bytes(),
+                    )
                 else:
                     self._snapshots[resolved] = _MemoryFileSnapshot(
                         existed=True,
@@ -95,12 +85,6 @@ class _TurnMemorySnapshot:
             if snapshot.existed:
                 if not snapshot.was_file:
                     continue
-                if snapshot.size is not None:
-                    if path.exists() and path.is_file():
-                        with path.open("r+b") as f:
-                            f.truncate(snapshot.size)
-                        restored += 1
-                    continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(snapshot.content or b"")
                 restored += 1
@@ -119,33 +103,33 @@ class _TurnMemorySnapshot:
 def _build_memory_sync_reminder(
     missing_targets: list[str],
     turns_accumulated: int = 1,
+    *,
+    max_chars: int = 6000,
 ) -> str:
-    """Build directive for the memory-sync side-channel LLM call."""
+    """Build the directive for the state-file refresh side-channel call."""
     targets = "\n".join(f"- {target}" for target in missing_targets)
-    turn_scope = "1 turn" if turns_accumulated == 1 else f"{turns_accumulated} turns"
+    turn_scope = (
+        "1 user turn" if turns_accumulated == 1 else f"{turns_accumulated} user turns"
+    )
+    last, timeline, open_loops, next_steps = (h[3:] for h in STATE_FILE_SECTIONS)
+    sections = ", ".join(f"`{h}`" for h in STATE_FILE_SECTIONS)
     return (
-        "[MEMORY SYNC - ROLLUP]\n"
-        f"The following files have not been updated for {turn_scope}:\n{targets}\n\n"
-        "You must persist the missing interactions now.\n"
-        "For each listed target, write EXACTLY ONE rollup entry covering the\n"
-        "missing window in chronological order.\n"
-        "Do not skip any NEW fact from that window.\n\n"
-        "Format for temp-memory.md rollup:\n"
-        "- Prefix: `[YYYY-MM-DD HH:MM] ` (use the latest turn timestamp in scope)\n"
-        f"- Start entry body with `[rollup {turn_scope}]`\n"
-        "- Include real names for people when applicable\n"
-        "- DELTA ONLY: record facts new since the last successful temp-memory write\n"
-        "  (or the start of this missing window). Do NOT re-narrate the whole day\n"
-        "  or restate closed loops already written earlier in temp-memory.\n"
-        "- POINTER for durable homes: if a fact already lives in expenses DB,\n"
-        "  health.md, long-term.md, tasks, schedule_action, or people/* — write one\n"
-        "  short pointer line (ids/times only), not the full process narrative.\n"
-        "- End with an Open loops only section: unresolved items only; drop items\n"
-        "  that closed in this window. Do not paste a full day todo list.\n"
-        "- Optional brief reaction/emotion if it affects next actions; skip filler.\n"
-        "- FORBIDDEN boilerplate: fixed channel tags like '回覆走 DC', full daily\n"
-        "  ban lists restated every entry, re-copying long-term rules, or replaying\n"
-        "  already-logged expense/nutrition/med narratives.\n\n"
+        "[MEMORY SYNC - STATE REFRESH]\n"
+        f"The following state files have not been refreshed for {turn_scope}:\n"
+        f"{targets}\n\n"
+        "Refresh them now with ONE memory_edit call.\n\n"
+        "memory/agent/temp-memory.md is the current-state file, not a log. Put the\n"
+        "complete new file content in the instruction so the editor overwrites it:\n"
+        f"- Keep the title `{STATE_FILE_TITLE}` and the four sections {sections},\n"
+        "  in that order.\n"
+        f"- {last}: who, when, which channel, what it was about, how they felt.\n"
+        f"- {timeline}: at most 12 one-line bullets with HH:MM, today only.\n"
+        f"- {open_loops}: only still-open items, with schedule/task ids where they exist.\n"
+        f"- {next_steps}: what to do at the next message or wake-up.\n"
+        "- Drop closed loops, internal bookkeeping (silent heartbeats, worker\n"
+        "  reports, bare scheduler ids) and anything already stored in long-term\n"
+        "  or people files. Do not add dated log entries.\n"
+        f"- Stay under {max_chars} characters.\n\n"
         "Call memory_edit now."
     )
 
@@ -257,6 +241,31 @@ def _inject_brain_failure_record(
     conversation.add("assistant", "\n".join(parts))
 
 
+def _memory_edit_applied_targets(result: str, targets: list[str]) -> bool:
+    """True when a memory_edit result reports one of *targets* as applied.
+
+    memory_edit returns JSON even when a request was rejected and rolled
+    back (``status: failed``); only the structured result says whether the
+    state file itself was written.
+    """
+    if not result.startswith("{"):
+        return False
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return False
+    wanted = {target.strip().replace("\\", "/") for target in targets}
+    for item in payload.get("applied") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip().replace("\\", "/")
+        if path in wanted:
+            return True
+    return False
+
+
 @llm_session("memory_sync")
 def _run_memory_sync_side_channel(
     client: LLMClient,
@@ -272,10 +281,16 @@ def _run_memory_sync_side_channel(
     on_before_tool_call: Callable[[ToolCall], None] | None = None,
     is_cancel_requested: Callable[[], bool] | None = None,
     on_cancel_pending: Callable[[], None] | None = None,
-) -> None:
-    """Side-channel LLM call to sync missing memory targets."""
+) -> bool:
+    """Side-channel LLM call to sync missing memory targets.
+
+    Returns True only when a memory_edit result shows one of the missing
+    targets applied; a rejected edit (structured ``status: failed``) counts
+    as an error and is retried, and a run that wrote something else, or
+    nothing, returns False so callers keep the debt.
+    """
     if not any(definition.name == "memory_edit" for definition in tools):
-        return
+        return False
 
     local_messages = builder.build(conversation)
     local_messages.append(
@@ -302,16 +317,21 @@ def _run_memory_sync_side_channel(
 
     for attempt in range(1 + max_retries):
         had_error = False
+        synced = False
 
         def observe(response: LLMResponse) -> bool:
             _debug_print_responder_output(console, response, label="memory-sync")
             return False
 
         def execute_memory_edit_with_status(tool_call: ToolCall):
-            nonlocal had_error
+            nonlocal had_error, synced
             result = execute_memory_edit(tool_call)
-            if result is not None and result.is_error:
-                had_error = True
+            if result is not None:
+                content = result.content if isinstance(result.content, str) else ""
+                if result.is_error or is_failed_memory_edit_result(content):
+                    had_error = True
+                elif _memory_edit_applied_targets(content, missing_targets):
+                    synced = True
             return result
 
         run_side_channel_tool_loop(
@@ -326,10 +346,14 @@ def _run_memory_sync_side_channel(
             ),
             on_response=observe,
         )
+        if synced and not had_error:
+            return True
         if not had_error:
-            break
+            # No memory_edit touched the targets; a retry would repeat that.
+            return False
         if attempt < max_retries:
             logger.info("memory-sync retry %d/%d after error", attempt + 1, max_retries)
+    return False
 
 
 _EMPTY_RESPONSE_NUDGE = (
@@ -361,17 +385,3 @@ def _run_empty_response_fallback(
     if response and response.strip():
         return response
     return ""
-
-
-def _run_memory_archive(
-    agent_os_dir: Path,
-    archive_config: MemoryArchiveConfig,
-    console: AgentUiPort,
-) -> None:
-    """Run memory archive and swallow non-fatal errors."""
-    try:
-        result = check_and_archive_buffers(agent_os_dir, archive_config)
-        if result.archived:
-            console.print_info(f"Memory archived: {result.summary}")
-    except Exception as error:
-        logger.warning("Memory archive failed: %s", error)

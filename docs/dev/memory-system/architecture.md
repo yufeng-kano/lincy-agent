@@ -49,6 +49,13 @@ agent_os_dir: ~/.agent
 │       ├── SKILL.md
 │       └── references/
 │
+├── session/                    # 對話紀錄與 debug dump（非 memory，但 recall 會讀）
+│   └── brain/{session_id}/
+│       ├── messages.jsonl      # 目前 context（compaction 會改寫）
+│       ├── transcript.jsonl    # 完整對話原文，只追加；recall 子代理的語料
+│       ├── requests.jsonl      # LLM request dump（保留 7 天）
+│       └── responses.jsonl     # LLM response dump（dashboard 用量來源；留到 session 到期）
+│
 ├── state/                      # runtime operational state（可重建，不屬於 memory）
 │   ├── shared_state.json       # Common-ground shared state
 │   ├── contact_map.json        # sender → name 快取
@@ -64,13 +71,14 @@ agent_os_dir: ~/.agent
     ├── agent/                  # Agent 本身的記憶系統
     │   ├── index.md            # Agent 記憶總索引
     │   ├── persona.md          # 人格（少變）
-    │   ├── temp-memory.md      # 暫存工作記憶（近期上下文，不是提醒機制）
+    │   ├── temp-memory.md      # 今日現況檔（最後互動、時間線、未閉環、下一步；整份改寫）
     │   ├── long-term.md        # 長期重要事項（仍生效的規則、約定、重要記錄）
     │   ├── artifacts.md        # artifacts/ 的可搜尋索引入口
     │   └── archive/            # 歷史回憶與退役記憶類別
     │       ├── index.md
     │       ├── deprecated/
-    │       └── temp-memory/
+    │       ├── curation/       # 超標檔案改寫前的原文快照
+    │       └── temp-memory/    # 現況檔每日快照（YYYY-MM-DD.md）與升級前的舊日誌
     │
     └── people/                 # 多人記憶
         ├── index.md
@@ -143,11 +151,11 @@ Agent 自身長期積累的記憶，不因對話結束而遺失。
 
 **基礎檔案：**
 - `persona.md` - 人格設定，基本不變
-- `temp-memory.md` - 暫存工作記憶（近期上下文，不是提醒機制）
+- `temp-memory.md` - 今日現況檔（最後互動、今日時間線、未閉環、下一步；不是提醒機制）
 - `long-term.md` - 長期重要事項（仍生效的規則、清單、不可遺忘的事實）
 
 **live memory：**
-- `temp-memory.md` - 近期上下文與當前情緒
+- `temp-memory.md` - 此刻現況，整份改寫
 - `long-term.md` - 仍生效的規則與長期事實
 - `archive/` - 歷史回憶與退役記憶類別
 
@@ -160,20 +168,26 @@ Agent 自身長期積累的記憶，不因對話結束而遺失。
 - `{user_id}/index.md` - 用戶摘要 + 子檔案連結（Boot Context 載入）
 - `{user_id}/{topic}.md` - 詳細主題資料（健康、通勤、飲食等）
 
-### agent/recent.md - 近期記憶
+### agent/temp-memory.md - 今日現況檔
 
-合併原 `short-term.md`（短期工作記憶）與 `inner-state.md`（內心狀態）為單一檔案，維持「像真人一樣的一條時間線」：把最近狀態與近期對話做**壓縮摘要**，讓下次啟動時能快速回到相近狀態（避免每次都像重開機）。
+brain 唯一的短期記憶檔。它描述「現在」，不是日誌：
 
-它是 **Agent 自己的 working memory + 內心狀態**，可以包含：
-- 最近一次互動是跟誰（`user_id`）
-- 近期對話的壓縮摘要（包含明確的 `user_id` 與日期）
-- 當前焦點、未完事項、想分享的念頭（摘要即可）
-- 內心狀態（想聊天程度、分享衝動、想念、心情）
+```
+# 今日現況
 
-規則：
-- **人的長期資訊不要放這裡**（偏好、背景、關係里程碑等），要寫到 `people/{user_id}/index.md`
-- 內容要短（例如 < 200 行）；過長就再次壓縮成更短摘要
-- 即使近期記憶提到其他人，也必須帶 `user_id`，避免被誤認成「當前正在對話的人」
+## 最後互動
+## 今日時間線
+## 未閉環
+## 下一步
+```
+
+規則（由 `memory/editor/service.py` 在每次寫入後驗證，不合就整檔還原）：
+- 第一行必須是 `# 今日現況`，四個 `## ` 段落順序固定
+- 整檔不超過 `tools.memory_edit.temp_memory_max_chars`（預設 6000）
+- 每次更新都是整份改寫（`overwrite`），不再 `append_entry`
+- 內部回合（heartbeat、scheduled、task due、worker 回報）不算「未更新」的債；只有用戶回合會累積
+- 系統依最後寫入日整檔快照到 `archive/temp-memory/YYYY-MM-DD.md`（每天 03:00 維護開頭與跨日第一次改寫前）；過去的細節靠 recall 子代理從快照與 transcript 找回（見 `../memory-recall.md`）
+- 人的長期資訊不放這裡，要寫到 `people/{user_id}/`
 
 ## 記憶類型分類
 
@@ -181,7 +195,8 @@ Agent 自身長期積累的記憶，不因對話結束而遺失。
 
 | 類型 | 存放位置 | 說明 |
 |------|---------|------|
-| 短期 | agent/temp-memory.md | 暫存工作記憶（近期上下文） |
+| 短期 | agent/temp-memory.md | 今日現況檔（整份改寫，每日快照） |
+| 原文 | session/brain/*/transcript.jsonl | 對話原文，只追加；recall 子代理檢索 |
 | 長期 | agent/、people/ | 持久化記憶 |
 
 ### 按歸屬

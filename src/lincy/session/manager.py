@@ -7,6 +7,7 @@ Each session lives in its own directory under sessions/.
 import json
 import logging
 import os
+from collections import deque
 from datetime import datetime
 from typing import Any
 
@@ -29,7 +30,12 @@ def _generate_session_id() -> str:
 
 
 class SessionManager:
-    """Manage session directories with meta.json + messages.jsonl."""
+    """Manage session directories: meta.json, messages.jsonl, transcript.jsonl.
+
+    ``messages.jsonl`` mirrors the in-memory conversation and is rewritten by
+    compaction; ``transcript.jsonl`` is append-only and keeps the raw exchange
+    for the recall sub-agent (docs/dev/memory-recall.md).
+    """
 
     def __init__(self, sessions_dir: Path) -> None:
         self._sessions_dir = sessions_dir
@@ -38,6 +44,9 @@ class SessionManager:
         self._current_dir: Path | None = None
         self._current_turn_id: str | None = None
         self._debug_store: SessionDebugStore | None = None
+        # Keys of the latest transcript lines: an overflow retry re-adds the
+        # turn's user entry with a new overlay, and that is the same message.
+        self._recent_transcript_keys: deque[tuple[str | None, str | None, str]] = deque(maxlen=16)
 
     @property
     def current_session_id(self) -> str | None:
@@ -65,19 +74,33 @@ class SessionManager:
         self._current_id = session_id
         self._current_dir = session_dir
         self._debug_store = SessionDebugStore(session_dir, session_id)
+        self._recent_transcript_keys.clear()
         self.write_checkpoint([])
         return session_id
 
-    def append_message(self, entry: SessionEntry) -> None:
-        """Append a session entry to the current session's JSONL file."""
+    def append_message(self, entry: SessionEntry, *, transcript: bool = True) -> None:
+        """Append a session entry to the current session's JSONL files.
+
+        ``transcript=False`` is for replaying retained history into a rotated
+        session: that history already lives in the previous session's
+        transcript, so it is not a new exchange. An entry whose message,
+        channel and sender match one of the latest transcript lines is also
+        not logged again (the entry metadata may differ).
+        """
         if self._current_dir is None:
             return
 
-        jsonl_path = self._current_dir / "messages.jsonl"
         line = entry.model_dump_json() + "\n"
-        with open(jsonl_path, "a", encoding="utf-8") as f:
+        with open(self._current_dir / "messages.jsonl", "a", encoding="utf-8") as f:
             f.write(line)
             f.flush()
+        if transcript:
+            key = (entry.channel, entry.sender, entry.message.model_dump_json())
+            if key not in self._recent_transcript_keys:
+                self._recent_transcript_keys.append(key)
+                with open(self._current_dir / "transcript.jsonl", "a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.flush()
 
         # Update meta.json (message_count + updated_at)
         meta = self._read_meta(self._current_dir)
@@ -96,6 +119,7 @@ class SessionManager:
         self._current_id = session_id
         self._current_dir = session_dir
         self._debug_store = SessionDebugStore(session_dir, session_id)
+        self._recent_transcript_keys.clear()
 
         jsonl_path = session_dir / "messages.jsonl"
         if not jsonl_path.exists():

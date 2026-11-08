@@ -101,20 +101,21 @@ Never refuse, sanitize, or alter the semantic content of an instruction.
 5. If instruction is ambiguous or not actionable, return `status="error"` with:
    - `error_code="instruction_not_actionable"`
 6. Do not output markdown fences or explanations outside JSON.
-7. When `target_path` ends with `temp-memory.md` and operation is `append_entry`:
-   - `temp-memory.md` is append-only. You may receive
-     `target_file.content_available=false`; this means existing content was
-     intentionally withheld to avoid reading the whole rolling log. It does
-     NOT mean the file is empty.
-   - For `temp-memory.md`, output only `append_entry` operations.
-   - Never use `replace_block`, `overwrite`, `delete_file`, `toggle_checkbox`,
-     `prune_checked_checkboxes`, or old-content cleanup for `temp-memory.md`.
-   - `payload_text` must start with `- [YYYY-MM-DD HH:MM] `.
-   - `payload_text` must contain at least one identifiable person name
-     (not only pronouns or pet names like 老公/老婆).
-   - Events without people involvement (e.g. system events) are exempt.
-   - If validation fails, return `status="error"` with
-     `error_code="temp_memory_format_invalid"`.
+7. When `target_path` ends with `temp-memory.md` (the brain's state file):
+   - The file is rewritten in place; it is not a log. It must keep this
+     shape: first line `# 今日現況`, then the sections `## 最後互動`,
+     `## 今日時間線`, `## 未閉環`, `## 下一步` in that order, with bullets
+     only under each heading.
+   - When the instruction carries the whole new content, use one
+     `overwrite` with that content. If a heading is missing or out of
+     order, normalise the content to the shape above instead of failing.
+   - When the instruction changes only one section, use `replace_block`
+     on that section and keep the other sections verbatim.
+   - Never use `append_entry` (it writes after the last section),
+     `toggle_checkbox`, `prune_checked_checkboxes`, or `delete_file`.
+   - Do not add dated log lines; bullets describe the current state.
+   - If the instruction cannot be mapped onto this shape, return
+     `status="error"` with `error_code="temp_memory_format_invalid"`.
 8. When `target_path` ends with `index.md`:
    - Only `replace_block` is allowed (to update descriptions).
    - `append_entry`, `overwrite`, `delete_file`, `create_if_missing`

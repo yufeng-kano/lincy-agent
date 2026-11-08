@@ -130,6 +130,11 @@ _RETIRED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("features", "decision_reminder"),
     # Kernel 0.77.0: chat_proxy providers dropped
     ("features", "codex_remote_compaction"),
+    # Kernel 0.86.0: the temp-memory log became a state file (m0186)
+    ("tools", "memory_sync", "every_n_turns"),
+    ("maintenance", "archive"),
+    ("maintenance", "curate", "digest_retain_days"),
+    ("maintenance", "curate", "digest_max_chars"),
 )
 
 

@@ -45,9 +45,14 @@ of them.
 - Do not add free-text paragraphs or notes
 
 ### temp-memory.md
-- Format: `- [YYYY-MM-DD HH:MM] content`
+- The brain's state file, rewritten in place; it is not a log
+- First line `# 今日現況`, then exactly these sections in order:
+  `## 最後互動`, `## 今日時間線`, `## 未閉環`, `## 下一步`
+- Bullets only under each heading; no dated log entries
+- Keep the whole file under 6000 characters
 - Objective facts use real names, subjective feelings use pet names
-- One entry per line
+- Daily snapshots live in `archive/temp-memory/YYYY-MM-DD.md` and are
+  written by the system; do not edit them
 
 ### long-term.md
 - Section `## 解讀原則`: fixed interpretation preamble — do not modify,

@@ -62,13 +62,24 @@
 - 硬中斷（kill / crash）可能讓 `messages.jsonl` 留下沒有 tool result 的 assistant tool call；resume 載入與每個 turn 開始時會呼叫 `Conversation.remove_dangling_tool_calls()`，只保留緊接在同一個 assistant tool-call message 後、且 id 相符的連續 tool result。跨越 user／assistant message 的晚到 result 與反向孤兒都會移除，並 `rewrite_messages` 回寫磁碟——否則 Gemini 等 provider API 會拒收這種歷史。修復後 render cache 比對不上會自動作廢，屬預期行為
 - retry / failover 若發生在 client wrapper 內部，目前只保留最外層 request/response 或 error，不逐次展開每個底層 transport attempt
 
+## transcript.jsonl 與保留期
+
+- `SessionManager.append_message()` 把同一行同時寫進 `messages.jsonl` 與 `transcript.jsonl`；compaction 的 `rewrite_messages()` 只改 `messages.jsonl`，所以 `transcript.jsonl` 是該 session 完整、只追加的對話原文（含 tool call 與 tool result）
+- overflow retry 重新加入的同一則用戶訊息不會在 transcript 出現兩次：`append_message` 以 (channel, sender, message) 比對最近 16 筆，`run_turn` 一開始就固定 inbound 時間戳讓兩次嘗試的 message 一致
+- context refresh 開新 session 時，保留的歷史用 `append_message(entry, transcript=False)` 重放，不會在新 session 的 transcript 重複出現
+- compaction 摘要只進 `messages.jsonl`，不進 transcript
+- `maintenance.session_file_cleanup.debug_retention_days`（預設 `min(7, retention_days)`，不寫在設定檔）到期只刪 `requests.jsonl`；`responses.jsonl` 是 dashboard 用量圖的來源，與 `messages.jsonl`、`transcript.jsonl` 一起留到 `retention_days`（30）
+- 升級前的舊 session 沒有 transcript：`scripts/backfill_transcripts.py <agent_os_dir> [--dry-run] [--force]` 從 `requests.jsonl` 的歷史還原（去掉 system、synthetic boot、side-channel 提醒、compaction 摘要；tool 條目以 id 去重、文字以 role + 文字 + 分鐘去重；與 `messages.jsonl` 重疊時以後者為準，再依分鐘穩定排序），條目帶 `metadata.backfilled_from`
+- recall 子代理只讀 `transcript.jsonl` / `messages.jsonl`，拒絕 requests / responses / events / turns / checkpoints（見 `memory-recall.md`）
+
 ## 目前掛點
 
 - brain client
 - memory sync client
+- recall client（`client_label="recall"`；每則用戶訊息的預抓與 `recall` 工具）
 - compactor client（對話 compaction 第 2 層摘要子代理，`client_label="compactor"`；見 `memory-curation.md` 的「對話 compaction」一節）
 - worker subagent（`WorkerRunner` 內部用 `client_label` 標記每次呼叫，例如
-  `worker-3`、`maintenance-digest`、`maintenance-curation`；maintenance
+  `worker-3`、`maintenance-curation`；maintenance
   驅動的記憶檔案治理沒有專屬 client，直接沿用同一個 worker runner，因此
   也落在這裡，不再是「零次請求」看起來像沒執行）
 

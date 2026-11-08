@@ -320,9 +320,10 @@ def _value_too_long_error(
     subject = f"note '{key}' value" if key else "Note value"
     return (
         f"Error: {subject} too long ({length} > {max_value_chars} chars). "
-        "Notes hold current-state conclusions only. Write process details "
-        "to memory/agent/temp-memory.md and durable lessons to "
-        "memory/agent/long-term.md, then retry with a short value."
+        "Notes hold current-state conclusions only. Put what is still open "
+        "right now in memory/agent/temp-memory.md (the state file) and "
+        "durable lessons in memory/agent/long-term.md, then retry with a "
+        "short value."
     )
 
 

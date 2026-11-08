@@ -56,7 +56,7 @@
 - 注意：runtime 目前仍是**回合後**依 usage 做 compact，不是送出前 hard stop；真正溢出時仍由 `ContextLengthExceededError` fallback 接手
 - compact 策略：保留最新 `context.preserve_turns` 輪 user-turn（目前 10；brain 的 turn 多半是排程或 task-due 的 tool loop，4 輪只剩不到一小時的真實對話）
 - compact 成功後呼叫 `builder.reload_boot_files()`：boot content 平時是 session 啟動或 `context_refresh` 時的快照，compaction 已經讓 prefix 之後全部重建，此時順便把當天 `temp-memory.md` 與 pinned 檔案的最新內容換進去。代價是一次 prefix 重寫，頻率與 compaction 相同（實測約每日一次）
-- **Pre-compaction sync**：compact 前檢查 `_turns_since_memory_sync > 0`，若有累積未同步內容且該輪沒有 memory_edit，先執行一次 memory sync side-channel 再 compact（best-effort，sync 失敗仍會 compact）
+- **Pre-compaction sync**：compact 前檢查 `_turns_since_memory_sync > 0`（沒寫現況檔的用戶回合數；內部回合不計），若該輪也沒有 memory_edit 寫現況檔，先執行一次 `[MEMORY SYNC - STATE REFRESH]` side-channel 讓 brain 整份重寫 `temp-memory.md`，再 compact（best-effort，sync 失敗仍會 compact）。每 N 回合的強制 rollup 已移除，這裡與睡前、每日維護是僅有的三個強制同步點
 
 ## Copilot usage 缺值
 

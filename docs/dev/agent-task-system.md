@@ -316,7 +316,7 @@ Runtime 規則：`agent_note` 寫入是狀態提交工具，同一 turn 最多�
 
 行為：
 
-- `create` / `batch_update` 寫入的 value 超過 `max_value_chars` → 直接 REJECT（error tool result，不改動 state），錯誤訊息會引導改寫到 `memory/agent/temp-memory.md`（過程細節）或 `memory/agent/long-term.md`（長期結論），例如 `Error: Note value too long (N > 80 chars). ...`
+- `create` / `batch_update` 寫入的 value 超過 `max_value_chars` → 直接 REJECT（error tool result，不改動 state），錯誤訊息會引導改寫到 `memory/agent/temp-memory.md`（今日現況的未閉環／下一步）或 `memory/agent/long-term.md`（長期結論），例如 `Error: Note value too long (N > 80 chars). ...`
 - `create` 時若 store 已達 `max_notes` → REJECT，訊息要求先合併或刪除既有 note
 - 限制只套用在**新寫入**；既有已超長的 value 不會被拒絕或截斷，仍正常運作——每次成功呼叫（含 `list`）後，若 store 內仍有超過 `max_value_chars` 的既有 note，會在 tool result 後面追加一行 warning（例如 `warning: 3 notes exceed 80 chars: expenses_today(902), bedtime_med(850), noon_med(712) — compress them`），依長度遞減排序；這個 warning **不會**出現在注入 prompt 的 `[Agent Notes]` block 裡，只在 tool result 給 agent 看
 - 要調整上限，改 `cfgs/agent.yaml` 的 `tools.agent_note.max_value_chars` / `max_notes` 即可，不需要改程式碼
