@@ -1,6 +1,6 @@
 """Anthropic provider client.
 
-Thinking and output_config are passed through in the native Messages API shape.
+Thinking, output_config and speed are passed through in the native Messages API shape.
 See docs/dev/provider-api-spec.md.
 """
 
@@ -38,6 +38,7 @@ class AnthropicClient:
         self.temperature = config.temperature
         self.thinking = map_thinking(config.thinking)
         self.output_config = map_output_config(config.output_config)
+        self.speed = config.speed
         self.has_active_thinking = has_active_thinking(self.thinking)
 
     def _convert_tools(self, tools: list[ToolDefinition]) -> list[AnthropicTool]:
@@ -105,6 +106,8 @@ class AnthropicClient:
             request["thinking"] = self.thinking
         if self.output_config:
             request["output_config"] = self.output_config
+        if self.speed:
+            request["speed"] = self.speed
         effective_temperature = temperature if temperature is not None else self.temperature
         if effective_temperature is not None and not self.has_active_thinking:
             request["temperature"] = effective_temperature
@@ -116,8 +119,15 @@ class AnthropicClient:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
+        betas: list[str] = []
         if self.output_config:
-            headers["anthropic-beta"] = "effort-2025-11-24"
+            betas.append("effort-2025-11-24")
+        if self.speed:
+            # Opus 5 / 4.8 fast mode is a research preview behind this header;
+            # Opus 5.5 accepts the header without needing it.
+            betas.append("fast-mode-2026-02-01")
+        if betas:
+            headers["anthropic-beta"] = ",".join(betas)
         with httpx.Client(timeout=self.request_timeout) as client:
             response = client.post(f"{self.base_url}/v1/messages", headers=headers, json=request)
             response.raise_for_status()

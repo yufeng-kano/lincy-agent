@@ -14,6 +14,10 @@ request_timeout: 30.0
 temperature: 1.0
 # Text-only lookup agent.
 vision: false
+# Fast mode stays off: recall-agent resolves to Haiku 5.5, which rejects the
+# speed field with 400. Set fast only once the group serves this profile from
+# an Opus 5.5 target on the official API (claude-code targets answer 429).
+speed: null
 
 # Adaptive lets the gateway model skip thinking on trivial lookups.
 thinking:

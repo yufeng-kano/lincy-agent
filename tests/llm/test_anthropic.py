@@ -375,3 +375,39 @@ def test_disabled_thinking_does_not_replay_thinking_blocks(monkeypatch):
     AnthropicClient(config).chat(history)
 
     assert calls[0]["json"]["messages"][1]["content"] == [{"type": "text", "text": "answer"}]
+
+
+def test_speed_is_sent_with_the_fast_mode_beta_header(monkeypatch):
+    payload = {
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 3, "output_tokens": 1, "speed": "fast"},
+    }
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+
+    def make(**kwargs) -> AnthropicClient:
+        return AnthropicClient(
+            AnthropicConfig(provider="anthropic", model="claude-opus-5-5", api_key="test-key", **kwargs)
+        )
+
+    result = make(speed="fast").chat_with_tools([Message(role="user", content="hi")], [])
+    assert calls[-1]["json"]["speed"] == "fast"
+    assert calls[-1]["headers"]["anthropic-beta"] == "fast-mode-2026-02-01"
+    assert result.served_speed == "fast"
+
+    make(speed="fast", output_config={"effort": "low"}).chat([Message(role="user", content="hi")])
+    assert calls[-1]["headers"]["anthropic-beta"] == "effort-2025-11-24,fast-mode-2026-02-01"
+
+    make(speed="standard").chat([Message(role="user", content="hi")])
+    assert calls[-1]["json"]["speed"] == "standard"
+
+
+def test_no_speed_means_no_speed_field_and_no_beta_header(monkeypatch):
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, {"content": [{"type": "text", "text": "ok"}]}, calls)
+
+    result = _make_client().chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert "speed" not in calls[0]["json"]
+    assert "anthropic-beta" not in calls[0]["headers"]
+    assert result.served_speed is None

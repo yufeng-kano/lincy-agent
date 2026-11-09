@@ -250,6 +250,7 @@ class SessionDebugStore:
             data={
                 "round": pending.round,
                 **served_fields,
+                "served_speed": response.served_speed,
                 "finish_reason": response.finish_reason,
                 "tool_call_count": len(response.tool_calls),
                 "prompt_tokens": response.prompt_tokens,

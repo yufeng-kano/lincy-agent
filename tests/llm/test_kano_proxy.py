@@ -182,3 +182,19 @@ def test_kano_proxy_leaves_served_upstream_unset_without_the_headers(monkeypatch
     result = _make_client().chat_with_tools([Message(role="user", content="hi")], [])
 
     assert result.served_upstream is None
+
+
+def test_kano_proxy_passes_speed_through_and_reports_the_served_speed(monkeypatch):
+    calls: list[dict] = []
+    _patch_httpx_client(
+        monkeypatch,
+        {"content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 1, "output_tokens": 1, "speed": "standard"}},
+        calls,
+    )
+
+    result = _make_client(speed="fast").chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert calls[0]["json"]["speed"] == "fast"
+    assert calls[0]["headers"]["anthropic-beta"] == "fast-mode-2026-02-01"
+    # The gateway may land on a target that drops the field; usage.speed is the truth.
+    assert result.served_speed == "standard"
