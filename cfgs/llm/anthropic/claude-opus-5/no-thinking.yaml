@@ -14,6 +14,11 @@ request_timeout: 600.0
 temperature: 1.0
 # Whether the app may send image inputs to this profile.
 vision: true
+# Inference speed: fast or standard. null = omit (standard). Fast mode exists
+# only on Opus 5.5 (GA) and Opus 5 / 4.8 (research preview, waitlist); other
+# Claude models reject the field. It bills at a multiplier on standard rates
+# and the client adds the fast-mode-2026-02-01 beta header when it is set.
+speed: null
 
 # Opus 5 defaults to adaptive thinking; type must be set explicitly to disable it.
 thinking:

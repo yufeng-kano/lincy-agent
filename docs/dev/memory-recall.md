@@ -115,7 +115,7 @@ group `lincy` 新增 group model `recall-agent`，targets 依序 `claude-code/cl
 
 ## 取捨與限制
 
-- 每則用戶訊息多一次 Haiku 子代理呼叫，目前平均約 10 秒，疊在 brain 本身的回應時間上；`prefetch_deadline_seconds`（20）是上限，超過就逼模型用手上的結果作答。可調：`prefetch_max_tool_calls`（降到 4 約省 2 到 4 秒、漏題會增加）、`output_config.effort: low`（省約 1.5 秒、12 題少中 1 題）、關 `recall.prefetch` 退回純工具。
+- 每則用戶訊息多一次 Haiku 子代理呼叫，目前平均約 10 秒，疊在 brain 本身的回應時間上；`prefetch_deadline_seconds`（20）是上限，超過就逼模型用手上的結果作答。可調：`prefetch_max_tool_calls`（降到 4 約省 2 到 4 秒、漏題會增加）、`output_config.effort: low`（省約 1.5 秒、12 題少中 1 題）、關 `recall.prefetch` 退回純工具。Anthropic fast mode 幫不上忙：`recall-agent` 解析到的 Haiku 5.5 連 `speed` 欄位都拒絕（400），所以 `recall.yaml` 的 `speed` 留 null。
 - `[Recall]` 是子代理的搜尋結果，可信度中等；prompt 要求 brain 對關鍵事實先用 `recall` 或 `read_file` 確認。
 - grep 是 Python regex 掃檔。正式機（4 核 Skylake VM）全量掃 139 個 transcript（173 MB）字面詞預篩後約 2 秒，當月約 0.3 秒；本機快 5 倍。ripgrep / `find` 暫不引入，日期 glob 已覆蓋 find 的用途。
 - 2026-11-08 正式機第一次預抓花 22 秒：Haiku 4 輪 12.6 秒、grep 約 10 秒（第一輪對全部 session 做 `count_only` 3.3 秒、一輪浪費在不支援的大括號 glob、最後一輪寫 7 條答案 6.3 秒）。0.86.1 針對這三點修正：大括號 glob、字面詞預篩、prompt 改第一輪直接 grep 當月並限制 5 條。

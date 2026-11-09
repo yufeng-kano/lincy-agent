@@ -158,6 +158,12 @@ _CLAUDE_MODEL_EFFORTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("sonnet-4-6", frozenset({"low", "medium", "high", "max"})),
 )
 
+# Fast mode (top-level `speed`) exists only on Opus 5.5 / 5 / 4.8
+# (platform.claude.com/docs/en/build-with-claude/fast-mode); other Claude
+# families reject the field with 400 even for speed=standard. Gateway aliases
+# such as kano-proxy group models carry no family name and are not checked.
+_CLAUDE_FAMILIES_WITHOUT_FAST_MODE = ("haiku", "sonnet")
+
 class OpenAIReasoningConfig(StrictConfigModel):
     """OpenAI Chat Completions reasoning config.
 
@@ -364,14 +370,22 @@ class AnthropicConfig(LLMProviderConfig):
     temperature: float | None = None
     thinking: AnthropicThinkingConfig | None = None
     output_config: AnthropicOutputConfig | None = None
+    speed: Literal["fast", "standard"] | None = None
 
     def validate_reasoning(self, *, source_path: Path) -> "AnthropicConfig":
+        ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
+        model = self.model.lower()
+        if self.speed is not None and any(
+            family in model for family in _CLAUDE_FAMILIES_WITHOUT_FAST_MODE
+        ):
+            raise ValueError(
+                f"speed={self.speed} is not supported upstream by this model "
+                "(fast mode exists only on Opus 5.5 / 5 / 4.8) " + ctx
+            )
         effort = self.output_config.effort if self.output_config else None
         if effort is None:
             return self
 
-        ctx = f"(provider={self.provider}, model={self.model}, path={source_path})"
-        model = self.model.lower()
         for family, allowed in _CLAUDE_MODEL_EFFORTS:
             if family not in model:
                 continue

@@ -391,6 +391,7 @@ class TestDebugArtifacts:
                 usage_available=True,
                 cache_read_tokens=90,
                 cache_write_tokens=15,
+                served_speed="fast",
             ),
             latency_ms=321,
         )
@@ -420,6 +421,14 @@ class TestDebugArtifacts:
         assert response.response is not None
         assert response.response.cache_read_tokens == 90
         assert response.response.cache_write_tokens == 15
+        assert response.response.served_speed == "fast"
+        event_path = sessions_dir / sid / "events.jsonl"
+        response_event = next(
+            json.loads(line)
+            for line in event_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line)["kind"] == "llm_response"
+        )
+        assert response_event["data"]["served_speed"] == "fast"
 
         turn_path = sessions_dir / sid / "turns.jsonl"
         turn = SessionTurnRecord.model_validate_json(

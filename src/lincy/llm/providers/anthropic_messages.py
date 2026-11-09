@@ -164,4 +164,4 @@ def parse_response(response: AnthropicResponse) -> LLMResponse:
         prompt_tokens = (response.usage.input_tokens or 0) + cache_read + cache_write
         completion_tokens = response.usage.output_tokens
         total_tokens = prompt_tokens + (completion_tokens or 0)
-    return LLMResponse(content="".join(text_blocks) or None, reasoning_content=reasoning_content, reasoning_details=reasoning_details or None, tool_calls=tool_calls, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, usage_available=usage_available, cache_read_tokens=cache_read, cache_write_tokens=cache_write)
+    return LLMResponse(content="".join(text_blocks) or None, reasoning_content=reasoning_content, reasoning_details=reasoning_details or None, tool_calls=tool_calls, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, usage_available=usage_available, cache_read_tokens=cache_read, cache_write_tokens=cache_write, served_speed=response.usage.speed if response.usage else None)

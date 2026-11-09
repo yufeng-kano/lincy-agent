@@ -661,3 +661,42 @@ def test_load_config_rejects_discord_auto_read_audio_without_audio_agent(
 
     with pytest.raises(SystemExit, match="auto_read_audio is true but agents.audio"):
         config_module.load_config("basic.yaml")
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5"])
+def test_anthropic_rejects_speed_on_models_without_fast_mode(monkeypatch, tmp_path: Path, model: str):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {"provider": "anthropic", "model": model, "speed": "standard"},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="speed=standard is not supported upstream"):
+        config_module.resolve_llm_config("llm/x.yaml")
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [("anthropic", "claude-opus-5-5"), ("anthropic", "claude-opus-5"), ("kano_proxy", "recall-agent")],
+)
+def test_anthropic_speed_loads_for_opus_and_gateway_aliases(
+    monkeypatch, tmp_path: Path, provider: str, model: str
+):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {"provider": provider, "model": model, "speed": "fast"},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    assert config_module.resolve_llm_config("llm/x.yaml").speed == "fast"
+
+
+def test_anthropic_rejects_unknown_speed_values(monkeypatch, tmp_path: Path):
+    _write_yaml(
+        tmp_path / "llm" / "x.yaml",
+        {"provider": "anthropic", "model": "claude-opus-5-5", "speed": "turbo"},
+    )
+    monkeypatch.setattr(config_module, "CFGS_DIR", tmp_path)
+
+    with pytest.raises(Exception, match="speed"):
+        config_module.resolve_llm_config("llm/x.yaml")

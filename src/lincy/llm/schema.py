@@ -119,6 +119,9 @@ class LLMResponse(BaseModel):
     # `provider/model` a gateway reports having served (Kano Proxy's
     # x-kano-upstream-* headers); None when the provider does not say.
     served_upstream: str | None = None
+    # `usage.speed` of an Anthropic response ("fast" or "standard"); None when
+    # the provider does not report it.
+    served_speed: str | None = None
 
     def has_tool_calls(self) -> bool:
         return len(self.tool_calls) > 0
@@ -375,6 +378,7 @@ class AnthropicUsage(BaseModel):
     output_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
     cache_read_input_tokens: int | None = None
+    speed: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 

@@ -125,6 +125,8 @@
 | Opus 5 thinking 預設 | Claude Opus 5（`claude-opus-5`）adaptive thinking 預設開啟；`thinking.type=enabled` + `budget_tokens` 回 400；需顯式送 `thinking.type=disabled` 才能關閉 | Anthropic 官方文件 | [Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) | 高 | — |
 | Opus 5 disabled thinking 的 effort 上限 | `thinking.type=disabled` 只在 effort `high` 以下被接受，配 `xhigh`/`max` 回 400 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
 | Opus 5 effort 支援值 | 官方支援 `low/medium/high/xhigh/max`；非預設 `temperature`/`top_p`/`top_k` 可能回 400 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
+| **Fast mode** | 頂層 `speed: "fast"`（預設 `"standard"`）：同一模型換更快的推論設定，輸出 tokens/s 最高 2.5 倍，TTFT 不變，能力不變；回應 `usage.speed` 回報實際速度（`"fast"` / `"standard"`） | 官方文件 | [Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) | 高 | 是（僅 Opus 5.5 GA；Opus 5 / 4.8 為 research preview，需 `anthropic-beta: fast-mode-2026-02-01`，Opus 5 要申請 waitlist，4.8 於 2026-11-30 移除） |
+| Fast mode 限制與定價 | 不支援的模型回 400（Opus 4.6 例外：帶 header 會成功但以 standard 跑）；獨立速率限制，超出回 429 / 529，額度看 `anthropic-fast-*` header；fast 與 standard 不共用 prompt cache；不支援 Batch API 與 Priority Tier；定價為標準價的倍數：Opus 5.5 $8 / $40、Opus 5 與 4.8 $10 / $50 per MTok（輸入 / 輸出），cache 倍率再往上疊 | 官方文件 | 同上 | 高 | 是 |
 
 ### 2. 本專案 adapter 規則
 
@@ -138,10 +140,18 @@
 | Vision | YAML 使用 plain `vision: true` | `src/lincy/core/schema.py` | 統一為 plain boolean |
 | `provider_overrides` | Anthropic config 不提供 override escape hatch；native fields 已可直接表達 payload | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 舊 `anthropic_thinking*` override 已移除 |
 | Thinking block round-trip | 回應中的 `thinking`（含 `signature`）與 `redacted_thinking` block 原樣存進 `reasoning_details`；thinking 啟用時，重放 assistant 訊息會把有簽名的 thinking block 放在 content 最前面，再接 text 與 tool_use。無簽名的 thinking block 不重放 | `src/lincy/llm/providers/anthropic_messages.py` | Anthropic 要求 tool-use 輪的 thinking block 原樣送回；Kano Proxy 前接 Gemini 時 functionCall 的 `thoughtSignature` 也是掛在相鄰 thinking block 上 |
+| Speed payload | YAML `speed: fast` 或 `speed: standard`；client 原樣送頂層 `speed`，未設定（或 null）就不送 | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 回應的 `usage.speed` 存進 `LLMResponse.served_speed`，寫進 session debug log 的 `llm_response` 事件 |
+| Fast mode beta header | request 有 `speed` 時 `anthropic-beta` 併入 `fast-mode-2026-02-01`；與 `effort-2025-11-24` 同時存在時以逗號相接 | `src/lincy/llm/providers/anthropic.py` | Opus 5 / 4.8 需要；Opus 5.5 實測接受多餘的 header |
+| Speed x model 相容性 | model id 含 `haiku` 或 `sonnet` 時設 `speed` 載入即報錯；gateway 別名（kano-proxy group model）沒有 family 名稱，不檢查，由上游回 400 | `src/lincy/core/provider_schema.py` | 與 effort 驗證同一原則：只擋文件已知不支援的 family |
 
 ### 3. 逆向/實測資訊
 
-無。
+2026-11-09 經 kano-proxy `/anthropic` passthrough 對 `ant-official` 帳號實測 fast mode：
+
+| 項目 | 實測結果 | 備註 |
+|------|---------|------|
+| Opus 5.5 + `speed: "fast"` | 200，`usage.speed: "fast"`；只帶 `anthropic-version: 2023-06-01`（官方範例用 2026-10-21）即可；同時帶 `anthropic-beta: effort-2025-11-24,fast-mode-2026-02-01` 與 `output_config.effort` 也接受 | 本專案 client 有 `speed` 就送 fast-mode beta，不分模型 |
+| Haiku 5.5 + `speed: "fast"` 或 `"standard"` | 400 `'claude-haiku-5-5' does not support the speed parameter` | 不支援的模型連 `standard` 都拒絕，所以 config 層對 haiku / sonnet 直接擋 |
 
 ---
 
@@ -202,6 +212,7 @@
 | Thinking | `thinking: {"type": "adaptive"|"enabled"|"disabled"}`；enabled 可帶 `budget_tokens` | 假設 Anthropic-compatible / 未驗證 | 低 | 完全沿用本專案 Anthropic adapter shape |
 | Effort | `output_config: {"effort": "low"|"medium"|"high"|"xhigh"|"max"}` | 假設 Anthropic-compatible / 未驗證 | 低 | 不推測 kano-proxy 的額外 effort 值或模型能力 |
 | Served upstream headers | 非串流回應帶 `x-kano-upstream-provider`（provider id 或 custom slug）與 `x-kano-upstream-model`（裸 upstream model id）；成功與 upstream 錯誤 passthrough 都有，pre-dispatch 錯誤與 `stream: true` 沒有 | kano-proxy `docs/api.md` § Served upstream headers（v4.11.0） | 高 | model group 在對話中途 failover 到別的 target 時，這是 client 唯一能察覺的訊號 |
+| Fast mode | `speed` 與 `anthropic-beta` 隨 body / header 原樣轉送到 `ant-official` target，回應的 `usage.speed` 也原樣回來 | 實測 2026-11-09（passthrough） | 中 | OpenAI 轉換路徑（`/openai/v1`、antigravity / deepseek 等 target）帶不了此欄位，會被丟掉 |
 
 ### 2. 本專案 adapter 規則
 
@@ -225,6 +236,8 @@
 2026-09-14 實測（續）：上一項修好後，同一輪第二次 request 回 `400 Function call is missing a thought_signature in functionCall parts`。Gemini 3 嚴格要求本輪 functionCall 帶回 `thoughtSignature`；kano-proxy 把它放在回應相鄰的 thinking block 上，但本專案 Anthropic adapter 原本把 thinking block 全部丟掉，重放的 tool_use 就沒簽名。修正為 adapter 保留並重放 thinking block（見 Anthropic adapter 規則）。
 
 2026-09-16 實測：brain 與 worker 同時連續 `400 Corrupted thought signature`。session 紀錄顯示 22:47–22:52 之間 kano-proxy 的 group 從 Antigravity Gemini failover 到另一個 target，回應的 `thinking.signature` 變成 36 字元 UUID、tool id 變成 `call_00_…`；Gemini 回來後這些 UUID 被原樣 echo 成 `thoughtSignature`，每次重送都失敗。根因在 proxy（core 已改為丟棄非 Gemini 形狀的 signature 並補 `skip_thought_signature_validator`）。本專案的對應規則：(1) `LLMResponse.served_by` 記錄產生回應的 failover candidate（`key#model`），存成 `Message.reasoning_origin`；failover 打某個 candidate 時，只 replay 該 candidate 自己產生的 `reasoning_details`，其他 candidate 的一律剝掉（origin 為 None 的舊紀錄照舊送）。(2) 收到 400 且錯誤訊息含 `signature` 時，同一 candidate 剝掉全部 `reasoning_details` 重送一次；再失敗就照一般規則處理，不做 failover。這兩條都在 `llm/failover.py`，provider adapter 本身不變。
+
+2026-11-09 實測 fast mode：`speed: "fast"` 經 `ant-official/claude-opus-5-5` 回 200、`usage.speed: "fast"`；同一 body 打 `claude-code/claude-opus-5-5` 上游回 429，kano-proxy 依 429 規則把該訂閱帳號 bench 5 分鐘，期間所有 claude-code target 的請求回 503 `upstream_unavailable`（當時 brain 與 memory editor 都 failover 到 Gemini）。所以只有 group 會把請求送到 `ant-official` Opus 5.5 target 的 agent 才能開 `speed: fast`；`recall-agent` 解析到 Haiku 5.5，會回 400，`recall.yaml` 的 `speed` 留 null。
 
 ### 5. OpenAI-compatible surface 與音訊
 
@@ -386,6 +399,7 @@
 | Auth | Bearer token | Bearer/x-api-key + version | x-api-key + version（假設相容/未驗證） | API key (header/query) | Bearer token | 本機 daemon 無 |
 | max_tokens | 可選（GPT-5+ 用 `max_completion_tokens`） | **必填** | **必填**（假設相容/未驗證） | 可選（maxOutputTokens） | 可選 | `options.num_predict` |
 | Prompt cache | 自動 prefix（`prompt_cache_retention: "24h"`） | Anthropic breakpoint | Anthropic breakpoint（假設相容/未驗證） | 無 | `cache_control` breakpoint | 無 |
+| Speed | 無 | `speed: fast / standard`（頂層，僅 Opus 5.5 / 5 / 4.8） | 同 Anthropic（gateway passthrough，未驗證） | 無 | 無 | 無 |
 
 Kano Proxy 不另開欄：獨立 `provider: kano_proxy`，payload / auth header / cache breakpoint 與 Anthropic、Heyroute 同一 adapter；差異只有 gateway URL 與 `KANO_PROXY_API_KEY`。`provider: kano_proxy_openai` 則與 OpenAI 同一 adapter，只有 audio 子代理用它（見下方 Kano Proxy § 5）。
 
