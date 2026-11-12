@@ -487,6 +487,62 @@ class TestDebugArtifacts:
         assert response_event["data"]["served_provider"] == "heyroute"
         assert response_event["data"]["served_candidate_index"] == 1
 
+    def test_text_response_record_keeps_reported_usage_out_of_the_turn(
+        self,
+        mgr: SessionManager,
+        sessions_dir: Path,
+    ):
+        sid = mgr.create("alice", "Alice")
+        mgr.start_turn(
+            channel="cli",
+            sender="alice",
+            inbound_kind="user_message",
+            input_text="hello",
+            input_timestamp=None,
+            turn_metadata=None,
+        )
+        pending = mgr.begin_llm_request(
+            client_label="compactor",
+            provider="kano_proxy",
+            model="compactor-agent",
+            call_type="chat",
+            messages=[Message(role="user", content="hi")],
+            tools=None,
+            temperature=None,
+        )
+
+        mgr.complete_llm_text_response(
+            pending,
+            response_text="summary",
+            latency_ms=5,
+            response=LLMResponse(
+                content="summary",
+                prompt_tokens=150_000,
+                completion_tokens=800,
+                usage_available=True,
+                cache_read_tokens=120_000,
+                served_upstream="claude-code/claude-opus-5-5",
+            ),
+        )
+
+        record = SessionLLMResponseRecord.model_validate_json(
+            (sessions_dir / sid / "responses.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+        assert record.response_text == "summary"
+        assert record.response is not None
+        assert record.response.content is None
+        assert record.response.prompt_tokens == 150_000
+        assert record.response.served_upstream == "claude-code/claude-opus-5-5"
+        events = [
+            json.loads(line)
+            for line in (sessions_dir / sid / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        response_event = next(e for e in events if e["kind"] == "llm_response")
+        assert response_event["data"]["prompt_tokens"] == 150_000
+        # A sub-agent's prompt is its own context, not the turn's.
+        assert mgr._debug_store._active_turn.max_prompt_tokens is None
+
     def test_response_record_omits_served_fields_when_unknown(
         self,
         mgr: SessionManager,

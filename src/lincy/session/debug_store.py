@@ -269,12 +269,32 @@ class SessionDebugStore:
         response_text: str,
         latency_ms: int,
         served: ServedCandidate | None = None,
+        response: LLMResponse | None = None,
     ) -> None:
-        """Persist one plain-text LLM response."""
+        """Persist one plain-text LLM response.
+
+        ``response`` is what the provider reported for usage and pricing. It
+        stays out of the turn's usage aggregate, which tracks the turn's own
+        context, and drops ``content`` because ``response_text`` already holds it.
+        """
         with self._seq_lock:
             self._response_seq += 1
             resp_seq = self._response_seq
         served_fields = _served_fields(served)
+        if response is not None:
+            response = response.model_copy(update={"content": None})
+        usage_fields = (
+            {
+                "prompt_tokens": response.prompt_tokens,
+                "completion_tokens": response.completion_tokens,
+                "total_tokens": response.total_tokens,
+                "cache_read_tokens": response.cache_read_tokens,
+                "cache_write_tokens": response.cache_write_tokens,
+                "usage_available": response.usage_available,
+            }
+            if response is not None
+            else {}
+        )
         record = SessionLLMResponseRecord(
             seq=resp_seq,
             ts=tz_now(),
@@ -287,6 +307,7 @@ class SessionDebugStore:
             model=pending.model,
             call_type=pending.call_type,  # type: ignore[arg-type]
             latency_ms=latency_ms,
+            response=response,
             response_text=response_text,
             **served_fields,
         )
@@ -300,6 +321,7 @@ class SessionDebugStore:
                 "round": pending.round,
                 **served_fields,
                 "response_chars": len(response_text),
+                **usage_fields,
                 "latency_ms": latency_ms,
             },
         )

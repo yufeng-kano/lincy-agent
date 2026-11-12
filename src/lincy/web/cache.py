@@ -33,6 +33,9 @@ _READ_CACHE_MEASURABLE_PROVIDERS = frozenset(
         "grok",
         "heyroute",
         "kano_proxy",
+        # The gateway's OpenAI surface fills prompt_tokens_details.cached_tokens
+        # (kano-proxy docs/api.md), so audio rows are as measurable as openai.
+        "kano_proxy_openai",
         "openai",
         "openrouter",
     }
@@ -143,6 +146,7 @@ class ResponseMetrics:
     served_provider: str | None = None
     served_model: str | None = None
     served_candidate_index: int | None = None
+    pricing_model_key: str | None = None
     pricing_source: str | None = None
     pricing_source_url: str | None = None
     pricing_stale: bool = False
@@ -292,19 +296,27 @@ class MetricsCache:
                 resp = rec.response
                 if resp is None:
                     continue
+                # Price what actually answered: the failover candidate when the
+                # record names one, and a gateway's upstream over both.
+                if rec.served_model:
+                    price_provider, price_model = rec.served_provider, rec.served_model
+                else:
+                    price_provider, price_model = rec.provider, rec.model
                 pricing_meta = get_pricing_metadata(
-                    rec.provider,
-                    rec.model,
+                    price_provider,
+                    price_model,
                     self.pricing,
+                    served_upstream=resp.served_upstream,
                 )
                 cost = compute_request_cost(
-                    provider=rec.provider,
-                    model=rec.model,
+                    provider=price_provider,
+                    model=price_model,
                     prompt_tokens=resp.prompt_tokens or 0,
                     completion_tokens=resp.completion_tokens or 0,
                     cache_read_tokens=resp.cache_read_tokens,
                     cache_write_tokens=resp.cache_write_tokens,
                     pricing=self.pricing,
+                    served_upstream=resp.served_upstream,
                 )
                 rm = ResponseMetrics(
                     ts=rec.ts,
@@ -322,6 +334,7 @@ class MetricsCache:
                     served_provider=rec.served_provider,
                     served_model=rec.served_model,
                     served_candidate_index=rec.served_candidate_index,
+                    pricing_model_key=pricing_meta.model_key if pricing_meta else None,
                     pricing_source=pricing_meta.source if pricing_meta else None,
                     pricing_source_url=(
                         pricing_meta.source_url if pricing_meta else None
@@ -342,9 +355,11 @@ class MetricsCache:
                 costs = [r.cost for r in linked if r.cost is not None]
                 tm.total_cost = sum(costs) if costs else None
                 tm.total_prompt_tokens = sum(r.prompt_tokens for r in linked)
+                # Numerator and denominator from the same rows: turns.jsonl
+                # cache reads leave out plain-chat sub-agent calls.
                 tm.read_cache_rate = _compute_read_cache_rate(
                     tm.total_prompt_tokens,
-                    tm.cache_read_tokens,
+                    sum(r.cache_read_tokens for r in linked),
                     measurable=_aggregate_read_cache_measurable(linked),
                 )
                 tm.write_cache_measurable = _aggregate_write_cache_measurable(linked)
@@ -642,14 +657,8 @@ class MetricsCache:
         # Worker responses use separate contexts and must not change the brain bar.
         hard_limit = 200_000
         if brain_responses:
-            from .pricing import resolve_model_key
-
-            last_brain_response = brain_responses[-1]
-            model_key = resolve_model_key(
-                last_brain_response.provider,
-                last_brain_response.model,
-            )
-            if model_key and model_key in self.pricing:
+            model_key = brain_responses[-1].pricing_model_key
+            if model_key is not None:
                 model_pricing = self.pricing[model_key]
                 if model_pricing.max_input_tokens:
                     hard_limit = model_pricing.max_input_tokens

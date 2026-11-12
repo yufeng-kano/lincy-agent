@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from ..chat_response import report_chat_response
 from ..schema import (
     ContentPart, LLMResponse, Message, OpenAIFunctionCall, OpenAIFunctionDef,
     raise_if_context_length_error,
@@ -217,7 +218,7 @@ class OpenAICompatibleClient:
             request.response_format = {"type": "json_schema", "json_schema": {"name": "response", "strict": False, "schema": response_schema}}
         return request
 
-    def _do_post(self, request: OpenAIRequest) -> dict[str, Any]:
+    def _do_post(self, request: OpenAIRequest) -> tuple[dict[str, Any], httpx.Headers]:
         with httpx.Client(timeout=self.request_timeout) as client:
             response = client.post(f"{self.base_url}/chat/completions", headers=self._get_headers(), json=request.model_dump(exclude_none=True))
             try:
@@ -225,10 +226,22 @@ class OpenAICompatibleClient:
             except httpx.HTTPStatusError as exc:
                 raise_if_context_length_error(exc, patterns=_CONTEXT_LENGTH_PATTERNS)
                 raise
-            return response.json()
+            return response.json(), response.headers
+
+    def _served_upstream(self, headers: httpx.Headers) -> str | None:
+        """`provider/model` behind a gateway alias; only gateways that name it override this."""
+        return None
+
+    def _complete(self, request: OpenAIRequest) -> LLMResponse:
+        payload, headers = self._do_post(request)
+        result = self._parse_response(self.response_type.model_validate(payload))
+        result.served_upstream = self._served_upstream(headers)
+        return result
 
     def chat(self, messages: list[Message], response_schema: dict[str, Any] | None = None, temperature: float | None = None) -> str:
-        return self._parse_response(self.response_type.model_validate(self._do_post(self._build_request(messages, response_schema=response_schema, temperature=temperature)))).content or ""
+        result = self._complete(self._build_request(messages, response_schema=response_schema, temperature=temperature))
+        report_chat_response(result)
+        return result.content or ""
 
     def chat_with_tools(self, messages: list[Message], tools: list[ToolDefinition], temperature: float | None = None) -> LLMResponse:
-        return self._parse_response(self.response_type.model_validate(self._do_post(self._build_request(messages, tools=tools, temperature=temperature))))
+        return self._complete(self._build_request(messages, tools=tools, temperature=temperature))

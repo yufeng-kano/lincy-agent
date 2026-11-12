@@ -457,8 +457,9 @@ class KanoProxyOpenAIConfig(OpenAIConfig):
     """Kano Proxy gateway on its OpenAI-compatible Chat Completions surface.
 
     Audio input only exists on this surface; the gateway's Anthropic surface
-    (``KanoProxyConfig``) has no audio block. Same adapter as OpenAI, only the
-    gateway URL and key differ.
+    (``KanoProxyConfig``) has no audio block. Same adapter as OpenAI; the
+    gateway URL and key differ, and the client reads the served upstream
+    headers.
     """
 
     provider: Literal["kano_proxy_openai"] = "kano_proxy_openai"
@@ -467,6 +468,11 @@ class KanoProxyOpenAIConfig(OpenAIConfig):
         default="https://kano-proxy.yuufeng.com/g/lincy/openai/v1",
         validate_default=True,
     )
+
+    def create_client(self, **kwargs: Any) -> Any:
+        from ..llm.providers.kano_proxy import KanoProxyOpenAIClient
+
+        return KanoProxyOpenAIClient(self, **kwargs)
 
     @field_validator("base_url")
     @classmethod

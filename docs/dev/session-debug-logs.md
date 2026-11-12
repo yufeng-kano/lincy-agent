@@ -24,7 +24,7 @@
 - `responses.jsonl`
   - 寫入 normalized response
   - 對 `chat_with_tools` 保留完整 `LLMResponse`
-  - 對 plain `chat` 保留 `response_text`
+  - 對 plain `chat` 保留 `response_text`；provider 有回報時另存 `response`（usage 與 `served_upstream`，`content` 留空避免與 `response_text` 重複）
   - 若 request 丟出 exception，會寫 `error`
   - 另含 `served_provider` / `served_model` / `served_candidate_index`：**真正回應這一筆的 failover candidate**（見「Failover 實際服務者」）
 - `turns.jsonl`
@@ -54,6 +54,15 @@
 - 串接方式：`FailoverLLMClient` 在勝出（或丟出錯誤）時把 candidate 寫進 `lincy/llm/failover.py` 的 ContextVar，`DebugLoggingLLMClient` 用 `observe_served_candidate()` 包住呼叫再讀回來——debug wrapper 在 failover client 之外，回傳值裡拿不到這個資訊
 - **缺值 = 未知**：舊 session 檔案沒有這些欄位，單一 candidate（沒有 `llm_fallbacks`）也不會產生 failover wrapper，兩者都寫 `None`，讀取端一律當「未知／假定為主 profile」處理，不可自行補值
 - `requests.jsonl` 沒有這些欄位：request 在呼叫前就落地，當下還不知道誰會接手
+
+## Plain chat 的 usage
+
+`chat()` 只回傳文字，debug wrapper 從回傳值拿不到 token 數與上游名稱。做法與 failover 實際服務者相同：
+
+- Anthropic 與 OpenAI-compatible client 的 `chat()` 在回傳前把解析好的 `LLMResponse` 寫進 `lincy/llm/chat_response.py` 的 ContextVar
+- `DebugLoggingLLMClient.chat()` 用 `observe_chat_response()` 包住呼叫，讀回後交給 `record_text_response(response=...)`
+- 這份 usage **不併入** turn 的 usage 摘要（`max_prompt_tokens`、cache read/write）：plain chat 都是子代理，例如 compactor，它的 prompt 不是 brain 本輪的 context
+- 沒回報的 provider（Gemini 原生、Ollama）寫 `response = None`，與舊紀錄相同
 
 ## 邊界
 

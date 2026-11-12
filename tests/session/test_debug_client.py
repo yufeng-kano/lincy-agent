@@ -6,6 +6,7 @@ from lincy.llm.failover import (
     reset_failover_cooldowns,
     with_llm_failover,
 )
+from lincy.llm.chat_response import report_chat_response
 from lincy.llm.schema import LLMResponse, Message
 from lincy.session.debug_client import wrap_llm_client_with_session_debug
 
@@ -55,6 +56,7 @@ class _RecordingSink:
     def __init__(self):
         self.completed = []
         self.failed = []
+        self.text_responses = []
 
     def begin_llm_request(self, **kwargs):
         return "pending"
@@ -62,8 +64,9 @@ class _RecordingSink:
     def complete_llm_response(self, pending, *, response, latency_ms, served=None):
         self.completed.append(served)
 
-    def complete_llm_text_response(self, pending, *, response_text, latency_ms, served=None):
+    def complete_llm_text_response(self, pending, *, response_text, latency_ms, served=None, response=None):
         self.completed.append(served)
+        self.text_responses.append(response)
 
     def fail_llm_request(self, pending, *, error, latency_ms, served=None):
         self.failed.append(served)
@@ -177,3 +180,70 @@ def test_debug_wrapper_leaves_served_unknown_without_failover():
 
     assert wrapped.chat([Message(role="user", content="hi")]) == "ok"
     assert sink.completed == [None]
+
+
+class _ReportingClient:
+    """A provider whose chat() reports its parsed response, like the HTTP clients."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def chat(self, messages, response_schema=None, temperature=None):
+        report_chat_response(self._response)
+        return self._response.content
+
+    def chat_with_tools(self, messages, tools, temperature=None):
+        raise NotImplementedError
+
+
+def test_debug_wrapper_records_the_usage_a_chat_call_reported():
+    sink = _RecordingSink()
+    reported = LLMResponse(
+        content="summary",
+        prompt_tokens=1200,
+        completion_tokens=80,
+        usage_available=True,
+        served_upstream="claude-code/claude-opus-5-5",
+    )
+    wrapped = wrap_llm_client_with_session_debug(
+        _ReportingClient(reported),
+        sink=sink,
+        client_label="compactor",
+        provider="kano_proxy",
+        model="compactor-agent",
+    )
+
+    assert wrapped.chat([Message(role="user", content="hi")]) == "summary"
+    assert sink.text_responses == [reported]
+
+
+def test_debug_wrapper_does_not_carry_a_report_into_the_next_chat_call():
+    sink = _RecordingSink()
+    wrapped = wrap_llm_client_with_session_debug(
+        _ReportingClient(LLMResponse(content="first", usage_available=True)),
+        sink=sink,
+        client_label="compactor",
+        provider="kano_proxy",
+        model="compactor-agent",
+    )
+    silent = wrap_llm_client_with_session_debug(
+        _Client(),
+        sink=sink,
+        client_label="web_fetch_summarizer",
+        provider="kano_proxy",
+        model="web-fetch-summarizer-agent",
+    )
+
+    wrapped.chat([Message(role="user", content="hi")])
+    silent.chat([Message(role="user", content="hi")])
+
+    assert sink.text_responses[1] is None
+
+
+def test_chat_report_outside_an_observed_scope_is_dropped():
+    from lincy.llm.chat_response import observe_chat_response
+
+    report_chat_response(LLMResponse(content="stray"))
+
+    with observe_chat_response() as probe:
+        assert probe.get() is None

@@ -2,13 +2,18 @@
 
 Kano Proxy is modeled as an Anthropic-compatible gateway. The concrete client
 keeps a distinct provider entry point while reusing the native Anthropic
-Messages adapter implementation.
+Messages adapter implementation. The OpenAI-compatible surface, used only for
+audio, reuses the OpenAI adapter the same way.
 """
+
+import httpx
 
 from ...core.schema import KanoProxyConfig
 from ..schema import Message, ToolDefinition
 from ..session import current_llm_session_key
 from .anthropic import AnthropicClient
+from .anthropic_messages import served_upstream
+from .openai import OpenAIClient
 
 
 class KanoProxyClient(AnthropicClient):
@@ -29,3 +34,11 @@ class KanoProxyClient(AnthropicClient):
         if session_key is not None:
             request["metadata"] = {"user_id": session_key}
         return request
+
+
+class KanoProxyOpenAIClient(OpenAIClient):
+    """OpenAI Chat Completions client pointed at the Kano Proxy gateway."""
+
+    def _served_upstream(self, headers: httpx.Headers) -> str | None:
+        # The gateway names the target behind a group alias on both surfaces.
+        return served_upstream(headers)

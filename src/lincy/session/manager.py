@@ -305,6 +305,7 @@ class SessionManager:
         response_text: str,
         latency_ms: int,
         served: ServedCandidate | None = None,
+        response: LLMResponse | None = None,
     ) -> None:
         """Record one normalized plain-text LLM response."""
         if self._debug_store is None or pending is None:
@@ -314,6 +315,7 @@ class SessionManager:
             response_text=response_text,
             latency_ms=latency_ms,
             served=served,
+            response=response,
         )
 
     def fail_llm_request(
