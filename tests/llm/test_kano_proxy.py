@@ -3,9 +3,12 @@
 import pytest
 
 from lincy.core import config as config_module
-from lincy.core.schema import KanoProxyConfig
-from lincy.llm.providers.kano_proxy import KanoProxyClient
+from lincy.core.schema import KanoProxyConfig, KanoProxyOpenAIConfig, OpenAIConfig
+from lincy.llm.chat_response import observe_chat_response
+from lincy.llm.providers.kano_proxy import KanoProxyClient, KanoProxyOpenAIClient
 from lincy.llm.schema import Message
+
+from .conftest import FakeHttpxClient, FakeResponse
 
 
 class _FakeResponse:
@@ -180,5 +183,68 @@ def test_kano_proxy_leaves_served_upstream_unset_without_the_headers(monkeypatch
     _patch_httpx_client(monkeypatch, {"content": [{"type": "text", "text": "ok"}]}, calls)
 
     result = _make_client().chat_with_tools([Message(role="user", content="hi")], [])
+
+    assert result.served_upstream is None
+
+
+_UPSTREAM_HEADERS = {"x-kano-upstream-provider": "claude-code", "x-kano-upstream-model": "claude-opus-5-5"}
+
+
+def test_kano_proxy_chat_reports_usage_and_upstream(monkeypatch):
+    calls: list[dict] = []
+    _patch_httpx_client(
+        monkeypatch,
+        {
+            "content": [{"type": "text", "text": "summary"}],
+            "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 900},
+        },
+        calls,
+        headers=_UPSTREAM_HEADERS,
+    )
+
+    with observe_chat_response() as probe:
+        text = _make_client().chat([Message(role="user", content="hi")])
+        reported = probe.get()
+
+    assert text == "summary"
+    assert reported is not None
+    assert reported.served_upstream == "claude-code/claude-opus-5-5"
+    assert reported.usage_available is True
+    assert reported.cache_read_tokens == 900
+
+
+def _patch_openai_surface(monkeypatch, headers: dict[str, str]) -> None:
+    payload = {
+        "choices": [{"message": {"content": "transcript"}}],
+        "usage": {"prompt_tokens": 132, "completion_tokens": 40, "total_tokens": 172},
+    }
+    monkeypatch.setattr(
+        "lincy.llm.providers.openai_compat.httpx.Client",
+        lambda timeout: FakeHttpxClient([FakeResponse(payload, headers=headers)], []),
+    )
+
+
+def test_kano_proxy_openai_surface_reports_the_upstream(monkeypatch):
+    _patch_openai_surface(
+        monkeypatch,
+        {"x-kano-upstream-provider": "antigravity", "x-kano-upstream-model": "gemini-3.8-flash-high"},
+    )
+    client = KanoProxyOpenAIConfig(model="audio-agent", api_key="test-key").create_client()
+
+    with observe_chat_response() as probe:
+        assert client.chat([Message(role="user", content="hi")]) == "transcript"
+        reported = probe.get()
+
+    assert isinstance(client, KanoProxyOpenAIClient)
+    assert reported is not None
+    assert reported.served_upstream == "antigravity/gemini-3.8-flash-high"
+    assert reported.prompt_tokens == 132
+
+
+def test_plain_openai_endpoint_ignores_gateway_headers(monkeypatch):
+    _patch_openai_surface(monkeypatch, _UPSTREAM_HEADERS)
+    client = OpenAIConfig(provider="openai", model="gpt-4o", api_key="test-key").create_client()
+
+    result = client.chat_with_tools([Message(role="user", content="hi")], [])
 
     assert result.served_upstream is None

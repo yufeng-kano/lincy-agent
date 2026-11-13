@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
+
+import pytest
 
 from lincy.session.schema import SessionMetadata
 from lincy.web.cache import MetricsCache, ResponseMetrics, TurnMetrics
@@ -215,6 +218,7 @@ def test_live_status_ignores_worker_responses_for_prompt_and_hard_limit():
             round=1,
             provider=None,
             model="brain-model",
+            pricing_model_key="brain-model",
             prompt_tokens=150,
             completion_tokens=10,
             cache_read_tokens=0,
@@ -229,6 +233,7 @@ def test_live_status_ignores_worker_responses_for_prompt_and_hard_limit():
             round=1,
             provider=None,
             model="worker-model",
+            pricing_model_key="worker-model",
             prompt_tokens=999_999,
             completion_tokens=10,
             cache_read_tokens=0,
@@ -467,3 +472,156 @@ def test_dashboard_brain_read_cache_rate_is_none_without_brain_rows():
 
     assert dash.brain_read_cache_rate is None
     assert dash.daily_costs[0]["brain_read_cache_rate"] is None
+
+
+_OPUS = ModelPricing(
+    input_cost_per_token=4e-06,
+    output_cost_per_token=2e-05,
+    cache_read_input_token_cost=2e-07,
+    cache_creation_input_token_cost=5e-06,
+    max_input_tokens=1_000_000,
+)
+_DEEPSEEK = ModelPricing(input_cost_per_token=1e-06, output_cost_per_token=2e-06)
+
+
+def _response_line(seq: int, **overrides) -> str:
+    record = {
+        "seq": seq,
+        "ts": "2026-11-12T16:07:04+08:00",
+        "session_id": "20261112_030705_5012ba",
+        "turn_id": "turn_000001",
+        "request_id": f"req_{seq:06d}",
+        "round": seq,
+        "client_label": "brain",
+        "provider": "kano_proxy",
+        "model": "brain-agent",
+        "call_type": "chat_with_tools",
+        "latency_ms": 100,
+        "response": {
+            "prompt_tokens": 1000,
+            "completion_tokens": 100,
+            "usage_available": True,
+            "cache_read_tokens": 600,
+            "cache_write_tokens": 200,
+            "served_upstream": "claude-code/claude-opus-5-5",
+        },
+    }
+    record.update(overrides)
+    return json.dumps(record)
+
+
+def _ingest(tmp_path: Path, pricing: dict[str, ModelPricing], *lines: str) -> list[ResponseMetrics]:
+    session_id = "20261112_030705_5012ba"
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    (session_dir / "responses.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cache = MetricsCache(tmp_path, pricing)
+    cache.refresh_session(session_id)
+    return cache._responses[session_id]
+
+
+def test_gateway_alias_is_priced_at_the_upstream_it_named(tmp_path):
+    [row] = _ingest(tmp_path, {"claude-opus-5-5": _OPUS}, _response_line(1))
+
+    assert row.pricing_model_key == "claude-opus-5-5"
+    assert row.cost == pytest.approx(200 * 4e-06 + 600 * 2e-07 + 200 * 5e-06 + 100 * 2e-05)
+
+
+def test_plain_chat_record_with_reported_usage_is_priced(tmp_path):
+    line = _response_line(
+        1,
+        client_label="compactor",
+        model="compactor-agent",
+        call_type="chat",
+        response_text="summary",
+    )
+    [row] = _ingest(tmp_path, {"claude-opus-5-5": _OPUS}, line)
+
+    assert row.cost is not None
+    assert row.client_label == "compactor"
+
+
+def test_fallback_candidate_prices_the_call_it_served(tmp_path):
+    line = _response_line(
+        1,
+        served_provider="deepseek",
+        served_model="deepseek-v4-pro",
+        served_candidate_index=1,
+        response={"prompt_tokens": 1000, "completion_tokens": 100, "usage_available": True},
+    )
+    [row] = _ingest(tmp_path, {"deepseek/deepseek-v4-pro": _DEEPSEEK}, line)
+
+    assert row.pricing_model_key == "deepseek/deepseek-v4-pro"
+    assert row.cost == pytest.approx(1000 * 1e-06 + 100 * 2e-06)
+
+
+def test_live_hard_limit_follows_the_upstream_model(tmp_path):
+    cache = MetricsCache(tmp_path, {"claude-opus-5-5": _OPUS})
+    session_dir = tmp_path / "20261112_030705_5012ba"
+    session_dir.mkdir()
+    (session_dir / "responses.jsonl").write_text(_response_line(1) + "\n", encoding="utf-8")
+    cache.refresh_session("20261112_030705_5012ba")
+    cache._files["20261112_030705_5012ba"].meta = _meta("20261112_030705_5012ba")
+
+    status = cache.get_live_status(400_000)
+
+    assert status is not None
+    assert status["hard_limit"] == 1_000_000
+
+
+def test_turn_read_cache_rate_counts_plain_chat_rows_on_both_sides(tmp_path):
+    session_id = "20261112_030705_5012ba"
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    brain = _response_line(1, response={
+        "prompt_tokens": 150_000, "completion_tokens": 100, "usage_available": True,
+        "cache_read_tokens": 140_000, "served_upstream": "claude-code/claude-opus-5-5",
+    })
+    compactor = _response_line(2, client_label="compactor", model="compactor-agent", call_type="chat",
+        response_text="summary", response={
+            "prompt_tokens": 150_000, "completion_tokens": 100, "usage_available": True,
+            "cache_read_tokens": 120_000, "served_upstream": "claude-code/claude-opus-5-5",
+        })
+    (session_dir / "responses.jsonl").write_text(brain + "\n" + compactor + "\n", encoding="utf-8")
+    # turns.jsonl only aggregates the brain call's cache reads.
+    turn = {
+        "turn_id": "turn_000001", "ts_started": "2026-11-12T16:06:00+08:00",
+        "ts_finished": "2026-11-12T16:08:00+08:00", "session_id": session_id,
+        "channel": "discord", "inbound_kind": "user_message", "input_text": "hi",
+        "status": "completed", "llm_rounds": 1, "usage_available": True,
+        "cache_read_tokens": 140_000,
+    }
+    (session_dir / "turns.jsonl").write_text(json.dumps(turn) + "\n", encoding="utf-8")
+    cache = MetricsCache(tmp_path, {"claude-opus-5-5": _OPUS})
+
+    cache.refresh_session(session_id)
+
+    [tm] = cache._turns[session_id]
+    assert tm.read_cache_rate == pytest.approx(260_000 / 300_000)
+    # The turn row's cache column covers the same rows as its prompt total.
+    assert tm.cache_read_tokens == 260_000
+
+
+def test_session_peak_prompt_ignores_plain_chat_rows(tmp_path):
+    session_id = "20261112_030705_5012ba"
+    brain = _response_line(1, response={
+        "prompt_tokens": 120_000, "completion_tokens": 100, "usage_available": True,
+        "served_upstream": "claude-code/claude-opus-5-5",
+    })
+    compactor = _response_line(2, client_label="compactor", model="compactor-agent", call_type="chat",
+        response_text="summary", response={
+            "prompt_tokens": 180_000, "completion_tokens": 100, "usage_available": True,
+            "served_upstream": "claude-code/claude-opus-5-5",
+        })
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    (session_dir / "responses.jsonl").write_text(brain + "\n" + compactor + "\n", encoding="utf-8")
+    cache = MetricsCache(tmp_path, {"claude-opus-5-5": _OPUS})
+    cache.refresh_session(session_id)
+    cache._files[session_id].meta = _meta(session_id)
+
+    summary = cache.get_session_summary(session_id)
+
+    assert summary is not None
+    assert summary.peak_prompt_tokens == 120_000
+    assert summary.total_prompt_tokens == 300_000

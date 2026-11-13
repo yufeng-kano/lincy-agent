@@ -2,9 +2,10 @@
 
 
 class FakeResponse:
-    def __init__(self, payload: dict, status_code: int = 200):
+    def __init__(self, payload: dict, status_code: int = 200, headers: dict[str, str] | None = None):
         self.payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:

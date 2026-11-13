@@ -201,7 +201,7 @@
 | Request / response shape | Anthropic Messages API native shape | 假設 Anthropic-compatible / 未驗證 | 低 | 不新增 gateway-specific 欄位 |
 | Thinking | `thinking: {"type": "adaptive"|"enabled"|"disabled"}`；enabled 可帶 `budget_tokens` | 假設 Anthropic-compatible / 未驗證 | 低 | 完全沿用本專案 Anthropic adapter shape |
 | Effort | `output_config: {"effort": "low"|"medium"|"high"|"xhigh"|"max"}` | 假設 Anthropic-compatible / 未驗證 | 低 | 不推測 kano-proxy 的額外 effort 值或模型能力 |
-| Served upstream headers | 非串流回應帶 `x-kano-upstream-provider`（provider id 或 custom slug）與 `x-kano-upstream-model`（裸 upstream model id）；成功與 upstream 錯誤 passthrough 都有，pre-dispatch 錯誤與 `stream: true` 沒有 | kano-proxy `docs/api.md` § Served upstream headers（v4.11.0） | 高 | model group 在對話中途 failover 到別的 target 時，這是 client 唯一能察覺的訊號 |
+| Served upstream headers | 非串流回應帶 `x-kano-upstream-provider`（provider id 或 custom slug）與 `x-kano-upstream-model`（裸 upstream model id）；`/anthropic` 與 `/openai/v1` 兩個 surface 都有；成功與 upstream 錯誤 passthrough 都有，pre-dispatch 錯誤與 `stream: true` 沒有 | kano-proxy `docs/api.md` § Served upstream headers（v4.11.0）、cloud `docs/core-upgrades.md` | 高 | model group 在對話中途 failover 到別的 target 時，這是 client 唯一能察覺的訊號；dashboard 也靠它替 group alias 計價 |
 
 ### 2. 本專案 adapter 規則
 
@@ -233,7 +233,7 @@
 | Endpoint | `https://<domain>/g/<group>/openai/v1/chat/completions`，Bearer 為同一把 group key | kano-proxy `docs/api.md` | 高 | `model` 必須是 group 內設定的名稱，否則 `400 invalid_model` |
 | Audio input | user message 內接 OpenAI/OpenRouter 的 `input_audio` part；antigravity target 轉成 Gemini `inlineData`，`format`→mime 對照：wav、mp3/mpeg、m4a/mp4、aac、flac、ogg/opus→`audio/ogg`、aiff；未知 format 回 `400 unsupported_audio_format` | kano-proxy `docs/api.md` § Audio | 高 | 只看**最高優先 target** 判定能否吃音訊，不 fallthrough；claude-code / codex / anthropic-format target 回 `400 unsupported_modality` |
 | `/anthropic` 無音訊 | Anthropic Messages 沒有 audio block，gateway 的 Anthropic surface 不接也不轉，包括 antigravity | kano-proxy `docs/api.md` | 高 | 音訊一律走 `/openai/v1` |
-| 本專案 provider | `provider: kano_proxy_openai`，`KanoProxyOpenAIConfig(OpenAIConfig)`，client 直接用 `OpenAIClient`；base_url 預設 `https://kano-proxy.yuufeng.com/g/lincy/openai/v1`，validator 拒絕 `/chat/completions` 尾綴；`api_key_env` 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` | — | 同一 gateway 兩種 wire format 拆成兩個 config，依 provider-architecture 規則 |
+| 本專案 provider | `provider: kano_proxy_openai`，`KanoProxyOpenAIConfig(OpenAIConfig)`，client 為 `KanoProxyOpenAIClient(OpenAIClient)`，只覆寫 `_served_upstream()` 讀上游 header（OpenAI-compatible 共用層預設回 `None`）；base_url 預設 `https://kano-proxy.yuufeng.com/g/lincy/openai/v1`，validator 拒絕 `/chat/completions` 尾綴；`api_key_env` 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` | — | 同一 gateway 兩種 wire format 拆成兩個 config，依 provider-architecture 規則 |
 | 實測 2026-10-12 | 從 lincy 主機送 Ogg/Opus（`format: ogg`）到 `init-agent`（唯一純 antigravity Gemini 的 group model）：200、6.0 秒、逐字稿正確、132 prompt tokens / 116 reasoning tokens；`vision-agent`（首 target 為 OpenRouter gpt-5.6）回 404 `No endpoints found that support input audio`；`prompt_cache_retention: null` 與 `"24h"` 都被接受 | 實測 | 高 | 逐字稿預設簡體，audio prompt 明寫臺灣用字 |
 
 ### 4. 對話與任務的快取識別

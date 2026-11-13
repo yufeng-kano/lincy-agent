@@ -91,7 +91,7 @@ WebSocket 的 `agent_event` 格式：
 | `served_by_fallback` | `true` 走了 fallback、`false` 由主 profile 服務、`null` 代表**未知**（舊 session 檔案，或該 client 沒有 fallback chain） |
 
 - `null` 一律當未知處理：前端不顯示任何標記，舊 session 的畫面與改動前相同
-- cost / pricing 仍以 `provider` + `model`（主 profile）計價，尚未改用 served model 計價
+- cost / pricing 依實際服務者計價，規則見下方「計價對象」
 - 前端在 Requests 表與 session 展開列的 model 欄位下，於 `served_by_fallback === true` 時加一行 `-> provider:model` 的琥珀色註記
 
 ### Token 計費邏輯
@@ -105,6 +105,21 @@ cost = base_input × input_rate + cache_read × cr_rate + cache_write × cw_rate
 ```
 
 Pricing 來源：`https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`
+
+### 計價對象
+
+每筆 response 依序取第一個有值的來源查價（`src/lincy/web/pricing.py` 的 `resolve_model_key`）：
+
+1. `response.served_upstream`：gateway 回報的上游 `provider/model`，例如 `claude-code/claude-opus-5-5`。Kano Proxy profile 的 `model` 是 group alias（`brain-agent`），價目表查不到，只能靠這個欄位
+2. `served_provider` / `served_model`：實際回應的 failover candidate
+3. `provider` / `model`：設定上的主 profile
+
+- 上游名稱的比對規則照 Kano Proxy 的 `resolve_model_price`：去掉 provider 前綴與 `[1m]` 這類 bracket 後綴，依序試裸 id、逐段去掉 id 自身的路徑、加 `anthropic` / `openai` / `xai` / `gemini` / `vertex_ai` / `openrouter` 前綴。Gemini（含 antigravity）另外試去掉 `-high` / `-medium` / `-low` / `-tiered` / `-thinking` 後綴與 `-preview` 變體。`openrouter/` 上游只接受完全相同的 key
+- gateway 回報了上游、但價目表查不到時直接回 `None`，不退回主 profile：alias 本身沒有價格，退回去只會是猜測
+- 9/29（Kano Proxy v4.11.0）以前的紀錄沒有 `served_upstream`，這些 kano-proxy 請求仍然沒有 cost
+- 目的是讓 dashboard 的 cost 與 Kano Proxy `request_logs.cost` 同一口徑；2026-11-01～11-12 的實測兩邊在各上游模型上一致
+- plain `chat()`（compactor、web_fetch_summarizer、recall 等）的 usage 也會記錄並計價，見 [session-debug-logs.md](session-debug-logs.md)。Gemini 原生與 Ollama provider 的 `chat()` 尚未回報 usage
+- audio 與 vision 子代理的 client 沒有包 debug wrapper（`agent/build.py` 建 client 時沒給 `session_debug_label`），不寫 `responses.jsonl`，dashboard 看不到它們的 cost
 
 本專案可在 `src/lincy/web/pricing.py` 維護本地 override，處理 LiteLLM 尚未更新或價格不符合本專案口徑的模型。DeepSeek V4 目前使用官方原價計算，不使用 DeepSeek 官網列出的 75% 折扣價；override 會帶 `pricing_source=local_override`、`pricing_source_url` 與 stale 狀態，前端會在 Total Cost 與 request breakdown 顯示。
 
@@ -128,7 +143,7 @@ JSONL 是 append-only，每個檔案追蹤 `byte_offset`：
   - `turns.jsonl` 只在 `finish_turn()` 才 append，若以它為來源，turn 進行中整條 bar 會停在**上一輪**的數字，直到本輪結束才跳一次——這正是「不是當下 turn 的真實消耗」的來源
   - 取 max 而非最後一筆，是為了與 `src/lincy/agent/token_telemetry.py` 的 `TurnTokenUsage` 完全一致（turn 內若發生 compaction，prompt 不保證單調遞增）
 - `client_label != "brain"` 的 response（worker-N / memory_sync / compactor / recall / web_fetch_summarizer）**不計入**：它們是獨立的 context，不佔 brain 的 context window
-- `hard_limit` 由**最後一筆 brain response** 的 provider/model 解析；不得用 `responses[-1]`，那可能是剛結束的 worker，會讓 bar 的天花板莫名跳動
+- `hard_limit` 由**最後一筆 brain response** 的計價 key 解析（與計價同一規則，見「計價對象」）；不得用 `responses[-1]`，那可能是剛結束的 worker，會讓 bar 的天花板莫名跳動
 
 ## Agent 活動流
 
@@ -325,6 +340,8 @@ Production 模式由 `lincy` 程序內的 server 直接 serve `src/web_ui/dist/`
 - Agent 活動 export 是唯讀旁路，不得反向影響 agent；新增事件型別時要同步更新 `ui_event_stream.py` 的 `_EVENT_SPECS` 與前端 `AgentUiEventType`。
 - `requests.jsonl` 含完整 message payload，**不要全部載入 cache**；`context_composition.py`（Context 頁）示範了 on-demand、每次請求重新 parse 的做法，之後若有新功能要讀 `requests.jsonl` 應比照此模式
 - `read_cache_rate = cache_read_tokens / prompt_tokens`；`brain_read_cache_rate` 同一公式，但只納入 `client_label == "brain"` 的 response（與 `/api/live` 的 brain 判定一致），沒有 brain response 時為 `null`
+- turn 列的 prompt、cache read/write、`read_cache_rate` 都取該 turn 連到的 response：`turns.jsonl` 的 cache 數字不含 plain `chat()` 子代理（compactor 等），混用會讓同一列口徑不一。沒有連到任何 response 時才沿用 `turns.jsonl`
+- session 的 `peak_prompt_tokens` 只看 tool-calling 的 response 與 turn 摘要，不算 plain `chat()`：compactor 一次送整段對話，會把峰值灌高
 - Summary card「Brain Read Cache Rate」主數字是 brain 口徑，副標顯示全部 client 的口徑
 - `write_cache` 和 `read_cache_rate` 分開顯示
 - provider 不支援 write cache 度量時，前端直接顯示「無法測量」

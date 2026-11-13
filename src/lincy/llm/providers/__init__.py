@@ -2,7 +2,7 @@ from .anthropic import AnthropicClient
 from .deepseek import DeepSeekClient
 from .gemini import GeminiClient
 from .heyroute import HeyrouteClient
-from .kano_proxy import KanoProxyClient
+from .kano_proxy import KanoProxyClient, KanoProxyOpenAIClient
 from .litellm import LiteLLMClient
 from .ollama_native import OllamaNativeClient
 from .openai import OpenAIClient
@@ -15,6 +15,7 @@ __all__ = [
     "GeminiClient",
     "HeyrouteClient",
     "KanoProxyClient",
+    "KanoProxyOpenAIClient",
     "LiteLLMClient",
     "OllamaNativeClient",
     "OpenAIClient",

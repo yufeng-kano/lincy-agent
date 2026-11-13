@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from ..llm import LLMResponse, Message, ServedCandidate, ToolDefinition
 from ..llm.base import LLMClient
+from ..llm.chat_response import observe_chat_response
 from ..llm.failover import observe_served_candidate
 from .debug_store import PendingLLMRequest
 
@@ -45,6 +46,7 @@ class _SessionDebugSink(Protocol):
         response_text: str,
         latency_ms: int,
         served: ServedCandidate | None = None,
+        response: LLMResponse | None = None,
     ) -> None:
         ...
 
@@ -95,7 +97,8 @@ class DebugLoggingLLMClient:
         started = time.perf_counter()
         # The failover chain lives below this wrapper, so the candidate that
         # actually answered is reported out of band.
-        with observe_served_candidate() as probe:
+        # chat() returns text only; providers report usage the same way.
+        with observe_served_candidate() as probe, observe_chat_response() as chat_probe:
             try:
                 response_text = self._client.chat(
                     messages,
@@ -115,6 +118,7 @@ class DebugLoggingLLMClient:
                 response_text=response_text,
                 latency_ms=_elapsed_ms(started),
                 served=probe.get(),
+                response=chat_probe.get(),
             )
         return response_text
 

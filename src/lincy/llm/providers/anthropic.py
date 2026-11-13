@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from ...core.schema import AnthropicConfig
+from ..chat_response import report_chat_response
 from ..schema import (
     AnthropicMessagePayload,
     AnthropicResponse,
@@ -131,8 +132,11 @@ class AnthropicClient:
     ) -> str:
         if response_schema is not None:
             raise ValueError("Anthropic provider does not support response_schema; use a provider with native structured outputs.")
-        response, _ = self._post(self._build_request(messages, temperature=temperature))
-        return self._parse_response(response).content or ""
+        response, upstream = self._post(self._build_request(messages, temperature=temperature))
+        result = self._parse_response(response)
+        result.served_upstream = upstream
+        report_chat_response(result)
+        return result.content or ""
 
     def chat_with_tools(
         self,
