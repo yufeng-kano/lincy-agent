@@ -1,24 +1,33 @@
-"""macOS Reminders tool backed by EventKit."""
+"""macOS Reminders tool backed by EventKit, with ReminderKit for the fields EventKit lacks."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import EventKit
+from Foundation import NSURL
+import objc
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ....llm.schema import ToolDefinition, ToolParameter
+from ...security import resolve_allowed_path
 from .eventkit import (
     components_to_iso,
     components_to_nsdate,
+    date_to_components,
     datetime_to_components,
+    is_date_only,
     open_store,
     save_error,
     to_nsdate,
 )
-from .reminders_db import read_flags
+from .reminderkit import image_size, parse_early_reminder, write_private_fields
+from .reminders_db import ReminderExtras, read_extras, read_flags
 from .runtime import (
     _datetime_in_app_tz,
     _error,
@@ -73,7 +82,72 @@ REMINDERS_TOOL_DEFINITION = ToolDefinition(
         ),
         "due": ToolParameter(
             type="string",
-            description="Local ISO datetime, e.g. '2026-04-20T09:00'.",
+            description=(
+                "Local ISO datetime, e.g. '2026-04-20T09:00', or a date like '2026-04-20' "
+                "for an all-day reminder without a time."
+            ),
+        ),
+        "early_reminder": ToolParameter(
+            type="string",
+            description=(
+                "Extra notification before the due date: a positive amount and a unit "
+                "(m, h, d, w, mo), e.g. '30m', '2h', '1d', '1w'. Needs a due date. "
+                "The reminder stays on its due date; do not move 'due' earlier instead."
+            ),
+        ),
+        "recurrence": ToolParameter(
+            type="string",
+            description="Repeat rule. Needs a due date.",
+            enum=["daily", "weekly", "monthly", "yearly"],
+        ),
+        "recurrence_interval": ToolParameter(
+            type="integer",
+            description="Repeat every N units of 'recurrence'. Default 1.",
+        ),
+        "urgent": ToolParameter(
+            type="boolean",
+            description=(
+                "When true, the reminder rings as an alarm on the user's iPhone at the due time "
+                "until dismissed. Needs a due date with a time."
+            ),
+        ),
+        "tags": ToolParameter(
+            type="array",
+            description="Tags without '#' or spaces. Replaces the reminder's existing tags.",
+            items={"type": "string"},
+        ),
+        "url": ToolParameter(
+            type="string",
+            description="URL attached to the reminder, including the scheme.",
+        ),
+        "location": ToolParameter(
+            type="object",
+            description="Place that triggers the reminder when the user arrives or leaves.",
+            json_schema={
+                "properties": {
+                    "title": {"type": "string"},
+                    "latitude": {"type": "number"},
+                    "longitude": {"type": "number"},
+                    "radius_m": {"type": "number", "description": "Default 100."},
+                    "trigger": {"type": "string", "enum": ["arrive", "leave"], "description": "Default arrive."},
+                },
+                "required": ["title", "latitude", "longitude"],
+            },
+        ),
+        "subtasks": ToolParameter(
+            type="array",
+            description="Titles of subtasks to add under the reminder.",
+            items={"type": "string"},
+        ),
+        "images": ToolParameter(
+            type="array",
+            description="Paths of image files to attach. Must be within allowed paths.",
+            items={"type": "string"},
+        ),
+        "clear": ToolParameter(
+            type="array",
+            description="Update only: fields to remove from the reminder.",
+            items={"type": "string", "enum": ["early_reminder", "recurrence", "location", "url", "tags"]},
         ),
         "due_start": ToolParameter(
             type="string",
@@ -117,20 +191,64 @@ REMINDERS_TOOL_DEFINITION = ToolDefinition(
 )
 
 _REMINDER_URL_PREFIX = "x-apple-reminder://"
+_CLEARABLE_FIELDS = ("early_reminder", "recurrence", "location", "url", "tags")
+_RECURRENCE_FREQUENCIES = {
+    "daily": EventKit.EKRecurrenceFrequencyDaily,
+    "weekly": EventKit.EKRecurrenceFrequencyWeekly,
+    "monthly": EventKit.EKRecurrenceFrequencyMonthly,
+    "yearly": EventKit.EKRecurrenceFrequencyYearly,
+}
+_RECURRENCE_NAMES = {value: name for name, value in _RECURRENCE_FREQUENCIES.items()}
+
+# pyobjc-framework-CoreLocation is not a dependency; a location alarm only
+# needs the CLLocation class, which the runtime provides once the framework loads.
+objc.loadBundle("CoreLocation", {}, bundle_path="/System/Library/Frameworks/CoreLocation.framework")
+
+
+class ReminderLocation(BaseModel):
+    """A place that triggers a reminder when the user arrives or leaves."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_m: float = Field(default=100, gt=0)
+    trigger: Literal["arrive", "leave"] = "arrive"
 
 
 def _list_path(calendar: Any) -> str:
     return f"{calendar.source().title()}/{calendar.title()}"
 
 
-def _reminder_row(reminder: Any, flagged: bool | None) -> dict[str, Any]:
+def _location_row(reminder: Any) -> dict[str, Any] | None:
+    for alarm in reminder.alarms() or []:
+        place = alarm.structuredLocation()
+        if place is None:
+            continue
+        geo = place.geoLocation()
+        # Without the CoreLocation bindings pyobjc returns the coordinate
+        # struct as a (latitude, longitude) tuple.
+        latitude, longitude = geo.coordinate() if geo is not None else (None, None)
+        return {
+            "title": place.title(),
+            "latitude": latitude,
+            "longitude": longitude,
+            "radius_m": place.radius(),
+            "trigger": "leave" if alarm.proximity() == EventKit.EKAlarmProximityLeave else "arrive",
+        }
+    return None
+
+
+def _reminder_row(reminder: Any, flagged: bool | None, extras: ReminderExtras | None) -> dict[str, Any]:
     calendar = reminder.calendar()
-    return {
+    due = reminder.dueDateComponents()
+    row = {
         "id": reminder.calendarItemIdentifier(),
         "title": reminder.title(),
         "notes": reminder.notes(),
         "completed": bool(reminder.isCompleted()),
-        "due": components_to_iso(reminder.dueDateComponents()),
+        "due": components_to_iso(due),
         "priority": int(reminder.priority()),
         # EventKit has no API for the flag; callers read it from the Reminders database.
         "flagged": flagged,
@@ -138,6 +256,26 @@ def _reminder_row(reminder: Any, flagged: bool | None) -> dict[str, Any]:
         "list_name": calendar.title(),
         "list_path": _list_path(calendar),
     }
+    # The remaining fields are rare, so a row only carries the ones that are
+    # set; search returns many rows and every key costs prompt tokens.
+    extras = extras or ReminderExtras()
+    rules = reminder.recurrenceRules() or []
+    optional = {
+        "all_day": due is not None and is_date_only(due),
+        "recurrence": (
+            {"frequency": _RECURRENCE_NAMES[rules[0].frequency()], "interval": int(rules[0].interval())} if rules else None
+        ),
+        "location": _location_row(reminder),
+        "early_reminders": extras.early_reminders,
+        "urgent": extras.urgent,
+        "tags": extras.tags,
+        "url": extras.url,
+        "image_count": extras.image_count,
+        "parent_id": extras.parent_id,
+        "subtask_ids": extras.subtask_ids,
+    }
+    row.update({key: value for key, value in optional.items() if value})
+    return row
 
 
 def _find_list(
@@ -166,10 +304,11 @@ def _find_reminder(store: Any, reminder_id: str) -> Any:
     return item if isinstance(item, EventKit.EKReminder) else None
 
 
-def _set_due(reminder: Any, due: datetime) -> None:
+def _set_due(reminder: Any, due: datetime | date) -> None:
     old_due = reminder.dueDateComponents()
     old_date = components_to_nsdate(old_due) if old_due is not None else None
-    components = datetime_to_components(due)
+    timed = isinstance(due, datetime)
+    components = datetime_to_components(due) if timed else date_to_components(due)
     reminder.setDueDateComponents_(components)
     # A JXA dueDate write also produced one absolute alarm at the due time; that
     # alarm is what makes Reminders notify, so move it along with the due date.
@@ -180,10 +319,124 @@ def _set_due(reminder: Any, due: datetime) -> None:
         for alarm in reminder.alarms() or []
         if old_date is None or alarm.absoluteDate() is None or not alarm.absoluteDate().isEqualToDate_(old_date)
     ]
-    # Derive the alarm from the stored components so the next update finds it
-    # by exact date even when due carried sub-second precision.
-    alarms.append(EventKit.EKAlarm.alarmWithAbsoluteDate_(components_to_nsdate(components)))
+    # An all-day reminder has no due time to alarm at; Reminders.app notifies
+    # for it at the user's all-day notification time.
+    if timed:
+        # Derive the alarm from the stored components so the next update finds
+        # it by exact date even when due carried sub-second precision.
+        alarms.append(EventKit.EKAlarm.alarmWithAbsoluteDate_(components_to_nsdate(components)))
     reminder.setAlarms_(alarms)
+
+
+def _set_recurrence(reminder: Any, recurrence: str | None, interval: int) -> None:
+    """Replace the recurrence rules; None removes them."""
+    rules = []
+    if recurrence is not None:
+        rules.append(
+            EventKit.EKRecurrenceRule.alloc().initRecurrenceWithFrequency_interval_end_(
+                _RECURRENCE_FREQUENCIES[recurrence], interval, None
+            )
+        )
+    reminder.setRecurrenceRules_(rules)
+
+
+def _set_location(reminder: Any, location: ReminderLocation | None) -> None:
+    """Replace the location alarm; None removes it. Time alarms stay."""
+    alarms = [alarm for alarm in reminder.alarms() or [] if alarm.structuredLocation() is None]
+    if location is not None:
+        place = EventKit.EKStructuredLocation.locationWithTitle_(location.title)
+        place.setGeoLocation_(
+            objc.lookUpClass("CLLocation").alloc().initWithLatitude_longitude_(location.latitude, location.longitude)
+        )
+        place.setRadius_(location.radius_m)
+        alarm = EventKit.EKAlarm.alarmWithRelativeOffset_(0)
+        alarm.setStructuredLocation_(place)
+        alarm.setProximity_(
+            EventKit.EKAlarmProximityLeave if location.trigger == "leave" else EventKit.EKAlarmProximityEnter
+        )
+        alarms.append(alarm)
+    reminder.setAlarms_(alarms)
+
+
+def _readback_problems(private: dict[str, Any], before: ReminderExtras, extras: ReminderExtras | None) -> list[str]:
+    """Compare the fields just written through ReminderKit with the database.
+
+    before is the reminder's state ahead of the write, for the appended fields.
+    """
+    if extras is None:
+        return ["the reminder could not be read back from the Reminders database"]
+    problems = []
+    added_subtasks = len(extras.subtask_ids) - len(before.subtask_ids)
+    if added_subtasks != len(private["subtasks"] or []):
+        problems.append(f"{added_subtasks} of {len(private['subtasks'] or [])} subtasks read back")
+    added_images = extras.image_count - before.image_count
+    if added_images != len(private["images"] or []):
+        problems.append(f"{added_images} of {len(private['images'] or [])} images read back")
+    if private["urgent"] is not None and extras.urgent != private["urgent"]:
+        problems.append(f"urgent reads back as {extras.urgent}")
+    if private["tags"] is not None and sorted(map(str.lower, extras.tags)) != sorted(map(str.lower, private["tags"])):
+        problems.append(f"tags read back as {extras.tags}")
+    # NSURL percent-encodes and punycodes what it stores, so compare in that form.
+    expected_url = str(NSURL.URLWithString_(private["url"]).absoluteString()) if private["url"] else ""
+    if private["url"] is not None and (extras.url or "") != expected_url:
+        problems.append(f"url reads back as {extras.url!r}")
+    if private["early_reminder"] is not None:
+        expected = [] if private["early_reminder"] == "none" else [private["early_reminder"]]
+        if extras.early_reminders != expected:
+            problems.append(f"early_reminder reads back as {extras.early_reminders}")
+    return problems
+
+
+def _field_problem(
+    *,
+    creating: bool,
+    due: datetime | date | None,
+    early_reminder: str | None,
+    recurrence: str | None,
+    recurrence_interval: int | None,
+    urgent: bool | None,
+    tags: list[str] | None,
+    url: str | None,
+    location: ReminderLocation | None,
+    subtasks: list[str] | None,
+    images: list[str] | None,
+    clear: list[str] | None,
+) -> str | None:
+    """Return why the field values cannot be written, before anything is saved."""
+    if early_reminder is not None:
+        try:
+            parse_early_reminder(early_reminder)
+        except ValueError as exc:
+            return str(exc)
+    if recurrence is not None and recurrence not in _RECURRENCE_FREQUENCIES:
+        return f"invalid recurrence {recurrence!r}: use one of {', '.join(_RECURRENCE_FREQUENCIES)}"
+    if recurrence_interval is not None and (recurrence is None or recurrence_interval < 1):
+        return "'recurrence_interval' must be 1 or more and needs 'recurrence'"
+    if tags is not None and (not tags or any(not tag or tag.startswith("#") or tag != "".join(tag.split()) for tag in tags)):
+        return "'tags' needs at least one tag, each without '#' or spaces; use clear=['tags'] to remove tags"
+    # NSURL is what ReminderKit stores, and it refuses some strings urlsplit accepts.
+    if url is not None and (not urlsplit(url).scheme or NSURL.URLWithString_(url) is None):
+        return f"invalid url {url!r}: include the scheme, e.g. https://; use clear=['url'] to remove it"
+    if any(not title.strip() for title in subtasks or []):
+        return "'subtasks' titles must not be empty"
+    if any(not image.strip() for image in images or []):
+        return "'images' paths must not be empty"
+    given = {"early_reminder": early_reminder, "recurrence": recurrence, "location": location, "url": url, "tags": tags}
+    for name in clear or []:
+        if name not in _CLEARABLE_FIELDS:
+            return f"cannot clear {name!r}: use one of {', '.join(_CLEARABLE_FIELDS)}"
+        if given[name] is not None:
+            return f"{name!r} is both set and cleared"
+    if creating:
+        if clear:
+            return "'clear' only applies to update"
+        if early_reminder is not None and due is None:
+            return "'early_reminder' needs 'due'"
+        if recurrence is not None and due is None:
+            return "'recurrence' needs 'due'"
+        if urgent and not isinstance(due, datetime):
+            return "'urgent' needs 'due' with a time"
+    return None
 
 
 _SET_FLAGGED_JXA = """
@@ -208,25 +461,62 @@ class MacOSAppBridge:
             operation="reminders set flagged",
         )
 
-    def _flag_saved_reminder(self, reminder: Any, flagged: bool) -> dict[str, Any]:
-        """Write the flag of a reminder already saved through EventKit.
+    def _reminder_image_paths(self, images: list[str] | None) -> list[Path] | None:
+        """Resolve image attachments before anything is saved."""
+        paths = []
+        for image in images or []:
+            path = resolve_allowed_path(image, self._allowed_paths, self._base_dir)
+            if path is None or not path.is_file():
+                raise ValueError(f"image is not a readable file inside allowed paths: {image}")
+            image_size(path)
+            paths.append(path)
+        return paths or None
 
-        The save is committed, so a failed flag write must not report the call
-        as failed: the agent would retry a create and duplicate the reminder.
+    def _finish_reminder_write(
+        self,
+        reminder: Any,
+        *,
+        created: bool,
+        flagged: bool | None,
+        private: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Write the flag and the ReminderKit fields of a reminder EventKit has saved.
+
+        The save is committed, so a failure here is a warning on a successful
+        result: an error would make the agent retry a create and duplicate the
+        reminder. private holds the write_private_fields arguments.
         """
         identifier = reminder.calendarItemIdentifier()
-        try:
-            self._set_reminder_flagged(identifier, flagged)
-        except RuntimeError as exc:
-            # _run_jxa_json has already logged the failure.
-            return {
-                "ok": True,
-                "reminder": _reminder_row(reminder, read_flags().get(identifier)),
-                "warning": f"reminder saved, but flagged={flagged} was not applied: {exc}",
-            }
-        # Report the value just written rather than re-reading the database,
-        # which can trail the Reminders.app write.
-        return {"ok": True, "reminder": _reminder_row(reminder, flagged)}
+        warnings = []
+        row_flagged = False if created else read_flags().get(identifier)
+        if flagged is not None:
+            try:
+                self._set_reminder_flagged(identifier, flagged)
+                # Report the value just written rather than re-reading the
+                # database, which can trail the Reminders.app write.
+                row_flagged = flagged
+            except RuntimeError as exc:
+                # _run_jxa_json has already logged the failure.
+                warnings.append(f"flagged={flagged} was not applied: {exc}")
+                row_flagged = read_flags().get(identifier)
+        extras = None if created else read_extras().get(identifier)
+        if any(value is not None for value in private.values()):
+            before = extras or ReminderExtras()
+            try:
+                write_private_fields(identifier, early_reminder_ids=before.early_reminder_ids, **private)
+                extras = read_extras().get(identifier)
+                warnings.extend(_readback_problems(private, before, extras))
+            # Broad on purpose: besides RuntimeError from the write, a changed
+            # private API surfaces as objc.error or AttributeError and the
+            # readback can fail in sqlite; none of them may turn a committed
+            # save into a tool error.
+            except Exception as exc:
+                names = ", ".join(name for name, value in private.items() if value is not None)
+                warnings.append(f"{names} may not be applied: {exc}")
+        result = {"ok": True, "reminder": _reminder_row(reminder, row_flagged, extras)}
+        if warnings:
+            result["warning"] = "reminder saved, but " + "; ".join(warnings)
+        return result
 
     def reminders_catalog(self) -> dict[str, Any]:
         """List reminder accounts and lists."""
@@ -299,10 +589,12 @@ class MacOSAppBridge:
                 raise RuntimeError(f"reminders search timed out after {self._timeout_seconds:.1f} seconds")
 
             flags = read_flags()
+            extras = read_extras()
             needle = (query or "").lower()
             results = []
             for reminder in fetched:
-                row = _reminder_row(reminder, flags.get(reminder.calendarItemIdentifier()))
+                identifier = reminder.calendarItemIdentifier()
+                row = _reminder_row(reminder, flags.get(identifier), extras.get(identifier))
                 due = datetime.fromisoformat(row["due"]) if row["due"] else None
                 if flagged is not None and row["flagged"] != flagged:
                     continue
@@ -342,7 +634,8 @@ class MacOSAppBridge:
             reminder = _find_reminder(store, reminder_id)
             if reminder is None:
                 return {"ok": False, "error": f"reminder not found: {reminder_id}"}
-            return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(reminder.calendarItemIdentifier()))}
+            identifier = reminder.calendarItemIdentifier()
+            return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(identifier), read_extras().get(identifier))}
 
     def reminders_create(
         self,
@@ -352,11 +645,21 @@ class MacOSAppBridge:
         list_path: str | None,
         title: str,
         notes: str | None,
-        due: datetime | None,
+        due: datetime | date | None,
         priority: int | None,
         flagged: bool | None,
+        early_reminder: str | None = None,
+        recurrence: str | None = None,
+        recurrence_interval: int | None = None,
+        urgent: bool | None = None,
+        tags: list[str] | None = None,
+        url: str | None = None,
+        location: ReminderLocation | None = None,
+        subtasks: list[str] | None = None,
+        images: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a reminder."""
+        image_paths = self._reminder_image_paths(images)
         with open_store(EventKit.EKEntityTypeReminder) as store:
             if list_id or list_name or list_path:
                 calendar = _find_list(store, list_id=list_id, list_name=list_name, list_path=list_path)
@@ -371,12 +674,26 @@ class MacOSAppBridge:
                 reminder.setPriority_(priority)
             if due is not None:
                 _set_due(reminder, due)
+            if recurrence is not None:
+                _set_recurrence(reminder, recurrence, recurrence_interval or 1)
+            if location is not None:
+                _set_location(reminder, location)
             saved, error = store.saveReminder_commit_error_(reminder, True, None)
             if not saved:
                 return save_error(error)
-            if flagged:
-                return self._flag_saved_reminder(reminder, True)
-            return {"ok": True, "reminder": _reminder_row(reminder, False)}
+            return self._finish_reminder_write(
+                reminder,
+                created=True,
+                flagged=True if flagged else None,
+                private={
+                    "urgent": True if urgent else None,
+                    "tags": tags,
+                    "url": url,
+                    "early_reminder": early_reminder,
+                    "subtasks": subtasks,
+                    "images": image_paths,
+                },
+            )
 
     def reminders_update(
         self,
@@ -384,16 +701,48 @@ class MacOSAppBridge:
         reminder_id: str,
         title: str | None,
         notes: str | None,
-        due: datetime | None,
+        due: datetime | date | None,
         priority: int | None,
         flagged: bool | None,
         completed: bool | None,
+        early_reminder: str | None = None,
+        recurrence: str | None = None,
+        recurrence_interval: int | None = None,
+        urgent: bool | None = None,
+        tags: list[str] | None = None,
+        url: str | None = None,
+        location: ReminderLocation | None = None,
+        subtasks: list[str] | None = None,
+        images: list[str] | None = None,
+        clear: list[str] | None = None,
     ) -> dict[str, Any]:
         """Update a reminder."""
+        image_paths = self._reminder_image_paths(images)
+        clear = clear or []
         with open_store(EventKit.EKEntityTypeReminder) as store:
             reminder = _find_reminder(store, reminder_id)
             if reminder is None:
                 return {"ok": False, "error": f"reminder not found: {reminder_id}"}
+            # Checked against the due date the reminder will have after this
+            # update, before any field is changed.
+            current_due = reminder.dueDateComponents()
+            has_due = due is not None or current_due is not None
+            if due is not None:
+                has_due_time = isinstance(due, datetime)
+            else:
+                has_due_time = current_due is not None and not is_date_only(current_due)
+            if early_reminder is not None and not has_due:
+                return {"ok": False, "error": "'early_reminder' needs a due date; pass 'due' as well"}
+            if recurrence is not None and not has_due:
+                return {"ok": False, "error": "'recurrence' needs a due date; pass 'due' as well"}
+            if urgent and not has_due_time:
+                return {"ok": False, "error": "'urgent' needs a due date with a time; pass 'due' as well"}
+            if due is not None and not has_due_time and urgent is None:
+                if read_extras().get(reminder.calendarItemIdentifier(), ReminderExtras()).urgent:
+                    return {
+                        "ok": False,
+                        "error": "an urgent reminder needs a due date with a time; pass urgent=false to make it all-day",
+                    }
             if title is not None:
                 reminder.setTitle_(title)
             if notes is not None:
@@ -404,12 +753,26 @@ class MacOSAppBridge:
                 reminder.setCompleted_(completed)
             if due is not None:
                 _set_due(reminder, due)
+            if recurrence is not None or "recurrence" in clear:
+                _set_recurrence(reminder, recurrence, recurrence_interval or 1)
+            if location is not None or "location" in clear:
+                _set_location(reminder, location)
             saved, error = store.saveReminder_commit_error_(reminder, True, None)
             if not saved:
                 return save_error(error)
-            if flagged is None:
-                return {"ok": True, "reminder": _reminder_row(reminder, read_flags().get(reminder.calendarItemIdentifier()))}
-            return self._flag_saved_reminder(reminder, flagged)
+            return self._finish_reminder_write(
+                reminder,
+                created=False,
+                flagged=flagged,
+                private={
+                    "urgent": urgent,
+                    "tags": [] if "tags" in clear else tags,
+                    "url": "" if "url" in clear else url,
+                    "early_reminder": "none" if "early_reminder" in clear else early_reminder,
+                    "subtasks": subtasks,
+                    "images": image_paths,
+                },
+            )
 
 
 def create_reminders_tool(bridge: MacOSAppBridge) -> Callable[..., str]:
@@ -434,6 +797,16 @@ def create_reminders_tool(bridge: MacOSAppBridge) -> Callable[..., str]:
         completed: bool | None = None,
         sort_by: str | None = None,
         limit: int | None = None,
+        early_reminder: str | None = None,
+        recurrence: str | None = None,
+        recurrence_interval: int | None = None,
+        urgent: bool | None = None,
+        tags: list[str] | None = None,
+        url: str | None = None,
+        location: dict[str, Any] | None = None,
+        subtasks: list[str] | None = None,
+        images: list[str] | None = None,
+        clear: list[str] | None = None,
     ) -> str:
 
             if action == "catalog":
@@ -459,10 +832,52 @@ def create_reminders_tool(bridge: MacOSAppBridge) -> Callable[..., str]:
                 if not reminder_id:
                     return _error("'reminder_id' is required for get")
                 return _json_output(bridge.reminders_get(reminder_id=reminder_id))
+            if action not in {"create", "update", "complete"}:
+                return _error(f"unknown action '{action}'")
+            if action == "create" and not title:
+                return _error("'title' is required for create")
+            if action != "create" and not reminder_id:
+                return _error("'reminder_id' is required for update/complete")
+            # A date without a time makes an all-day reminder.
+            due_value = None
+            if due:
+                try:
+                    due_value = date.fromisoformat(due)
+                except ValueError:
+                    due_value = _parse_local_datetime(due, field_name="due")
+            try:
+                place = ReminderLocation.model_validate(location) if location is not None else None
+            except ValidationError as exc:
+                details = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+                return _error(f"invalid location: {details}")
+            problem = _field_problem(
+                creating=action == "create",
+                due=due_value,
+                early_reminder=early_reminder,
+                recurrence=recurrence,
+                recurrence_interval=recurrence_interval,
+                urgent=urgent,
+                tags=tags,
+                url=url,
+                location=place,
+                subtasks=subtasks,
+                images=images,
+                clear=clear,
+            )
+            if problem:
+                return _error(problem)
+            fields = {
+                "early_reminder": early_reminder,
+                "recurrence": recurrence,
+                "recurrence_interval": recurrence_interval,
+                "urgent": urgent,
+                "tags": tags,
+                "url": url,
+                "location": place,
+                "subtasks": subtasks,
+                "images": images,
+            }
             if action == "create":
-                if not title:
-                    return _error("'title' is required for create")
-                due_dt = _parse_local_datetime(due, field_name="due") if due else None
                 return _json_output(
                     bridge.reminders_create(
                         list_id=list_id,
@@ -470,38 +885,38 @@ def create_reminders_tool(bridge: MacOSAppBridge) -> Callable[..., str]:
                         list_path=list_path,
                         title=title,
                         notes=notes,
-                        due=due_dt,
+                        due=due_value,
                         priority=priority,
                         flagged=flagged,
+                        **fields,
                     )
                 )
-            if action in {"update", "complete"}:
-                if not reminder_id:
-                    return _error("'reminder_id' is required for update/complete")
-                due_dt = _parse_local_datetime(due, field_name="due") if due else None
-                if action == "complete" and completed is None:
-                    completed = True
-                if (
-                    title is None
-                    and notes is None
-                    and due_dt is None
-                    and priority is None
-                    and flagged is None
-                    and completed is None
-                ):
-                    return _error("update requires at least one field to change")
-                return _json_output(
-                    bridge.reminders_update(
-                        reminder_id=reminder_id,
-                        title=title,
-                        notes=notes,
-                        due=due_dt,
-                        priority=priority,
-                        flagged=flagged,
-                        completed=completed,
-                    )
+            if action == "complete" and completed is None:
+                completed = True
+            if (
+                title is None
+                and notes is None
+                and due_value is None
+                and priority is None
+                and flagged is None
+                and completed is None
+                and not clear
+                and all(value is None for value in fields.values())
+            ):
+                return _error("update requires at least one field to change")
+            return _json_output(
+                bridge.reminders_update(
+                    reminder_id=reminder_id,
+                    title=title,
+                    notes=notes,
+                    due=due_value,
+                    priority=priority,
+                    flagged=flagged,
+                    completed=completed,
+                    clear=clear,
+                    **fields,
                 )
-            return _error(f"unknown action '{action}'")
+            )
 
 
     return reminders_tool

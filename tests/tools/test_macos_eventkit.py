@@ -80,6 +80,12 @@ class FakeReminder:
     def calendar(self):
         return self._calendar
 
+    def alarms(self):
+        return []
+
+    def recurrenceRules(self):
+        return []
+
 
 class FakeEvent:
     def __init__(self, uid: str, title: str, start: datetime, end: datetime, *, all_day: bool = False):
@@ -149,8 +155,9 @@ class FakeReminderStore:
 
 @pytest.fixture(autouse=True)
 def _no_reminders_db(monkeypatch: pytest.MonkeyPatch):
-    # Search/get read flags from the real Reminders database; tests opt in to fake flags.
+    # Search/get read flags and extras from the real Reminders database; tests opt in to fakes.
     monkeypatch.setattr(reminders_module, "read_flags", dict)
+    monkeypatch.setattr(reminders_module, "read_extras", dict)
 
 
 def _search(bridge: MacOSAppBridge, **overrides):
@@ -226,6 +233,7 @@ def test_reminder_row_shape():
     row = reminders_module._reminder_row(
         FakeReminder("r1", "Pay", due=datetime(2026, 4, 20, 9, 0), priority=5, notes="n", completed=True),
         True,
+        None,
     )
 
     assert row == {

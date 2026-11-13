@@ -197,6 +197,7 @@ from .m0184_companion_care_loaded_files import M0184CompanionCareLoadedFiles
 from .m0185_discord_listen_tool import M0185DiscordListenTool
 from .m0186_state_file_and_recall import M0186StateFileAndRecall
 from .m0187_recall_prefetch_speed import M0187RecallPrefetchSpeed
+from .m0188_reminder_native_fields import M0188ReminderNativeFields
 
 ALL_MIGRATIONS = [
     M0001Initial(),
@@ -384,4 +385,5 @@ ALL_MIGRATIONS = [
     M0185DiscordListenTool(),
     M0186StateFileAndRecall(),
     M0187RecallPrefetchSpeed(),
+    M0188ReminderNativeFields(),
 ]

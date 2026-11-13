@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import threading
 from typing import Any
 
@@ -20,11 +20,14 @@ from Foundation import (
     NSCalendarUnitSecond,
     NSCalendarUnitYear,
     NSDate,
+    NSDateComponents,
+    NSDateComponentUndefined,
     NSTimeZone,
 )
 
 from .apple_events import automation_problem
-from .reminders_db import read_flags
+from .reminderkit import reminderkit_problems
+from .reminders_db import read_extras, read_flags
 from .runtime import _datetime_in_app_tz, _datetime_to_app_iso
 
 _STATUS_NAMES = {
@@ -64,16 +67,19 @@ def eventkit_permission_problems() -> list[str]:
     """Return human-readable permission problems for the Calendar and Reminders tools.
 
     Covers EventKit full access for events and reminders, Full Disk Access
-    for the Reminders database that supplies the flagged state, and Automation
-    for the JXA call that writes it.
+    for the Reminders database that supplies the fields EventKit lacks,
+    Automation for the JXA call that writes the flag, and the private
+    ReminderKit API that writes the other fields.
     """
     problems = [
         _permission_problem(EventKit.EKEntityTypeEvent),
         _permission_problem(EventKit.EKEntityTypeReminder),
         automation_problem("com.apple.reminders", "Reminders"),
+        *reminderkit_problems(),
     ]
     try:
         read_flags()
+        read_extras()
     except PermissionError as exc:
         problems.append(str(exc))
     return [problem for problem in problems if problem]
@@ -151,6 +157,20 @@ def datetime_to_components(value: datetime) -> Any:
     components = _gregorian(time_zone).components_fromDate_(_DUE_UNITS, to_nsdate(value))
     components.setTimeZone_(time_zone)
     return components
+
+
+def date_to_components(value: date) -> Any:
+    """Build date-only due components; Reminders.app treats them as an all-day reminder."""
+    components = NSDateComponents.alloc().init()
+    components.setYear_(value.year)
+    components.setMonth_(value.month)
+    components.setDay_(value.day)
+    return components
+
+
+def is_date_only(components: Any) -> bool:
+    """Whether due date components carry a date without a time."""
+    return components.hour() == NSDateComponentUndefined
 
 
 def components_to_iso(components: Any) -> str | None:

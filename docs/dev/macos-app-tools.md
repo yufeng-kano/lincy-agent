@@ -50,10 +50,12 @@ tools:
 | 行事曆：完整取用 | `calendar_tool`（EventKit） |
 | 提醒事項：完整取用 | `reminders_tool`（EventKit） |
 | 照片：完整取用 | `photos_tool`（PhotoKit） |
-| 完整磁碟取用權限 | 唯讀讀取 Reminders、Notes、Photos、Mail 的資料庫（`flagged`、筆記、照片文字 metadata、信件） |
+| 完整磁碟取用權限 | 唯讀讀取 Reminders、Notes、Photos、Mail 的資料庫（提醒事項的 `flagged` 與 EventKit 沒有的欄位、筆記、照片文字 metadata、信件） |
 | 自動化：Reminders / Notes / Mail | Reminders `flagged` 寫入、Notes `get` 與寫入、Mail `trash` |
 
 `tools.apple_apps.enabled` 時，validate 階段（`host/check.py`）會呼叫各工具的 `*_permission_problems()`，任一項缺少就 `EnvironmentCheckFailed`，不啟動。理由同 GUI 權限：少了權限每次呼叫都會失敗，寧可啟動時就停。
+
+同一步也檢查 Reminders 用到的私有 ReminderKit class 與 selector 是否都還在（`reminderkit_problems()`），以及 Reminders 資料庫是否有讀取端需要的欄位。macOS 升級改掉任何一個，啟動時就停，不會等到某次工具呼叫才失敗。
 
 自動化授權也在這一步檢查。`apple_events.py` 用 `AEDeterminePermissionToAutomateTarget` 查 Reminders、Notes、Mail，固定不跳授權視窗。被拒（-1743）或從未詢問（-1744）都擋下啟動。
 
@@ -165,6 +167,16 @@ actions：
 - `flagged`
 - `completed`
 - `sort_by`
+- `early_reminder`
+- `recurrence`
+- `recurrence_interval`
+- `urgent`
+- `tags`
+- `url`
+- `location`
+- `subtasks`
+- `images`
+- `clear`
 
 備註：
 - 沒有 `list_id` 時可用 `list_name` 或 `list_path`
@@ -178,6 +190,16 @@ actions：
 - EventKit 沒有 `flagged`：讀取與 `flagged` 篩選改從 Reminders 資料庫（`~/Library/Group Containers/group.com.apple.reminders/Container_v1/Stores/Data-*.sqlite`，表 `ZREMCDREMINDER`，`ZIDENTIFIER` 對 `calendarItemIdentifier`、`ZFLAGGED`）唯讀讀取；寫入 `flagged` 用一次 JXA `reminders.byId(...)`，約 1.2 秒
 - create / update 先由 EventKit 存檔再寫 `flagged`；JXA 寫 `flagged` 失敗時仍回 `ok: true` 與已存檔的 reminder，另帶 `warning` 說明旗標未套用與原因，避免 agent 重試造成重複建立
 - search 回傳 `limit`、`truncated`、`warning`；指定不存在的清單會報錯
+- `due` 傳 `YYYY-MM-DD` 建成整天提醒：due 只有年月日、不加 alarm，讀回 `all_day: true`，`due` 仍以本地午夜的 ISO 字串表示。0.87.0 之前同樣的輸入會建成午夜 00:00 的定時提醒
+- `early_reminder` 是 Reminders.app 的「提前提醒」，格式為正整數加單位：`m`、`h`、`d`、`w`、`mo`，例如 `30m`、`1d`。提醒仍掛在 `due` 那天，只多一次提前通知。一筆提醒只保留一個，寫入時取代既有的
+- `urgent` 是 Reminders.app 的「緊急」：到期時在使用者 iPhone 上像鬧鐘一樣響到關掉。2026-11-13 實測由 lincy 主機寫入後，使用者的 iPhone 有響。必須有帶時間的 due
+- `recurrence` 可用 `daily`、`weekly`、`monthly`、`yearly`，`recurrence_interval` 預設 1。讀回只列第一條規則的頻率與間隔；在 Reminders.app 設的星期幾、結束日期等細節不會顯示，用工具重設 `recurrence` 會把它們換掉。週期提醒 `complete` 之後，同一個 id 會前進到下一次（回傳 `completed: false` 與新的 due），另外產生一筆已完成的副本
+- `tags` 整組取代既有標籤，不可含 `#` 或空白；`url` 必須帶 scheme；`location` 需要 `title`、`latitude`、`longitude`，可加 `radius_m`（預設 100）與 `trigger`（`arrive` / `leave`，預設 `arrive`）；`subtasks` 與 `images` 是追加，`images` 路徑必須在 `allowed_paths` 內，且存檔前會確認檔案能解碼成圖片
+- `clear` 只用於 update，可移除 `early_reminder`、`recurrence`、`location`、`url`、`tags`。同一次呼叫不可對同一欄位又設又清
+- 防呆在存檔前完成：`early_reminder` 與 `recurrence` 需要 due、`urgent` 需要帶時間的 due（update 時以更新後的 due 判斷）、格式不符直接回 `Error:`
+- 讀回的 row 只在有設定時才帶 `all_day`、`recurrence`、`location`、`early_reminders`、`urgent`、`tags`、`url`、`image_count`、`parent_id`、`subtask_ids`，避免 search 每筆都多出一串空欄位。子任務在 search 裡是獨立的提醒，帶 `parent_id`
+- `early_reminder`、`urgent`、`tags`、`url`、`subtasks`、`images` 在 EventKit 存檔之後才經 ReminderKit 寫入，寫完從資料庫讀回比對（`subtasks` 與 `images` 比對新增的數量）。寫入失敗、讀回失敗或讀回不符時仍回 `ok: true`，`warning` 列出可能沒套用的欄位，理由與 `flagged` 相同
+- 已設緊急的提醒不能改成整天：update 只傳整天的 `due` 會被拒絕，要同時傳 `urgent=false`
 
 ### `notes_tool`
 
@@ -479,7 +501,7 @@ actions：
 | 工具 | 讀取 | 寫入 |
 |------|------|------|
 | `calendar_tool` | EventKit | EventKit |
-| `reminders_tool` | EventKit；`flagged` 讀 Reminders 資料庫 | EventKit；`flagged` 用一次 JXA `byId` |
+| `reminders_tool` | EventKit；`flagged`、提前提醒、緊急、標籤、URL、子任務、圖片數讀 Reminders 資料庫 | EventKit；`flagged` 用一次 JXA `byId`；提前提醒、緊急、標籤、URL、子任務、圖片用私有 ReminderKit |
 | `photos_tool` | PhotoKit；標題、描述、關鍵字、檔名讀 Photos.sqlite | PhotoKit `performChangesAndWait` |
 | `notes_tool` | NoteStore.sqlite；完整 HTML 用一次 JXA `byId` | AppleScript，以 id 直接指定 note / folder |
 | `mail_tool` | Envelope Index + `.emlx` | `trash` 用 JXA 直接指定單封信 |
@@ -496,6 +518,23 @@ actions：
 - host 是單一 process，brain 與 worker 會從不同 thread 同時呼叫工具，所以 `open_store` 是 context manager：每個 entity type 一把 `RLock`，從 `reset()` 到最後一次 EventKit 存取或存檔都持有，避免另一個呼叫的 `reset()` 讓手上的物件失效；同一操作內巢狀呼叫不會 deadlock，也不會再 `reset()`
 - Reminders fetch 是非同步 API，用 `threading.Event` 等，上限 `timeout_seconds`
 - 不在工具內呼叫 requestAccess；授權交給 `permissions-warmup` 與 validate 階段
+
+### ReminderKit（私有 API）
+
+Reminders.app 的提前提醒、緊急、標籤、URL 欄位、圖片附件、子任務都不在公開的 EventKit 裡，AppleScript 字典也沒有。Reminders.app 自己透過私有的 `ReminderKit.framework` 寫這些欄位，`macos_apps/reminderkit.py` 用 pyobjc 呼叫同一組 class。以下都是 2026-11-13 在 macOS 26.7.1 的實測結果，不是 Apple 文件：
+
+- 流程：`REMStore` 以 `x-apple-reminderkit://REMCDReminder/<id>` 取得提醒，`REMSaveRequest.updateReminder:` 拿到 change item，改完 `saveSynchronouslyWithError:`。`<id>` 就是 EventKit 的 `calendarItemIdentifier`（lincy 帳號的每一筆都與資料庫的 `ZCKIDENTIFIER` 相同）
+- 提前提醒是 `REMDueDateDeltaAlert`，存在 `ZREMCDDUEDATEDELTAALERT`，與 EventKit 的 alarm 無關。在 Reminders.app 設的提前提醒，從 EventKit 讀只看得到到期時間那個絕對 alarm
+- `REMDueDateDeltaInterval` 的 `count` 帶正負號，直接加到 due 上：提前要寫負數。寫正數時 Reminders.app 顯示「自訂／無」。工具只收正數，內部轉負
+- 單位值：0 分、1 時、2 天、3 週、4 月
+- `removeAllFetchedDueDateDeltaAlerts` 在一般 fetch 之後不會移除任何東西，還會讓新舊並存。既有的提前提醒要用資料庫讀到的 identifier 呼叫 `removeDueDateDeltaAlertsWithIdentifiers:`
+- 緊急用 `urgentAlarmContext.setIsUrgentStateEnabledForCurrentUser:`。網路上的參考實作用的 `setPrefersUrgentPresentationStyleForDateAlarms:` 在 26.7.1 已經不存在
+- ReminderKit 寫完之後再用 EventKit 存檔（例如改 due），這些欄位都保留
+- 公開 API 的替代做法不可行：在提醒上加 `EKAlarm(relativeOffset:)`，Reminders.app 會把顯示時間改成「到期減提前量」（che-ical-mcp issue #433 的實測），等於把提醒掛回前幾天
+- 資料庫讀取端：`ZREMCDOBJECT` 一張表放多種 entity，同名欄位會被 Core Data 加編號（26.7.1 上附件用 `ZREMINDER2` 指回提醒、標籤用 `ZREMINDER3`、標籤名稱在 `ZNAME1`）。查詢從 `PRAGMA table_info` 取所有 `ZREMINDER*`、`ZNAME*` 欄位再 `COALESCE`，不寫死編號。標籤名稱不從 `ZREMCDHASHTAGLABEL` 取，那張表在寫入後會晚一點才更新
+- `Data-local.sqlite` 可能停在沒有緊急欄位的舊 schema，讀取端對這種 store 一律視為非緊急
+- 風險：私有 API 沒有相容性保證。`reminderkit_problems()` 在 validate 階段逐一檢查用到的 class 與 selector，macOS 升級後缺任何一個就擋下啟動並列出名稱；修法是對照新版 framework 更新 `reminderkit.py`
+- `flagged` 的寫入仍走 JXA，沒有搬到 ReminderKit
 
 ### 時間
 
@@ -517,5 +556,6 @@ actions：
 - export 路徑限制測試：不允許匯出到未授權路徑
 - Mail 時間範圍測試：日期輸入要轉成本地整天，輸出 UTC 時間要轉回 app local time
 - Reminders due 時間測試：輸入本地時間要轉成帶 app offset 的 ISO 再交給 JXA，輸出 UTC 時間要轉回 app local time
+- Reminders 欄位測試（`tests/tools/test_macos_reminder_fields.py`）：整天 due、重複、位置、欄位防呆、ReminderKit 寫入失敗與讀回不符的 warning、合成 sqlite 的讀取端、`reminderkit_problems()`
 
 真正讀寫 Calendar / Reminders / Notes / Photos / Mail 的整合測試不放進自動化測試，因為會碰到本機資料與系統權限。實機驗證在 lincy 主機以正式權限情境（Terminal 裡的 tmux 新視窗）執行；寫入只碰自己建立的 `[lincy-test]` 項目並在結束時刪除。從 ssh 直接跑的結果不準，因為 TCC 對 ssh 的授權與 Terminal 不同。

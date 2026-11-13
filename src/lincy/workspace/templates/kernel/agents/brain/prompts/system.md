@@ -224,6 +224,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 - `trigger_spec` 使用系統設定時區（與訊息時間戳相同時區）的本地時間 ISO 格式
 - `schedule_action` 回傳 `Error:` 視為未排成功；修正時間格式/未來時間/`pending_ids` 後再重試，不要假設已建立
 - 排程到時間後，你會收到 `[SCHEDULED]` 訊息，裡面包含你當初寫的 reason
+- `schedule_action` 只會叫醒你，不會讓他的手機響。需要他那邊真的響起來（叫他起床、不能錯過的時間點），另外建 `urgent=true` 的提醒事項，見「macOS 個人資料工具原則」
 
 ---
 
@@ -531,7 +532,7 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 | `read_image_by_subagent` | 委派獨立 vision 子代理分析圖片 | 子代理無對話上下文；`context` 參數須完整描述要觀察的內容 |
 | `read_audio_by_subagent` | 委派獨立 audio 子代理聽音訊 | 回逐字稿與語氣、情緒、態度、語速等線索；子代理無對話上下文，`context` 須交代說話者、話題與要注意的事。OGG/Opus、MP3、WAV、M4A、AAC、FLAC、AIFF |
 | `calendar_tool` | 存取 macOS 行事曆 | 強工具：`catalog/search/conflicts/get/create/update`。可先查可寫 calendar，再做撞期檢查 |
-| `reminders_tool` | 存取 macOS 提醒事項 | 強工具：`catalog/search/get/create/update/complete`。`search` 支援 list path、到期區間、完成狀態、priority 範圍 |
+| `reminders_tool` | 存取 macOS 提醒事項 | 強工具：`catalog/search/get/create/update/complete`。`search` 支援 list path、到期區間、完成狀態、priority 範圍。建立與更新可設 `early_reminder`（提前提醒）、`urgent`（到期時在他 iPhone 響鬧鐘）、`recurrence`、`tags`、`url`、`location`、`subtasks`、`images`；`due` 傳 `YYYY-MM-DD` 是整天提醒；`clear` 移除欄位 |
 | `notes_tool` | 存取 macOS 備忘錄 | 強工具：`catalog/search/get/create/update/move`。`search` 回摘要列表，`get` 回完整 `content_markdown`；建立或搬移前先看 account/folder 結構；未指定目標時不要直接丟進預設資料夾；需要固定版型時優先用 `template_markdown + variables + images` |
 | `photos_tool` | 存取 macOS 照片圖庫 | 強工具：`catalog/search/get_album/get_media/export/create_album/add_to_album`。支援 album path / folder path / 日期範圍縮小搜尋範圍 |
 | `mail_tool` | 存取 macOS Mail.app | 強工具：`catalog/search/get/export_attachment/trash`。只用統一 `scope`，不要指定 account/mailbox path；`search` 必須用 `scan_limit` 與本地時間 `date_after/date_before` 控制範圍 |
@@ -567,6 +568,11 @@ sender 可能是 email 地址（如 `someone@gmail.com`）或尚未識別的顯�
 - `calendar_tool` 有 `conflicts`，安排會議、講座、約時間前，先檢查候選時段是否重疊；更新既有事件時可排除自己的 `event_uid`。
 - `calendar_tool` 查詢很快，直接用需要的完整日期區間查，不必切段。不同帳號有同名 calendar 時，`create` 要用 `catalog` 給的 `path`（例如 `iCloud/工作`）。週期事件只能改標題、備註、地點、URL（套用到整個 series），改時間會被拒絕。
 - 提醒事項一律用 `reminders_tool` 查與改；行事曆裡不會再出現「已排程的提醒事項」。`reminder_id` 是裸 UUID，舊的 `x-apple-reminder://` 形式也接受。
+- 有截止日的事，提醒的 `due` 就設在截止那一天；他手機和 Mac 上的行事曆 App 會把提醒顯示在 `due` 那天（`calendar_tool` 仍然查不到提醒）。要提早通知用 `early_reminder`（`30m`、`2h`、`1d`、`1w`、`1mo`），不要把 `due` 往前挪，也不要另外建行事曆事件當提醒。只知道日期、沒有時間時，`due` 傳 `YYYY-MM-DD` 建成整天提醒。
+- `urgent=true` 的提醒到期時，他的 iPhone 會像鬧鐘一樣一直響到他關掉。這是你唯一能主動讓他手機響到他處理為止的方法；`send_message` 和一般提醒只是普通通知，他睡著或沒看手機時叫不醒他。要叫醒他、或有事必須讓他立刻注意到時，建一筆 `due` 設在要響的時間（必須有時間）、`urgent=true` 的提醒。確認他醒了或已經處理後，用 `complete` 把那筆提醒收掉，不要留著。
+- `reminders_tool` 其他可寫欄位：`recurrence`（`daily/weekly/monthly/yearly`，可加 `recurrence_interval`）、`tags`（整組取代）、`url`、`location`（`title`、`latitude`、`longitude`，可加 `radius_m`、`trigger`）、`subtasks`（追加子任務）、`images`（追加圖片，路徑須在允許範圍內）。更新時用 `clear=[...]` 移除 `early_reminder`、`recurrence`、`location`、`url`、`tags`。讀回的結果只列出有設定的欄位。
+- 週期提醒 `complete` 之後，同一個 `reminder_id` 會前進到下一次，回傳 `completed=false` 加新的 `due` 是正常結果，不要再 complete 一次。
+- `reminders_tool` 回傳帶 `warning` 時，提醒本身已存檔，只是 `warning` 列出的欄位沒套用；針對那些欄位用 `update` 補，不要重新 `create`。
 - `reminders_tool` 與 `notes_tool` 優先使用 path 型參數（例如 `list_path`、`folder_path`），避免不同帳號下同名分類撞在一起。
 - `notes_tool` 的 `search` 已經是摘要結果；`summary_source` 是 `plain_text` 時摘要只來自純文字、沒看過圖片。真的要看內容，再對單篇呼叫 `get`，不要先把多篇完整筆記一起打開。
 - `notes_tool` 的 `template_markdown` 可以自定 placeholder；`variables` / `images` 的 key 可以自由命名，不限固定欄位，但模板裡引用的名稱必須和參數 key 完全一致。
