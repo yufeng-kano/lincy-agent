@@ -21,7 +21,11 @@ from dotenv import dotenv_values
 
 from ..brain_prompt_policy import BrainPromptPolicy
 from ..context import ContextBuilder, Conversation
-from ..context.cache_breakpoints import build_cache_control, resolve_breakpoint_cache_ttl
+from ..context.cache_breakpoints import (
+    TOOL_RESULT_BREAKPOINT_PROVIDERS,
+    build_cache_control,
+    resolve_breakpoint_cache_ttl,
+)
 from ..core.schema import AppConfig, OpenAIConfig
 from ..gui import DesktopBackend, GUIManager, GUISessionStore, GUIWorker
 from ..llm import create_agent_client
@@ -381,6 +385,16 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             )
         return client
 
+    def _subagent_cache_control(agent_config) -> dict[str, str] | None:
+        """Breakpoint marker for a sub-agent loop, None when caching is off."""
+        return build_cache_control(
+            resolve_breakpoint_cache_ttl(
+                provider=getattr(agent_config.llm, "provider", ""),
+                enabled=agent_config.cache.enabled,
+                configured_ttl=agent_config.cache.ttl,
+            )
+        )
+
     def _media_model_fingerprint(agent_config) -> str:
         """Cache namespace for media sub-agents; key rotation must not evict."""
         return json.dumps(
@@ -601,6 +615,11 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 recall_prompt,
                 agent_os_dir=agent_os_dir,
                 config=recall_config.recall,
+                cache_control=_subagent_cache_control(recall_config),
+                cache_tool_results=(
+                    getattr(recall_config.llm, "provider", "")
+                    in TOOL_RESULT_BREAKPOINT_PROVIDERS
+                ),
             )
 
     # GUI automation agent initialization
@@ -636,13 +655,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 keep_full_states=desktop.keep_full_states,
                 stale_text_max_chars=desktop.stale_text_max_chars,
                 repeat_limit=desktop.repeat_limit,
-                cache_control=build_cache_control(
-                    resolve_breakpoint_cache_ttl(
-                        provider=getattr(gm_config.llm, "provider", ""),
-                        enabled=gm_config.cache.enabled,
-                        configured_ttl=gm_config.cache.ttl,
-                    )
-                ),
+                cache_control=_subagent_cache_control(gm_config),
             )
 
         # Vision worker survives only as the describer behind
@@ -799,14 +812,6 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
         worker_prompt = _load_agent_prompt("worker")
         if worker_prompt is None:
             raise BuildError("Failed to load worker prompt")
-        worker_cache_ctrl = build_cache_control(
-            resolve_breakpoint_cache_ttl(
-                provider=getattr(worker_config.llm, "provider", ""),
-                enabled=worker_config.cache.enabled,
-                configured_ttl=worker_config.cache.ttl,
-            )
-        )
-
         worker_overrides = build_worker_file_tools(all_allowed_paths, agent_os_dir)
 
         worker_notes = None
@@ -850,7 +855,11 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             worker_prompt,
             max_turns=worker_config.max_turns,
             max_context_tokens=worker_config.max_context_tokens,
-            cache_control=worker_cache_ctrl,
+            cache_control=_subagent_cache_control(worker_config),
+            cache_tool_results=(
+                getattr(worker_config.llm, "provider", "")
+                in TOOL_RESULT_BREAKPOINT_PROVIDERS
+            ),
             sink=session_mgr,
             provider=getattr(worker_config.llm, "provider", None),
             model=getattr(worker_config.llm, "model", None),

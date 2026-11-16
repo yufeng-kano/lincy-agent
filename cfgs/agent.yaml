@@ -315,6 +315,11 @@ agents:
       prefetch_deadline_seconds: 20
       max_tool_calls: 12
       max_result_chars: 1500
+    # One run is a few requests seconds apart; 5 minutes covers it without
+    # the 2x write price of a longer TTL.
+    cache:
+      enabled: true
+      ttl: "ephemeral"
 
   worker:
     enabled: true

@@ -308,6 +308,41 @@ def test_recall_agent_stops_at_tool_call_limit_and_finalizes(tmp_path: Path):
     assert "Tool call limit reached" in final_request[-1].content
 
 
+def test_recall_agent_caches_up_to_the_latest_tool_result(tmp_path: Path):
+    client = _ScriptedClient("- fact")
+    cache_ctrl = {"type": "ephemeral"}
+    agent = RecallAgent(
+        client,
+        "system prompt",
+        agent_os_dir=_workspace(tmp_path),
+        config=RecallAgentConfig(),
+        cache_control=cache_ctrl,
+        cache_tool_results=True,
+    )
+
+    agent.run("question", max_tool_calls=2)
+
+    first, second, final = client.calls
+    assert all(call[0].cache_control == cache_ctrl for call in client.calls)
+    # No tool result yet: the request message carries the breakpoint.
+    assert first[1].content[0].cache_control == cache_ctrl
+    assert second[-1].role == "tool" and second[-1].cache_control == cache_ctrl
+    assert isinstance(second[1].content, str)
+    # The finalisation prompt is the latest message of the last request.
+    assert final[-1].content[0].cache_control == cache_ctrl
+    assert all(m.cache_control is None for m in final if m.role == "tool")
+
+
+def test_recall_agent_sends_no_cache_markers_by_default(tmp_path: Path):
+    client = _ScriptedClient("- fact")
+
+    _agent(tmp_path, client).run("question", max_tool_calls=1)
+
+    for call in client.calls:
+        assert all(m.cache_control is None for m in call)
+        assert all(isinstance(m.content, str) for m in call if m.role != "assistant")
+
+
 def test_recall_agent_marks_calls_beyond_the_limit_in_one_batch(tmp_path: Path):
     class _BatchClient:
         def __init__(self):

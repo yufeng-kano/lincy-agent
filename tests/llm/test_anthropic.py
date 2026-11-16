@@ -220,6 +220,45 @@ def test_parallel_tool_results_share_one_user_message(monkeypatch):
     assert sent[3]["content"] == [{"type": "text", "text": "thanks"}]
 
 
+def test_tool_message_cache_control_lands_on_its_tool_result_block(monkeypatch):
+    payload = {"content": [{"type": "text", "text": "ok"}]}
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+    client = _make_client()
+
+    messages = [
+        Message(role="user", content="do both"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[
+                ToolCall(id="t1", name="read_file", arguments={"path": "a"}),
+                ToolCall(id="t2", name="read_file", arguments={"path": "b"}),
+            ],
+        ),
+        Message(role="tool", content="A", tool_call_id="t1"),
+        Message(
+            role="tool",
+            content="B",
+            tool_call_id="t2",
+            cache_control={"type": "ephemeral"},
+        ),
+    ]
+
+    client.chat(messages)
+
+    results = calls[0]["json"]["messages"][2]["content"]
+    assert results == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "A"},
+        {
+            "type": "tool_result",
+            "tool_use_id": "t2",
+            "content": "B",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+
 def test_tool_results_of_separate_turns_stay_separate(monkeypatch):
     payload = {"content": [{"type": "text", "text": "ok"}]}
     calls: list[dict] = []

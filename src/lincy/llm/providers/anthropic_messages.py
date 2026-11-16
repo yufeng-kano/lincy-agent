@@ -108,6 +108,8 @@ def convert_messages(
                 content = [{"type": "tool_result", "tool_use_id": message.tool_call_id or "", "content": content_parts_to_blocks(message.content)}]
             else:
                 content = [{"type": "tool_result", "tool_use_id": message.tool_call_id or "", "content": message.content or ""}]
+            if message.cache_control is not None:
+                content[0]["cache_control"] = message.cache_control
             # Messages API requires all results from a parallel tool-use turn in one user message.
             if pending_tool_result_index is not None:
                 pending = result[pending_tool_result_index]

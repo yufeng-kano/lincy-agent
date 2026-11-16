@@ -18,9 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...context.cache_breakpoints import advance_cache_breakpoint
 from ...llm.base import LLMClient
 from ...llm.content import content_to_text
-from ...llm.schema import Message, ToolDefinition, ToolParameter, make_tool_result_message
+from ...llm.schema import (
+    LLMResponse,
+    Message,
+    ToolDefinition,
+    ToolParameter,
+    make_tool_result_message,
+)
 from ...llm.session import llm_session
 from ...session.schema import SessionEntry
 from ...timezone_utils import _DAY_NAMES, format_local_stamp, now as tz_now
@@ -681,11 +688,15 @@ class RecallAgent:
         *,
         agent_os_dir: Path,
         config: "RecallAgentConfig",
+        cache_control: dict[str, str] | None = None,
+        cache_tool_results: bool = False,
     ):
         self.client = client
         self.system_prompt = system_prompt
         self.agent_os_dir = agent_os_dir
         self.config = config
+        self._cache_control = cache_control
+        self._cache_tool_results = cache_tool_results
         self._registry = build_recall_registry(agent_os_dir)
 
     def recall(
@@ -753,14 +764,25 @@ class RecallAgent:
 
     def _run_loop(self, request: str, *, limit: int, deadline: float | None) -> RecallRun:
         messages = [
-            Message(role="system", content=self.system_prompt),
+            Message(role="system", content=self.system_prompt, cache_control=self._cache_control),
             Message(role="user", content=request),
         ]
         tool_defs = self._registry.get_definitions()
+
+        def ask() -> LLMResponse:
+            # Every round resends the grep output of the earlier ones; the
+            # breakpoint on the latest result lets them be read from cache.
+            return self.client.chat_with_tools(
+                advance_cache_breakpoint(
+                    messages, include_tool_results=self._cache_tool_results,
+                ),
+                tool_defs,
+            )
+
         calls_used = 0
         hit_limit = False
         timed_out = False
-        response = self.client.chat_with_tools(messages, tool_defs)
+        response = ask()
         while response.tool_calls:
             # Replay reasoning like the brain's side channels do: signed
             # thinking blocks must travel with the tool calls they produced.
@@ -794,9 +816,9 @@ class RecallAgent:
                     role="user",
                     content=_DEADLINE_PROMPT if timed_out else _FINALIZE_PROMPT,
                 ))
-                response = self.client.chat_with_tools(messages, tool_defs)
+                response = ask()
                 break
-            response = self.client.chat_with_tools(messages, tool_defs)
+            response = ask()
         return RecallRun(
             text=response.content or "",
             tool_calls=calls_used,

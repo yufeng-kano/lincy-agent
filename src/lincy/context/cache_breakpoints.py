@@ -4,6 +4,8 @@ Breakpoint providers (Anthropic-style ``cache_control``) need:
 1. a stable system-tier marker with the configured TTL
 2. a conversation-tier marker advanced to the latest eligible message
    before each tool-loop request
+3. for append-only sub-agent loops, that marker on the latest tool result,
+   so the growing tool output is read from cache instead of resent
 
 OpenAI-style providers use request-level retention / cache keys instead and
 should leave ``cache_control`` unset.
@@ -26,6 +28,12 @@ BREAKPOINT_MAX_TTL = {
     "heyroute": "1h",
     "kano_proxy": "1h",
 }
+# Providers whose adapter renders a breakpoint on a tool_result block.
+# Heyroute shares the adapter but is unverified, so it stays out.
+TOOL_RESULT_BREAKPOINT_PROVIDERS = frozenset({"anthropic", "kano_proxy"})
+# A tool-result breakpoint is read by the next request of the same loop,
+# seconds later: the default 5-minute TTL avoids the 2x write price of 1h.
+TOOL_RESULT_CACHE_CONTROL = {"type": "ephemeral"}
 # Project-wide TTL tokens. Keep in sync with CacheConfig.ttl Literal.
 ALLOWED_CACHE_TTLS = frozenset({"ephemeral", "1h", "24h"})
 _TTL_ORDER = {"ephemeral": 0, "1h": 1, "24h": 2}
@@ -107,6 +115,8 @@ def clear_non_system_cache_control(
     cache_control: dict[str, str],
 ) -> Message:
     """Remove the conversation breakpoint from non-system content blocks."""
+    if message.role == "tool" and message.cache_control is not None:
+        message = message.model_copy(update={"cache_control": None})
     if message.role == "system" or not isinstance(message.content, list):
         return message
 
@@ -147,11 +157,20 @@ def apply_cache_control_to_message(
     return message
 
 
-def advance_cache_breakpoint(messages: list[Message]) -> list[Message]:
+def advance_cache_breakpoint(
+    messages: list[Message],
+    *,
+    include_tool_results: bool = False,
+) -> list[Message]:
     """Advance the conversation-tier breakpoint for a tool-loop request.
 
     Leaves the caller's message list untouched: returns a request-local copy
     with the conversation marker on the latest eligible text-bearing message.
+
+    ``include_tool_results`` lets a tool result be that message. Only for
+    loops whose history is append-only and whose provider is in
+    ``TOOL_RESULT_BREAKPOINT_PROVIDERS``: a history rewritten between
+    requests pays the cache write and never reads it back.
     """
     cache_control = extract_prompt_cache_control(messages)
     if cache_control is None:
@@ -160,7 +179,9 @@ def advance_cache_breakpoint(messages: list[Message]) -> list[Message]:
     target_index: int | None = None
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
-        if message.role in {"system", "tool"}:
+        if message.role == "system":
+            continue
+        if message.role == "tool" and not include_tool_results:
             continue
         if message.role == "assistant" and message.tool_calls:
             continue
@@ -176,8 +197,15 @@ def advance_cache_breakpoint(messages: list[Message]) -> list[Message]:
         clear_non_system_cache_control(message, cache_control=cache_control)
         for message in messages
     ]
-    updated[target_index] = apply_cache_control_to_message(
-        updated[target_index],
-        cache_control=cache_control,
-    )
+    target = updated[target_index]
+    if target.role == "tool":
+        # The adapter puts a tool message's marker on its tool_result block.
+        updated[target_index] = target.model_copy(
+            update={"cache_control": dict(TOOL_RESULT_CACHE_CONTROL)}
+        )
+    else:
+        updated[target_index] = apply_cache_control_to_message(
+            target,
+            cache_control=cache_control,
+        )
     return updated
