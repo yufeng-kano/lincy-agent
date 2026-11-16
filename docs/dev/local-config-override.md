@@ -41,6 +41,7 @@ list 不做元素級合併：`llm_fallbacks`、`excluded_tools`、`boot_files` �
 - 不支援「刪除 key」語義（沒有 null sentinel）。
 - **不覆蓋 `cfgs/llm/**`**。本機要用不同的 provider profile，就在 `cfgs/llm/` 下自建檔案再由
   override 指過去；多一層 provider config override 只會讓實際生效值難以追查。
+  本機 profile 命名為 `*.override.yaml`（如 `cfgs/llm/kano-proxy/brain.override.yaml`），`.gitignore` 的 `cfgs/**/*.override.yaml` 會一併忽略。
 - **不放 API key**，key 一律走 `.env`。
 
 ## 讀取路徑統一

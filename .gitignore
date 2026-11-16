@@ -222,4 +222,4 @@ src/web_ui/dist/
 src/web_ui/.vite/
 
 # Local config overrides (see cfgs/*.override.yaml.example)
-cfgs/*.override.yaml
+cfgs/**/*.override.yaml
