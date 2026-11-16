@@ -161,9 +161,12 @@ def test_advance_cache_breakpoint_can_mark_the_latest_tool_result():
     assert advanced[4].cache_control == TOOL_RESULT_CACHE_CONTROL == {"type": "ephemeral"}
     assert advanced[4].content == "y"
     assert advanced[3].cache_control is None
-    assert isinstance(advanced[1].content, str)
+    # The conversation marker stays: it still hits after the 5-minute entry
+    # expires, and adapters that ignore tool markers lose nothing.
+    assert advanced[1].content[0].cache_control == cache_ctrl
     assert advanced[0].cache_control == cache_ctrl
     assert all(m.cache_control is None for m in messages[1:])
+    assert isinstance(messages[1].content, str)
 
 
 def test_advance_cache_breakpoint_moves_off_an_earlier_tool_result():
@@ -193,6 +196,16 @@ def test_advance_cache_breakpoint_prefers_a_later_user_message_over_tool_results
 
     assert all(m.cache_control is None for m in advanced if m.role == "tool")
     assert advanced[5].content[0].cache_control == cache_ctrl
+    assert isinstance(advanced[1].content, str)
+
+
+def test_advance_cache_breakpoint_ignores_tool_results_by_default():
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+
+    advanced = advance_cache_breakpoint(_tool_loop_messages(cache_ctrl))
+
+    assert all(m.cache_control is None for m in advanced if m.role == "tool")
+    assert advanced[1].content[0].cache_control == cache_ctrl
 
 
 def _echo_registry() -> ToolRegistry:
@@ -248,7 +261,7 @@ def test_worker_runner_marks_the_latest_tool_result_when_enabled():
     assert first[1].content[0].cache_control == cache_ctrl
     assert second[-1].role == "tool"
     assert second[-1].cache_control == TOOL_RESULT_CACHE_CONTROL
-    assert isinstance(second[1].content, str)
+    assert second[1].content[0].cache_control == cache_ctrl
     assert second[0].cache_control == cache_ctrl
 
 

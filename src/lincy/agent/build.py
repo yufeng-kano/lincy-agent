@@ -395,6 +395,13 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             )
         )
 
+    def _subagent_cache_tool_results(agent_config) -> bool:
+        """True when every candidate's adapter renders tool-result breakpoints."""
+        return all(
+            getattr(llm_config, "provider", "") in TOOL_RESULT_BREAKPOINT_PROVIDERS
+            for llm_config in (agent_config.llm, *agent_config.llm_fallbacks)
+        )
+
     def _media_model_fingerprint(agent_config) -> str:
         """Cache namespace for media sub-agents; key rotation must not evict."""
         return json.dumps(
@@ -616,10 +623,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
                 agent_os_dir=agent_os_dir,
                 config=recall_config.recall,
                 cache_control=_subagent_cache_control(recall_config),
-                cache_tool_results=(
-                    getattr(recall_config.llm, "provider", "")
-                    in TOOL_RESULT_BREAKPOINT_PROVIDERS
-                ),
+                cache_tool_results=_subagent_cache_tool_results(recall_config),
             )
 
     # GUI automation agent initialization
@@ -856,10 +860,7 @@ def build_agent(inputs: BuildInputs) -> BuiltAgent:
             max_turns=worker_config.max_turns,
             max_context_tokens=worker_config.max_context_tokens,
             cache_control=_subagent_cache_control(worker_config),
-            cache_tool_results=(
-                getattr(worker_config.llm, "provider", "")
-                in TOOL_RESULT_BREAKPOINT_PROVIDERS
-            ),
+            cache_tool_results=_subagent_cache_tool_results(worker_config),
             sink=session_mgr,
             provider=getattr(worker_config.llm, "provider", None),
             model=getattr(worker_config.llm, "model", None),

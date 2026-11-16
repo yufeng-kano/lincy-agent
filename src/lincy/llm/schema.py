@@ -345,6 +345,7 @@ class AnthropicToolResultContent(BaseModel):
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
     content: str
+    cache_control: dict[str, str] | None = None
 
 
 AnthropicContent = (

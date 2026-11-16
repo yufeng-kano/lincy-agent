@@ -30,7 +30,8 @@ class M0189RecallWorkerToolResultCache(Migration):
                 continue
             with config_path.open(encoding="utf-8") as handle:
                 config = yaml.safe_load(handle) or {}
-            recall = config.get("agents", {}).get("recall") if isinstance(config, dict) else None
+            agents = config.get("agents") if isinstance(config, dict) else None
+            recall = agents.get("recall") if isinstance(agents, dict) else None
             if not isinstance(recall, dict) or "cache" in recall:
                 continue
             recall["cache"] = dict(_RECALL_CACHE)

@@ -46,6 +46,10 @@ def test_leaves_configs_without_a_recall_agent_untouched(tmp_path: Path):
     assert _upgrade(tmp_path, config) == config
 
 
+def test_tolerates_an_empty_agents_section(tmp_path: Path):
+    assert _upgrade(tmp_path, {"agents": None}) == {"agents": None}
+
+
 def test_runs_without_any_workspace_config(tmp_path: Path):
     kernel_dir = tmp_path / "kernel"
     kernel_dir.mkdir()

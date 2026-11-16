@@ -4,8 +4,8 @@ Breakpoint providers (Anthropic-style ``cache_control``) need:
 1. a stable system-tier marker with the configured TTL
 2. a conversation-tier marker advanced to the latest eligible message
    before each tool-loop request
-3. for append-only sub-agent loops, that marker on the latest tool result,
-   so the growing tool output is read from cache instead of resent
+3. for append-only sub-agent loops, one more marker on the latest tool
+   result, so the growing tool output is read from cache instead of resent
 
 OpenAI-style providers use request-level retention / cache keys instead and
 should leave ``cache_control`` unset.
@@ -167,45 +167,51 @@ def advance_cache_breakpoint(
     Leaves the caller's message list untouched: returns a request-local copy
     with the conversation marker on the latest eligible text-bearing message.
 
-    ``include_tool_results`` lets a tool result be that message. Only for
-    loops whose history is append-only and whose provider is in
-    ``TOOL_RESULT_BREAKPOINT_PROVIDERS``: a history rewritten between
-    requests pays the cache write and never reads it back.
+    ``include_tool_results`` adds a second, 5-minute marker on the latest
+    tool result when it is newer than that message. The conversation marker
+    stays where it was, so an expired or ignored tool-result marker costs
+    nothing that was cached before. Only for loops whose history is
+    append-only and whose provider is in ``TOOL_RESULT_BREAKPOINT_PROVIDERS``:
+    a history rewritten between requests pays the write and never reads it.
     """
     cache_control = extract_prompt_cache_control(messages)
     if cache_control is None:
         return messages
 
     target_index: int | None = None
+    tool_index: int | None = None
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if message.role == "system":
-            continue
-        if message.role == "tool" and not include_tool_results:
             continue
         if message.role == "assistant" and message.tool_calls:
             continue
         if not message_has_text_content(message):
             continue
+        if message.role == "tool":
+            if include_tool_results and tool_index is None:
+                tool_index = index
+            continue
         target_index = index
         break
 
-    if target_index is None:
+    if target_index is None and tool_index is None:
         return messages
 
     updated = [
         clear_non_system_cache_control(message, cache_control=cache_control)
         for message in messages
     ]
-    target = updated[target_index]
-    if target.role == "tool":
-        # The adapter puts a tool message's marker on its tool_result block.
-        updated[target_index] = target.model_copy(
-            update={"cache_control": dict(TOOL_RESULT_CACHE_CONTROL)}
-        )
-    else:
+    if target_index is not None:
         updated[target_index] = apply_cache_control_to_message(
-            target,
+            updated[target_index],
             cache_control=cache_control,
+        )
+    if tool_index is not None:
+        # The adapter puts a tool message's marker on its tool_result block.
+        # It always follows the conversation marker, which satisfies the
+        # API rule that longer TTLs come first.
+        updated[tool_index] = updated[tool_index].model_copy(
+            update={"cache_control": dict(TOOL_RESULT_CACHE_CONTROL)}
         )
     return updated

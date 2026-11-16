@@ -770,7 +770,7 @@ class RecallAgent:
         tool_defs = self._registry.get_definitions()
 
         def ask() -> LLMResponse:
-            # Every round resends the grep output of the earlier ones; the
+            # Every round resends the grep output of the earlier ones; a
             # breakpoint on the latest result lets them be read from cache.
             return self.client.chat_with_tools(
                 advance_cache_breakpoint(

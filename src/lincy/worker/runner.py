@@ -308,6 +308,7 @@ class WorkerRunner:
         compacted = self._compact_messages(messages, worker_label)
         # Once compaction drops old turns the prefix shifts on every request,
         # so a tool-result breakpoint would be written and never read back.
+        # Dropping turns is the only way compaction touches tool results.
         return advance_cache_breakpoint(
             compacted,
             include_tool_results=self._cache_tool_results and len(compacted) == len(messages),

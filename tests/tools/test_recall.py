@@ -327,7 +327,7 @@ def test_recall_agent_caches_up_to_the_latest_tool_result(tmp_path: Path):
     # No tool result yet: the request message carries the breakpoint.
     assert first[1].content[0].cache_control == cache_ctrl
     assert second[-1].role == "tool" and second[-1].cache_control == cache_ctrl
-    assert isinstance(second[1].content, str)
+    assert second[1].content[0].cache_control == cache_ctrl
     # The finalisation prompt is the latest message of the last request.
     assert final[-1].content[0].cache_control == cache_ctrl
     assert all(m.cache_control is None for m in final if m.role == "tool")

@@ -259,6 +259,47 @@ def test_tool_message_cache_control_lands_on_its_tool_result_block(monkeypatch):
     ]
 
 
+def test_single_tool_result_keeps_its_cache_control_on_the_wire(monkeypatch):
+    # A lone string result is validated into the typed payload model, which
+    # must carry the marker through serialization.
+    payload = {"content": [{"type": "text", "text": "ok"}]}
+    calls: list[dict] = []
+    _patch_httpx_client(monkeypatch, payload, calls)
+    client = _make_client()
+
+    messages = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "a"})],
+        ),
+        Message(
+            role="tool",
+            content="A",
+            tool_call_id="t1",
+            cache_control={"type": "ephemeral"},
+        ),
+    ]
+
+    client.chat(messages)
+
+    sent = calls[0]["json"]["messages"]
+    assert sent[2]["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "A",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+    # Unmarked results stay free of the field.
+    client.chat([m.model_copy(update={"cache_control": None}) for m in messages])
+    assert calls[1]["json"]["messages"][2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "A"},
+    ]
+
+
 def test_tool_results_of_separate_turns_stay_separate(monkeypatch):
     payload = {"content": [{"type": "text", "text": "ok"}]}
     calls: list[dict] = []

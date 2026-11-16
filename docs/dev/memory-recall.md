@@ -62,7 +62,7 @@ side-channel 回傳 bool：只有 memory_edit 的結果 JSON（`status: ok`、`a
 | prompt | `kernel/agents/recall/prompts/system.md` | 英文指令、繁中輸出；語料地圖、第一輪直接 grep 記憶檔與當月 transcript（不先對全部 session 做 `count_only`）、3-6 次呼叫內收手、答案最多 5 條；輸出 `- [YYYY-MM-DD HH:MM][來源路徑] 事實`、衝突列「不確定」、沒有超出已載入檔案的內容就只回 `NONE` |
 | 設定 | `cfgs/agent.yaml` `agents.recall` + `RecallAgentConfig`（`core/schema.py`） | `prefetch`、`prefetch_min_chars`（4）、`prefetch_max_tool_calls`（6）、`prefetch_deadline_seconds`（20）、`max_tool_calls`（12）、`max_result_chars`（1500）；LLM profile `cfgs/llm/kano-proxy/recall.yaml`（model `recall-agent`，30 秒 timeout，0 transient retry） |
 | 組裝 | `agent/build.py` + `tool_setup.py` | `agents.recall` enabled 且 prompt 存在才建；`session_debug_label="recall"`；同一個實例給 `AgentCore.recall_agent`（預抓）與 `recall` 工具 |
-| Prompt cache | `agents.recall.cache`（`enabled: true`、`ttl: ephemeral`）+ `context/cache_breakpoints.py` | system message 掛 `cache_control`；每次 request 前呼叫 `advance_cache_breakpoint(include_tool_results=...)`，breakpoint 跟著最新的 grep 結果往後推，下一輪只有新增的結果是新寫入，前文從快取讀。一次 recall 的幾輪相隔數秒，5 分鐘 TTL 已足夠。provider 不在 `TOOL_RESULT_BREAKPOINT_PROVIDERS` 時 breakpoint 停在 request 那則 user message |
+| Prompt cache | `agents.recall.cache`（`enabled: true`、`ttl: ephemeral`）+ `context/cache_breakpoints.py` | system message 掛 `cache_control`；每次 request 前呼叫 `advance_cache_breakpoint(include_tool_results=...)`：request 那則 user message 保留 breakpoint，最新的 grep 結果上再加一個並逐輪往後推，下一輪只有新增的結果是新寫入，前文從快取讀。一次 recall 的幾輪相隔數秒，5 分鐘 TTL 已足夠。provider 不在 `TOOL_RESULT_BREAKPOINT_PROVIDERS` 時只有 request 那則 user message 有 breakpoint |
 
 ### 預抓與 `[Recall]`
 
