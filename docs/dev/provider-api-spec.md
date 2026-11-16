@@ -125,6 +125,7 @@
 | Opus 5 thinking 預設 | Claude Opus 5（`claude-opus-5`）adaptive thinking 預設開啟；`thinking.type=enabled` + `budget_tokens` 回 400；需顯式送 `thinking.type=disabled` 才能關閉 | Anthropic 官方文件 | [Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) | 高 | — |
 | Opus 5 disabled thinking 的 effort 上限 | `thinking.type=disabled` 只在 effort `high` 以下被接受，配 `xhigh`/`max` 回 400 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
 | Opus 5 effort 支援值 | 官方支援 `low/medium/high/xhigh/max`；非預設 `temperature`/`top_p`/`top_k` 可能回 400 | Anthropic 官方文件 | [Effort](https://platform.claude.com/docs/en/build-with-claude/effort) | 高 | — |
+| Cache breakpoint 位置 | `cache_control` 可掛在 system text block、tool 定義與 message content block（`text`、`image`、`tool_use`、`tool_result`、`document`）；每個 request 最多 4 個；write 5 分鐘 TTL 為 1.25 倍、1 小時為 2 倍，read 約 0.1 倍；同一 request 內 TTL 較長的 breakpoint 必須排在較短的前面 | Anthropic 官方文件 | [Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) | 高 | 最小可快取長度依模型而異 |
 
 ### 2. 本專案 adapter 規則
 
@@ -138,6 +139,7 @@
 | Vision | YAML 使用 plain `vision: true` | `src/lincy/core/schema.py` | 統一為 plain boolean |
 | `provider_overrides` | Anthropic config 不提供 override escape hatch；native fields 已可直接表達 payload | `src/lincy/core/schema.py` + `src/lincy/llm/providers/anthropic.py` | 舊 `anthropic_thinking*` override 已移除 |
 | Thinking block round-trip | 回應中的 `thinking`（含 `signature`）與 `redacted_thinking` block 原樣存進 `reasoning_details`；thinking 啟用時，重放 assistant 訊息會把有簽名的 thinking block 放在 content 最前面，再接 text 與 tool_use。無簽名的 thinking block 不重放 | `src/lincy/llm/providers/anthropic_messages.py` | Anthropic 要求 tool-use 輪的 thinking block 原樣送回；Kano Proxy 前接 Gemini 時 functionCall 的 `thoughtSignature` 也是掛在相鄰 thinking block 上 |
+| Tool result cache breakpoint | `role: "tool"` 的 `Message.cache_control` 輸出在該則的 `tool_result` block 上（不是 block 內的文字）；平行 tool result 合併成同一個 user message 時，只有帶標記的那一個 block 有 `cache_control`；`AnthropicToolResultContent` 帶 `cache_control` 欄位，單一字串結果經 payload model 驗證後標記仍會送出 | `src/lincy/llm/providers/anthropic_messages.py` + `src/lincy/llm/schema.py` | 由 `advance_cache_breakpoint(include_tool_results=True)` 設定，固定 5 分鐘 TTL；Heyroute、Kano Proxy 共用此 adapter |
 
 ### 3. 逆向/實測資訊
 
@@ -212,6 +214,7 @@
 | Base URL | 預設 `https://kano-proxy.yuufeng.com/g/lincy/anthropic`，config validator 去除尾端 `/`，client 再附加 `/v1/messages` | `src/lincy/core/provider_schema.py` + `src/lincy/llm/providers/anthropic.py` | 實際 request URL 為 `https://kano-proxy.yuufeng.com/g/lincy/anthropic/v1/messages` |
 | API key env | 預設 `KANO_PROXY_API_KEY` | `src/lincy/core/provider_schema.py` + `src/lincy/core/config.py` | 依既有 `api_key_env` 解析規則；不可 fallback 到 `ANTHROPIC_API_KEY` |
 | Prompt cache breakpoints | 視為 Anthropic-style breakpoint provider | `src/lincy/context/cache_breakpoints.py` | 僅因 request shape 與 Anthropic adapter 相同而納入 |
+| Tool result cache breakpoint | 列入 `TOOL_RESULT_BREAKPOINT_PROVIDERS`（目前為 `anthropic`、`kano_proxy`）；組裝層依此決定 recall 與 worker 是否在最新的 tool result 上多加一個 breakpoint；primary 與所有 `llm_fallbacks` 的 provider 都在清單內才啟用 | `src/lincy/context/cache_breakpoints.py` + `src/lincy/agent/build.py` | Heyroute 未實測，不列入 |
 | Reasoning origin | `LLMResponse.served_upstream` 讀自上述 header；`served_by` / `reasoning_origin` 為 `{candidate}#{model} via {provider}/{model}`。同一 candidate 下只回放與最近一次回應相同 upstream 的 thinking signature；本次程序尚未觀察到 upstream 時全部回放，被拒後仍有一次去除 thinking 的重送 | `src/lincy/llm/failover.py` + `src/lincy/llm/providers/anthropic.py` | 沒有 `via` 的舊 origin 在觀察到 upstream 後視為外來、不回放 |
 
 ### 3. 實測 / 逆向資訊
@@ -225,6 +228,8 @@
 2026-09-14 實測（續）：上一項修好後，同一輪第二次 request 回 `400 Function call is missing a thought_signature in functionCall parts`。Gemini 3 嚴格要求本輪 functionCall 帶回 `thoughtSignature`；kano-proxy 把它放在回應相鄰的 thinking block 上，但本專案 Anthropic adapter 原本把 thinking block 全部丟掉，重放的 tool_use 就沒簽名。修正為 adapter 保留並重放 thinking block（見 Anthropic adapter 規則）。
 
 2026-09-16 實測：brain 與 worker 同時連續 `400 Corrupted thought signature`。session 紀錄顯示 22:47–22:52 之間 kano-proxy 的 group 從 Antigravity Gemini failover 到另一個 target，回應的 `thinking.signature` 變成 36 字元 UUID、tool id 變成 `call_00_…`；Gemini 回來後這些 UUID 被原樣 echo 成 `thoughtSignature`，每次重送都失敗。根因在 proxy（core 已改為丟棄非 Gemini 形狀的 signature 並補 `skip_thought_signature_validator`）。本專案的對應規則：(1) `LLMResponse.served_by` 記錄產生回應的 failover candidate（`key#model`），存成 `Message.reasoning_origin`；failover 打某個 candidate 時，只 replay 該 candidate 自己產生的 `reasoning_details`，其他 candidate 的一律剝掉（origin 為 None 的舊紀錄照舊送）。(2) 收到 400 且錯誤訊息含 `signature` 時，同一 candidate 剝掉全部 `reasoning_details` 重送一次；再失敗就照一般規則處理，不做 failover。這兩條都在 `llm/failover.py`，provider adapter 本身不變。
+
+2026-11-16 實測（`/anthropic/v1/messages`，system 掛 `ttl: 1h`、最新的 `tool_result` block 掛 5 分鐘 `cache_control`，真實 tool loop 連跑四輪）：`ant-official/claude-haiku-5-5` 與 `claude-code/claude-haiku-5-5` 每一輪都讀到上一輪的完整前文（claude-code 的 `cache_read_input_tokens` 依序為 0、6059、12261、18314，每輪只寫入新增的約 6K）；`antigravity/gemini-4-argon-medium`、`antigravity/gemini-3.8-flash-low`、`deepseek/deepseek-v4-pro` 都回 200，標記不影響它們自己的隱式快取。同一個 request 帶 system（1h）、user message（1h）、tool result（5 分鐘）三個 breakpoint 也回 200。同日 `request_logs`：breakpoint 只停在 user message 時，`lincy/gui-manager-agent` 在 claude-code 上的 cache read 佔 prompt 15%、`lincy/worker-agent` 64%；`lincy/recall-agent` 沒有任何標記，read 與 write 都是 0。
 
 ### 5. OpenAI-compatible surface 與音訊
 

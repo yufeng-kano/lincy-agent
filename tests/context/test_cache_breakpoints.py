@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from lincy.context.cache_breakpoints import (
+    TOOL_RESULT_CACHE_CONTROL,
     advance_cache_breakpoint,
     build_cache_control,
     resolve_breakpoint_cache_ttl,
@@ -131,3 +132,156 @@ def test_worker_runner_advances_cache_breakpoint_each_request():
         user = next(m for m in call if m.role == "user")
         assert isinstance(user.content, list)
         assert user.content[0].cache_control == cache_ctrl
+
+
+def _tool_loop_messages(cache_ctrl: dict[str, str]) -> list[Message]:
+    return [
+        Message(role="system", content="sys", cache_control=cache_ctrl),
+        Message(role="user", content="task"),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[
+                ToolCall(id="c1", name="echo", arguments={"text": "x"}),
+                ToolCall(id="c2", name="echo", arguments={"text": "y"}),
+            ],
+        ),
+        Message(role="tool", content="x", tool_call_id="c1", name="echo"),
+        Message(role="tool", content="y", tool_call_id="c2", name="echo"),
+    ]
+
+
+def test_advance_cache_breakpoint_can_mark_the_latest_tool_result():
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+    messages = _tool_loop_messages(cache_ctrl)
+
+    advanced = advance_cache_breakpoint(messages, include_tool_results=True)
+
+    # The loop reads this entry seconds later, so it never takes the 1h TTL.
+    assert advanced[4].cache_control == TOOL_RESULT_CACHE_CONTROL == {"type": "ephemeral"}
+    assert advanced[4].content == "y"
+    assert advanced[3].cache_control is None
+    # The conversation marker stays: it still hits after the 5-minute entry
+    # expires, and adapters that ignore tool markers lose nothing.
+    assert advanced[1].content[0].cache_control == cache_ctrl
+    assert advanced[0].cache_control == cache_ctrl
+    assert all(m.cache_control is None for m in messages[1:])
+    assert isinstance(messages[1].content, str)
+
+
+def test_advance_cache_breakpoint_moves_off_an_earlier_tool_result():
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+    first = advance_cache_breakpoint(_tool_loop_messages(cache_ctrl), include_tool_results=True)
+    grown = [
+        *first,
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="c3", name="echo", arguments={"text": "z"})],
+        ),
+        Message(role="tool", content="z", tool_call_id="c3", name="echo"),
+    ]
+
+    advanced = advance_cache_breakpoint(grown, include_tool_results=True)
+
+    marked = [i for i, m in enumerate(advanced) if m.role == "tool" and m.cache_control]
+    assert marked == [6]
+
+
+def test_advance_cache_breakpoint_prefers_a_later_user_message_over_tool_results():
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+    messages = [*_tool_loop_messages(cache_ctrl), Message(role="user", content="wrap up")]
+
+    advanced = advance_cache_breakpoint(messages, include_tool_results=True)
+
+    assert all(m.cache_control is None for m in advanced if m.role == "tool")
+    assert advanced[5].content[0].cache_control == cache_ctrl
+    assert isinstance(advanced[1].content, str)
+
+
+def test_advance_cache_breakpoint_ignores_tool_results_by_default():
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+
+    advanced = advance_cache_breakpoint(_tool_loop_messages(cache_ctrl))
+
+    assert all(m.cache_control is None for m in advanced if m.role == "tool")
+    assert advanced[1].content[0].cache_control == cache_ctrl
+
+
+def _echo_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        "echo",
+        lambda text: text,
+        ToolDefinition(
+            name="echo",
+            description="Echo",
+            parameters={"text": ToolParameter(type="string", description="t")},
+            required=["text"],
+        ),
+    )
+    return registry
+
+
+class _TwoRoundClient:
+    """One tool call, then a final answer; records each request."""
+
+    def __init__(self, tool_text: str = "hi"):
+        self.calls: list[list[Message]] = []
+        self._tool_text = tool_text
+
+    def chat_with_tools(self, messages, tools, temperature=None):
+        del tools, temperature
+        self.calls.append([m.model_copy(deep=True) for m in messages])
+        if len(self.calls) == 1:
+            return LLMResponse(
+                content=None,
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": self._tool_text})],
+                total_tokens=1,
+            )
+        return LLMResponse(content="done", total_tokens=1)
+
+
+def test_worker_runner_marks_the_latest_tool_result_when_enabled():
+    client = _TwoRoundClient()
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+    runner = WorkerRunner(
+        client,
+        _echo_registry(),
+        frozenset(),
+        "system prompt",
+        cache_control=cache_ctrl,
+        cache_tool_results=True,
+    )
+
+    assert runner.run("do work", worker_label="worker-cache").success is True
+
+    first, second = client.calls
+    # No tool result yet: the task message carries the breakpoint.
+    assert first[1].content[0].cache_control == cache_ctrl
+    assert second[-1].role == "tool"
+    assert second[-1].cache_control == TOOL_RESULT_CACHE_CONTROL
+    assert second[1].content[0].cache_control == cache_ctrl
+    assert second[0].cache_control == cache_ctrl
+
+
+def test_worker_runner_skips_tool_result_breakpoint_once_history_is_compacted():
+    # The tool output alone overflows the budget, so the second request has
+    # dropped that turn: a breakpoint there would be written and never read.
+    client = _TwoRoundClient(tool_text="word " * 4000)
+    cache_ctrl = {"type": "ephemeral", "ttl": "1h"}
+    runner = WorkerRunner(
+        client,
+        _echo_registry(),
+        frozenset(),
+        "system prompt",
+        max_context_tokens=500,
+        cache_control=cache_ctrl,
+        cache_tool_results=True,
+    )
+
+    runner.run("do work", worker_label="worker-cache")
+
+    second = client.calls[1]
+    assert [m.role for m in second] == ["system", "user"]
+    assert second[1].content[0].cache_control == cache_ctrl

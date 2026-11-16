@@ -75,7 +75,7 @@ brain --screenshot_by_subagent--> GUIWorker (vision describe，僅此用途)
 
 1. **舊快照折疊**：`_collapse_stale_states()` 只保留最近 `keep_full_states`（預設 2）份完整多模態 tool result；更舊的去圖、文字截到 `stale_text_max_chars`（預設 2000）。每輪只有剛過期的那一份會變動，已折疊前綴保持 byte-stable，對 prompt cache 友善。
 2. **樹上限**：`max_tree_nodes`（預設 800），超過時 `truncated=True`。
-3. **Prompt cache**：`agents.gui_manager.cache` 啟用後，組裝層用 `resolve_breakpoint_cache_ttl` 夾 TTL（kano_proxy / anthropic / openrouter 上限 `1h`），system message 掛 `cache_control`；每次 tool-loop request 前呼叫共用的 `advance_cache_breakpoint`（與 brain responder / worker 同路徑）。
+3. **Prompt cache**：`agents.gui_manager.cache` 啟用後，組裝層用 `resolve_breakpoint_cache_ttl` 夾 TTL（kano_proxy / anthropic / openrouter 上限 `1h`），system message 掛 `cache_control`；每次 tool-loop request 前呼叫共用的 `advance_cache_breakpoint`（與 brain responder / worker 同路徑）。不啟用 `include_tool_results`：舊快照每輪折疊一份，掛在最新 tool result 上的快取下一輪必定失效。
 
 ## Loop 治理
 

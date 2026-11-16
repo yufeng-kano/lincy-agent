@@ -64,6 +64,9 @@ Worker 與 brain 共用 `src/lincy/context/cache_breakpoints.py`：
 - `agents.worker.cache.enabled/ttl` 經 `resolve_breakpoint_cache_ttl` 夾到 provider 上限（anthropic 系 provider 為 `1h`）
 - system message 掛 `cache_control`
 - 每次 tool-loop request（compact 之後）呼叫 `advance_cache_breakpoint`，conversation-tier breakpoint 推到最新合格 message
+- primary 與所有 `llm_fallbacks` 的 provider 都在 `TOOL_RESULT_BREAKPOINT_PROVIDERS`（`anthropic`、`kano_proxy`）時，另外在最新的 tool result 上加一個 breakpoint，固定 5 分鐘 TTL（下一輪幾秒後就讀，不付 1 小時 TTL 的 2 倍寫入價）。之前只有任務那則 user message 有 breakpoint，後面累積的工具輸出每輪都以原價重送
+- 原本的 conversation-tier breakpoint 行為不變（任務那則 user message；brain 中途補充資訊後移到那則 dispatcher update）：工具跑超過 5 分鐘、tool result 的快取過期時，它前面的前綴仍從 1 小時快取讀
+- 歷史超過 `max_context_tokens`、compaction 改寫了歷史之後，該次 request 不掛 tool result breakpoint（`WorkerRunner._request_messages` 比對 compaction 前後是否相同）：前綴每輪都在變，寫入的快取讀不回來
 - 不走 `ContextBuilder`（無 boot files / reminder）；只對齊 breakpoint TTL 與 tool-loop 推進行為
 
 ## 機制：per-agent `excluded_tools`

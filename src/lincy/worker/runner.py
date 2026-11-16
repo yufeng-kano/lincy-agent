@@ -97,6 +97,7 @@ class WorkerRunner:
         max_turns: int = 30,
         max_context_tokens: int = 96000,
         cache_control: dict[str, str] | None = None,
+        cache_tool_results: bool = False,
         sink: Any = None,
         provider: str | None = None,
         model: str | None = None,
@@ -119,6 +120,7 @@ class WorkerRunner:
         self._max_turns = max_turns
         self._max_context_tokens = max_context_tokens
         self._cache_control = cache_control
+        self._cache_tool_results = cache_tool_results
         self._sink = sink
         self._provider = provider
         self._model = model
@@ -301,6 +303,17 @@ class WorkerRunner:
         )
         return compacted
 
+    def _request_messages(self, messages: list[Message], worker_label: str) -> list[Message]:
+        """Compact the history, then place the cache breakpoint for one request."""
+        compacted = self._compact_messages(messages, worker_label)
+        # Once compaction rewrites the history the prefix shifts on every
+        # request, so a tool-result breakpoint would be written and never
+        # read back.
+        return advance_cache_breakpoint(
+            compacted,
+            include_tool_results=self._cache_tool_results and compacted == messages,
+        )
+
     @llm_session("worker")
     def run(
         self,
@@ -342,9 +355,7 @@ class WorkerRunner:
             return control is not None and control.cancel.is_set()
 
         try:
-            request_messages = advance_cache_breakpoint(
-                self._compact_messages(messages, worker_label)
-            )
+            request_messages = self._request_messages(messages, worker_label)
             response = client.chat_with_tools(request_messages, tool_defs)
             tokens_used += response.total_tokens or 0
 
@@ -389,9 +400,7 @@ class WorkerRunner:
                             role="user",
                             content="\n\n".join([_DISPATCHER_UPDATE_HEADER, *updates]),
                         ))
-                request_messages = advance_cache_breakpoint(
-                    self._compact_messages(messages, worker_label)
-                )
+                request_messages = self._request_messages(messages, worker_label)
                 response = client.chat_with_tools(request_messages, tool_defs)
                 tokens_used += response.total_tokens or 0
 
@@ -431,7 +440,7 @@ class WorkerRunner:
                 # is the report.
                 try:
                     report = client.chat_with_tools(
-                        advance_cache_breakpoint(self._compact_messages(messages, worker_label)),
+                        self._request_messages(messages, worker_label),
                         tool_defs,
                     )
                     tokens_used += report.total_tokens or 0

@@ -62,6 +62,7 @@ side-channel 回傳 bool：只有 memory_edit 的結果 JSON（`status: ok`、`a
 | prompt | `kernel/agents/recall/prompts/system.md` | 英文指令、繁中輸出；語料地圖、第一輪直接 grep 記憶檔與當月 transcript（不先對全部 session 做 `count_only`）、3-6 次呼叫內收手、答案最多 5 條；輸出 `- [YYYY-MM-DD HH:MM][來源路徑] 事實`、衝突列「不確定」、沒有超出已載入檔案的內容就只回 `NONE` |
 | 設定 | `cfgs/agent.yaml` `agents.recall` + `RecallAgentConfig`（`core/schema.py`） | `prefetch`、`prefetch_min_chars`（4）、`prefetch_max_tool_calls`（6）、`prefetch_deadline_seconds`（20）、`max_tool_calls`（12）、`max_result_chars`（1500）；LLM profile `cfgs/llm/kano-proxy/recall.yaml`（model `recall-agent`，30 秒 timeout，0 transient retry） |
 | 組裝 | `agent/build.py` + `tool_setup.py` | `agents.recall` enabled 且 prompt 存在才建；`session_debug_label="recall"`；同一個實例給 `AgentCore.recall_agent`（預抓）與 `recall` 工具 |
+| Prompt cache | `agents.recall.cache`（`enabled: true`、`ttl: ephemeral`）+ `context/cache_breakpoints.py` | system message 掛 `cache_control`；每次 request 前呼叫 `advance_cache_breakpoint(include_tool_results=...)`：request 那則 user message 保留 breakpoint，最新的 grep 結果上再加一個並逐輪往後推，下一輪只有新增的結果是新寫入，前文從快取讀。一次 recall 的幾輪相隔數秒，5 分鐘 TTL 已足夠。provider 不在 `TOOL_RESULT_BREAKPOINT_PROVIDERS` 時只有 request 那則 user message 有 breakpoint |
 
 ### 預抓與 `[Recall]`
 
@@ -89,6 +90,10 @@ preempt 併入進行中 turn 的訊息沒有 overlay，所以也沒有預抓；b
 
 group `lincy` 新增 group model `recall-agent`，targets 依序 `claude-code/claude-haiku-5-5` → `ant-official/claude-haiku-5-5` → `antigravity/gemini-3.8-flash-low`。profile 走 `/g/lincy/anthropic`。
 
+## 升級（m0189，0.87.1）
+
+workspace 的 `agent.yaml` / `cfgs/agent.yaml` 若有 `agents.recall` 且沒有 `cache`，補上 `cache: {enabled: true, ttl: ephemeral}`；已有設定者不動。
+
 ## 升級（m0186，0.86.0）
 
 - 複製 brain / memory_editor / recall prompt 與 `memory-maintenance/references/rules.md`。
@@ -112,6 +117,7 @@ group `lincy` 新增 group model `recall-agent`，targets 依序 `claude-code/cl
 - 漏的一題（11/5 午餐）在 37KB 的日快照裡，常見字 `元` 的命中超過 `max_matches`，答案被截掉；模型沒有照提示縮小 pattern。
 - 修正前（archive 副本排在 live 檔前面）6 題只中 4 題、1 題 NONE、1 題引用過期地址；排序改成 live 優先後這兩題都正確。
 - 成本每題約 0.005 美元（舊 harness 實測，新 prompt 的輸入量相近）。
+- 2026-11-16 查正式 `request_logs`：上線以來 recall 的 cache read / write 全是 0（沒有任何 breakpoint），一週 751 筆、1150 萬 prompt tokens、約 1.08 美元；一次 recall 各輪的 prompt 約為 4K、14K、23K、27K tokens，重送的前文佔大部分。0.87.1 起掛上 breakpoint，估計輸入費用約減半；實際數字待上線後從 `request_logs` 確認。每一輪新增的內容以 1.25 倍寫入，所以只跑一輪就結束的 recall 會比原本貴最多 25%；同一週 186 次 recall 只有 2 次是單輪，平均每次 4.1 輪。
 
 ## 取捨與限制
 
