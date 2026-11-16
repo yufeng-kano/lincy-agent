@@ -306,12 +306,12 @@ class WorkerRunner:
     def _request_messages(self, messages: list[Message], worker_label: str) -> list[Message]:
         """Compact the history, then place the cache breakpoint for one request."""
         compacted = self._compact_messages(messages, worker_label)
-        # Once compaction drops old turns the prefix shifts on every request,
-        # so a tool-result breakpoint would be written and never read back.
-        # Dropping turns is the only way compaction touches tool results.
+        # Once compaction rewrites the history the prefix shifts on every
+        # request, so a tool-result breakpoint would be written and never
+        # read back.
         return advance_cache_breakpoint(
             compacted,
-            include_tool_results=self._cache_tool_results and len(compacted) == len(messages),
+            include_tool_results=self._cache_tool_results and compacted == messages,
         )
 
     @llm_session("worker")

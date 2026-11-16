@@ -117,7 +117,7 @@ workspace 的 `agent.yaml` / `cfgs/agent.yaml` 若有 `agents.recall` 且沒有 
 - 漏的一題（11/5 午餐）在 37KB 的日快照裡，常見字 `元` 的命中超過 `max_matches`，答案被截掉；模型沒有照提示縮小 pattern。
 - 修正前（archive 副本排在 live 檔前面）6 題只中 4 題、1 題 NONE、1 題引用過期地址；排序改成 live 優先後這兩題都正確。
 - 成本每題約 0.005 美元（舊 harness 實測，新 prompt 的輸入量相近）。
-- 2026-11-16 查正式 `request_logs`：上線以來 recall 的 cache read / write 全是 0（沒有任何 breakpoint），一週 751 筆、1150 萬 prompt tokens、約 1.08 美元；一次 recall 各輪的 prompt 約為 4K、14K、23K、27K tokens，重送的前文佔大部分。0.87.1 起掛上 breakpoint，估計輸入費用約減半；實際數字待上線後從 `request_logs` 確認。
+- 2026-11-16 查正式 `request_logs`：上線以來 recall 的 cache read / write 全是 0（沒有任何 breakpoint），一週 751 筆、1150 萬 prompt tokens、約 1.08 美元；一次 recall 各輪的 prompt 約為 4K、14K、23K、27K tokens，重送的前文佔大部分。0.87.1 起掛上 breakpoint，估計輸入費用約減半；實際數字待上線後從 `request_logs` 確認。每一輪新增的內容以 1.25 倍寫入，所以只跑一輪就結束的 recall 會比原本貴最多 25%；同一週 186 次 recall 只有 2 次是單輪，平均每次 4.1 輪。
 
 ## 取捨與限制
 
